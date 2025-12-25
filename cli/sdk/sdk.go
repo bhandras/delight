@@ -64,6 +64,13 @@ func NewClient(serverURL string) *Client {
 	}
 }
 
+// SetServerURL updates the server base URL.
+func (c *Client) SetServerURL(serverURL string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.serverURL = serverURL
+}
+
 // GenerateMasterKeyBase64 creates a new 32-byte master key (base64).
 func GenerateMasterKeyBase64() (string, error) {
 	secret := make([]byte, 32)
