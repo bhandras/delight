@@ -91,6 +91,13 @@ func NewUserClient(serverURL, token string, debug bool) *Client {
 	}
 }
 
+// SetDebug toggles debug logging.
+func (c *Client) SetDebug(enabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.debug = enabled
+}
+
 // On registers an event handler
 func (c *Client) On(eventType EventType, handler func(map[string]interface{})) {
 	c.mu.Lock()
