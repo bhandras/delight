@@ -2,6 +2,8 @@ package sdk
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -37,6 +39,22 @@ type Client struct {
 	httpClient   *http.Client
 }
 
+// KeyPair holds a base64-encoded keypair for gomobile bindings.
+type KeyPair struct {
+	publicKey  string
+	privateKey string
+}
+
+// PublicKey returns the base64-encoded public key.
+func (k *KeyPair) PublicKey() string {
+	return k.publicKey
+}
+
+// PrivateKey returns the base64-encoded private key.
+func (k *KeyPair) PrivateKey() string {
+	return k.privateKey
+}
+
 // NewClient creates a new SDK client.
 func NewClient(serverURL string) *Client {
 	return &Client{
@@ -46,11 +64,136 @@ func NewClient(serverURL string) *Client {
 	}
 }
 
+// GenerateMasterKeyBase64 creates a new 32-byte master key (base64).
+func GenerateMasterKeyBase64() (string, error) {
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return "", fmt.Errorf("generate master key: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(secret), nil
+}
+
+// GenerateEd25519KeyPair creates a new signing keypair for /v1/auth.
+func GenerateEd25519KeyPair() (*KeyPair, error) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate ed25519 keypair: %w", err)
+	}
+	return &KeyPair{
+		publicKey:  base64.StdEncoding.EncodeToString(pub),
+		privateKey: base64.StdEncoding.EncodeToString(priv),
+	}, nil
+}
+
 // SetListener registers the listener for SDK events.
 func (c *Client) SetListener(listener Listener) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.listener = listener
+}
+
+// AuthWithKeyPair performs challenge-response auth and stores the token.
+func (c *Client) AuthWithKeyPair(publicKeyB64, privateKeyB64 string) (string, error) {
+	priv, err := base64.StdEncoding.DecodeString(privateKeyB64)
+	if err != nil {
+		return "", fmt.Errorf("decode private key: %w", err)
+	}
+	if len(priv) != ed25519.PrivateKeySize {
+		return "", fmt.Errorf("invalid private key length")
+	}
+
+	challenge := []byte("delight-auth-challenge")
+	signature := ed25519.Sign(ed25519.PrivateKey(priv), challenge)
+
+	reqBody := map[string]string{
+		"publicKey": publicKeyB64,
+		"challenge": base64.StdEncoding.EncodeToString(challenge),
+		"signature": base64.StdEncoding.EncodeToString(signature),
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal auth request: %w", err)
+	}
+
+	respBody, err := c.doRequest("POST", "/v1/auth", body)
+	if err != nil {
+		return "", err
+	}
+
+	var resp struct {
+		Success bool   `json:"success"`
+		Token   string `json:"token"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return "", fmt.Errorf("parse auth response: %w", err)
+	}
+	if !resp.Success || resp.Token == "" {
+		return "", fmt.Errorf("auth failed")
+	}
+	c.SetToken(resp.Token)
+	return resp.Token, nil
+}
+
+// ParseTerminalURL extracts the terminal public key from a QR URL.
+// Accepts delight://terminal?<pubkey> and happy://terminal?<pubkey>.
+func ParseTerminalURL(qrURL string) (string, error) {
+	parsed, err := url.Parse(qrURL)
+	if err != nil {
+		return "", fmt.Errorf("parse url: %w", err)
+	}
+	if parsed.Scheme != "delight" && parsed.Scheme != "happy" {
+		return "", fmt.Errorf("unsupported scheme: %s", parsed.Scheme)
+	}
+	if parsed.Host != "terminal" {
+		return "", fmt.Errorf("unsupported host: %s", parsed.Host)
+	}
+	raw := parsed.RawQuery
+	if raw == "" {
+		return "", fmt.Errorf("missing public key in URL")
+	}
+	pubBytes, err := decodeBase64URL(raw)
+	if err != nil {
+		return "", fmt.Errorf("decode public key: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(pubBytes), nil
+}
+
+// ApproveTerminalAuth encrypts the master key and posts /v1/auth/response.
+func (c *Client) ApproveTerminalAuth(terminalPublicKeyB64 string, masterKeyB64 string) error {
+	terminalPub, err := decodeBase64Any(terminalPublicKeyB64)
+	if err != nil {
+		return fmt.Errorf("decode terminal public key: %w", err)
+	}
+	if len(terminalPub) != 32 {
+		return fmt.Errorf("invalid terminal public key length")
+	}
+	masterKey, err := base64.StdEncoding.DecodeString(masterKeyB64)
+	if err != nil {
+		return fmt.Errorf("decode master key: %w", err)
+	}
+	if len(masterKey) != 32 {
+		return fmt.Errorf("master key must be 32 bytes")
+	}
+
+	var terminalPubKey [32]byte
+	copy(terminalPubKey[:], terminalPub)
+
+	encrypted, err := crypto.EncryptBox(masterKey, &terminalPubKey)
+	if err != nil {
+		return fmt.Errorf("encrypt response: %w", err)
+	}
+
+	reqBody := map[string]string{
+		"publicKey": terminalPublicKeyB64,
+		"response":  base64.StdEncoding.EncodeToString(encrypted),
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("marshal response: %w", err)
+	}
+
+	_, err = c.doRequest("POST", "/v1/auth/response", body)
+	return err
 }
 
 // SetDebug enables debug logging for underlying sockets.
@@ -432,6 +575,35 @@ func (c *Client) decryptPayload(sessionID, dataB64 string) ([]byte, error) {
 	return []byte(result), nil
 }
 
+func decodeBase64URL(input string) ([]byte, error) {
+	if input == "" {
+		return nil, fmt.Errorf("empty base64url")
+	}
+	if data, err := base64.URLEncoding.DecodeString(input); err == nil {
+		return data, nil
+	}
+	if data, err := base64.RawURLEncoding.DecodeString(input); err == nil {
+		return data, nil
+	}
+	if data, err := base64.StdEncoding.DecodeString(input); err == nil {
+		return data, nil
+	}
+	return base64.RawStdEncoding.DecodeString(input)
+}
+
+func decodeBase64Any(input string) ([]byte, error) {
+	if data, err := base64.StdEncoding.DecodeString(input); err == nil {
+		return data, nil
+	}
+	if data, err := base64.RawStdEncoding.DecodeString(input); err == nil {
+		return data, nil
+	}
+	if data, err := base64.URLEncoding.DecodeString(input); err == nil {
+		return data, nil
+	}
+	return base64.RawURLEncoding.DecodeString(input)
+}
+
 func (c *Client) doRequest(method, path string, body []byte) ([]byte, error) {
 	c.mu.Lock()
 	token := c.token
@@ -439,9 +611,6 @@ func (c *Client) doRequest(method, path string, body []byte) ([]byte, error) {
 	client := c.httpClient
 	c.mu.Unlock()
 
-	if token == "" {
-		return nil, fmt.Errorf("token not set")
-	}
 	if baseURL == "" {
 		return nil, fmt.Errorf("server URL not set")
 	}
@@ -456,7 +625,9 @@ func (c *Client) doRequest(method, path string, body []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	if token != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

@@ -83,9 +83,9 @@ func AuthCommand(cfg *config.Config) error {
 		log.Printf("Auth request created: state=%s, id=%s", state, requestID)
 	}
 
-	// Build QR code data - format: happy://terminal?[base64url-encoded-public-key]
+	// Build QR code data - format: delight://terminal?[base64url-encoded-public-key]
 	publicKeyB64url := toBase64URL(publicKeyB64)
-	qrData := fmt.Sprintf("happy://terminal?%s", publicKeyB64url)
+	qrData := fmt.Sprintf("delight://terminal?%s", publicKeyB64url)
 
 	// Generate QR code
 	log.Println("\nScan this QR code with the Delight mobile app to link this device:")
