@@ -1,0 +1,114 @@
+# Delight Server (Go)
+
+Private, self-hosted backend for the Delight iOS app - a mobile client for Claude Code with end-to-end encryption.
+
+## Why This Exists
+
+The original Delight server is abandoned and closed-source hosted. This is a clean-room implementation in Go that:
+
+- ✅ **100% Privacy** - You control the server, all data is end-to-end encrypted
+- ✅ **Single Binary** - No Node.js, no external dependencies, just Go + SQLite
+- ✅ **Minimal & Auditable** - Core features only, easy to verify security
+- ✅ **iOS App Compatible** - Works with the existing Delight iOS app
+
+## Features
+
+- 🔐 **Challenge-Response Authentication** - Ed25519 signature-based auth
+- 🔑 **QR Code Auth** - Secure CLI → Mobile pairing via X25519 encryption
+- 💬 **Real-time Sync** - WebSocket-based session and message synchronization
+- 🔒 **End-to-End Encryption** - TweetNaCl + AES-256-GCM (compatible with original)
+- 📱 **Multi-device** - Seamless sync between CLI, mobile, and daemon
+- 🚀 **Self-hosted** - Single binary + SQLite database
+
+## Architecture
+
+- **Web Framework**: Gin
+- **Database**: SQLite with sqlc for type-safe queries
+- **WebSocket**: Socket.IO (via go-socket.io)
+- **Encryption**:
+  - TweetNaCl SecretBox (XSalsa20-Poly1305) - Legacy
+  - AES-256-GCM - Per-session keys
+  - TweetNaCl Box (X25519) - Auth handshake
+
+## Quick Start
+
+```bash
+# Generate master secret
+make secret
+
+# Create .env file
+cat > .env <<EOF
+PORT=3005
+DELIGHT_MASTER_SECRET=<paste-secret-from-above>
+DATABASE_PATH=./delight.db
+DEBUG=true
+EOF
+
+# Build and run
+make run
+
+# Or just run without building
+go run ./cmd/server
+```
+
+**Server will start on:** `http://localhost:3005`
+
+## Configuration
+
+Environment variables:
+
+- `PORT` - HTTP server port (default: 3005)
+- `DELIGHT_MASTER_SECRET` - Master secret for token signing (required)
+- `DATABASE_PATH` - SQLite database path (default: ./delight.db)
+
+## iOS App Setup
+
+1. Start the server: `./server`
+2. In the Delight iOS app settings, change server URL to: `http://your-server:3005`
+3. That's it! The app will work with your private server.
+
+## Project Structure
+
+```
+cmd/server/         - Main entry point
+internal/
+  api/              - HTTP handlers and routing
+  websocket/        - Socket.IO WebSocket server
+  crypto/           - Encryption implementations
+  database/         - SQLite schema and queries
+  models/           - Generated sqlc models
+  config/           - Configuration management
+```
+
+## Security Notes
+
+- All sensitive data (messages, metadata) is end-to-end encrypted
+- The server cannot decrypt your conversations
+- Authentication uses Ed25519 signatures (no passwords)
+- Session keys never leave your devices unencrypted
+- Master secret is used only for JWT signing
+
+## Development
+
+```bash
+# Install dependencies
+go mod download
+
+# Generate sqlc code
+sqlc generate
+
+# Run tests
+go test ./...
+
+# Run with hot reload (requires air)
+air
+```
+
+## License
+
+MIT - Use freely, modify as needed, self-host anywhere.
+
+## Credits
+
+This is a clean-room implementation based on analyzing the Happy iOS app's protocol.
+Original Happy app: https://github.com/slopus/happy

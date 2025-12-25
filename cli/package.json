@@ -1,0 +1,9 @@
+{
+  "name": "delight-cli-go-launcher",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node.js dependencies for delight-cli-go launcher script",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "^1.0.3"
+  }
+}
