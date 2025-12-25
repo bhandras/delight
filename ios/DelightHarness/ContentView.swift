@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var model = HarnessViewModel()
+    @State private var showScanner = false
 
     var body: some View {
         NavigationView {
@@ -55,7 +56,10 @@ struct ContentView: View {
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled(true)
                                 .textFieldStyle(.roundedBorder)
-                            Button("Approve Terminal") { model.approveTerminal() }
+                            HStack {
+                                Button("Scan QR") { showScanner = true }
+                                Button("Approve Terminal") { model.approveTerminal() }
+                            }
                         }
                         .padding(.vertical, 4)
                     }
@@ -70,6 +74,26 @@ struct ContentView: View {
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled(true)
                                 .textFieldStyle(.roundedBorder)
+
+                            if !model.sessions.isEmpty {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    ForEach(model.sessions) { session in
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(session.id)
+                                                .font(.footnote)
+                                                .textSelection(.enabled)
+                                            Text(session.statusText)
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                            Button("Use Session") {
+                                                model.sessionID = session.id
+                                            }
+                                            .font(.caption)
+                                        }
+                                        Divider()
+                                    }
+                                }
+                            }
                         }
                         .padding(.vertical, 4)
                     }
@@ -93,6 +117,12 @@ struct ContentView: View {
                 .padding()
             }
             .navigationTitle("Delight Harness")
+        }
+        .sheet(isPresented: $showScanner) {
+            QRScannerView { result in
+                model.terminalURL = result
+                showScanner = false
+            }
         }
     }
 }

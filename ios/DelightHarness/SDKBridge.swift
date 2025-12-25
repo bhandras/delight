@@ -1,6 +1,17 @@
 import Foundation
 import DelightSDK
 
+struct SessionSummary: Identifiable {
+    let id: String
+    let updatedAt: Int64
+    let active: Bool
+
+    var statusText: String {
+        let state = active ? "active" : "inactive"
+        return "\(state) • updated \(updatedAt)"
+    }
+}
+
 final class HarnessViewModel: NSObject, ObservableObject, SdkListener {
     @Published var serverURL: String = "http://localhost:3005"
     @Published var token: String = ""
@@ -12,6 +23,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListener {
     @Published var logs: String = ""
     @Published var publicKey: String = ""
     @Published var privateKey: String = ""
+    @Published var sessions: [SessionSummary] = []
 
     private let client: SdkClient
 
@@ -74,7 +86,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListener {
     func listSessions() {
         do {
             let response = try client.listSessions()
-            log("Sessions: \(response)")
+            parseSessions(response)
+            log("Sessions loaded")
         } catch {
             log("List sessions error: \(error)")
         }
@@ -150,6 +163,25 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListener {
                 self.logs = message
             } else {
                 self.logs = self.logs + "\n" + message
+            }
+        }
+    }
+
+    private func parseSessions(_ json: String) {
+        guard let data = json.data(using: .utf8) else {
+            return
+        }
+        struct SessionsResponse: Decodable {
+            struct Session: Decodable {
+                let id: String
+                let updatedAt: Int64
+                let active: Bool
+            }
+            let sessions: [Session]
+        }
+        if let decoded = try? JSONDecoder().decode(SessionsResponse.self, from: data) {
+            DispatchQueue.main.async {
+                self.sessions = decoded.sessions.map { SessionSummary(id: $0.id, updatedAt: $0.updatedAt, active: $0.active) }
             }
         }
     }

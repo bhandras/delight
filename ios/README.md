@@ -10,7 +10,7 @@ gomobile init
 ./delight/cli/scripts/build_ios_sdk.sh
 ```
 
-This produces `delight/cli/build/DelightSDK.xcframework`, which the Xcode project references.
+This produces `delight/cli/build/DelightSDK.xcframework`, which the Xcode project references. The Xcode project also runs the build script automatically on each build.
 
 ## Open in Xcode
 

@@ -9,6 +9,7 @@
 		A1B2C3D4E5F60718293A4B70 /* DelightHarnessApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6B /* DelightHarnessApp.swift */; };
 		A1B2C3D4E5F60718293A4B71 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6C /* ContentView.swift */; };
 		A1B2C3D4E5F60718293A4B72 /* SDKBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6D /* SDKBridge.swift */; };
+		A1B2C3D4E5F60718293A4B82 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B81 /* QRScannerView.swift */; };
 		A1B2C3D4E5F60718293A4B73 /* DelightSDK.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6E /* DelightSDK.xcframework */; };
 		A1B2C3D4E5F60718293A4B74 /* DelightSDK.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6E /* DelightSDK.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy); }; };
 /* End PBXBuildFile section */
@@ -31,6 +32,7 @@
 		A1B2C3D4E5F60718293A4B6B /* DelightHarnessApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DelightHarnessApp.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B6C /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B6D /* SDKBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SDKBridge.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B81 /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B6E /* DelightSDK.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = DelightSDK.xcframework; path = ../cli/build/DelightSDK.xcframework; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B6F /* DelightHarness.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = DelightHarness.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -62,6 +64,7 @@
 				A1B2C3D4E5F60718293A4B6B /* DelightHarnessApp.swift */,
 				A1B2C3D4E5F60718293A4B6C /* ContentView.swift */,
 				A1B2C3D4E5F60718293A4B6D /* SDKBridge.swift */,
+				A1B2C3D4E5F60718293A4B81 /* QRScannerView.swift */,
 				A1B2C3D4E5F60718293A4B6A /* Info.plist */,
 			);
 			path = DelightHarness;
@@ -82,6 +85,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = A1B2C3D4E5F60718293A4B65 /* Build configuration list for PBXNativeTarget "DelightHarness" */;
 			buildPhases = (
+				A1B2C3D4E5F60718293A4B80 /* Build SDK */,
 				A1B2C3D4E5F60718293A4B60 /* Sources */,
 				A1B2C3D4E5F60718293A4B61 /* Frameworks */,
 				A1B2C3D4E5F60718293A4B62 /* Resources */,
@@ -128,6 +132,23 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		A1B2C3D4E5F60718293A4B80 /* Build SDK */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\ncd \"${PROJECT_DIR}/..\"\n./cli/scripts/build_ios_sdk.sh\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXResourcesBuildPhase section */
 		A1B2C3D4E5F60718293A4B62 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
@@ -146,6 +167,7 @@
 				A1B2C3D4E5F60718293A4B70 /* DelightHarnessApp.swift in Sources */,
 				A1B2C3D4E5F60718293A4B71 /* ContentView.swift in Sources */,
 				A1B2C3D4E5F60718293A4B72 /* SDKBridge.swift in Sources */,
+				A1B2C3D4E5F60718293A4B82 /* QRScannerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
