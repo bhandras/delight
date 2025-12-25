@@ -6,7 +6,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A1B2C3D4E5F60718293A4B70 /* DelightHarnessApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6B /* DelightHarnessApp.swift */; };
+		A1B2C3D4E5F60718293A4B90 /* DelightHarnessApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6B /* DelightHarnessApp.swift */; };
 		A1B2C3D4E5F60718293A4B71 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6C /* ContentView.swift */; };
 		A1B2C3D4E5F60718293A4B72 /* SDKBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6D /* SDKBridge.swift */; };
 		A1B2C3D4E5F60718293A4B82 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B81 /* QRScannerView.swift */; };
@@ -164,7 +164,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1B2C3D4E5F60718293A4B70 /* DelightHarnessApp.swift in Sources */,
+				A1B2C3D4E5F60718293A4B90 /* DelightHarnessApp.swift in Sources */,
 				A1B2C3D4E5F60718293A4B71 /* ContentView.swift in Sources */,
 				A1B2C3D4E5F60718293A4B72 /* SDKBridge.swift in Sources */,
 				A1B2C3D4E5F60718293A4B82 /* QRScannerView.swift in Sources */,
