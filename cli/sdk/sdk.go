@@ -39,6 +39,9 @@ type Client struct {
 	httpClient   *http.Client
 	logServer    *http.Server
 	logServerURL string
+
+	dispatch  *dispatcher
+	callbacks *dispatcher
 }
 
 // KeyPair holds a base64-encoded keypair for gomobile bindings.
@@ -63,14 +66,19 @@ func NewClient(serverURL string) *Client {
 		serverURL:  serverURL,
 		dataKeys:   make(map[string][]byte),
 		httpClient: &http.Client{Timeout: 15 * time.Second},
+		dispatch:   newDispatcher(256),
+		callbacks:  newDispatcher(256),
 	}
 }
 
 // SetServerURL updates the server base URL.
 func (c *Client) SetServerURL(serverURL string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.serverURL = serverURL
+	_, _ = c.dispatch.call(func() (interface{}, error) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.serverURL = serverURL
+		return nil, nil
+	})
 }
 
 // GenerateMasterKeyBase64 creates a new 32-byte master key (base64).
@@ -96,13 +104,30 @@ func GenerateEd25519KeyPair() (*KeyPair, error) {
 
 // SetListener registers the listener for SDK events.
 func (c *Client) SetListener(listener Listener) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.listener = listener
+	_, _ = c.dispatch.call(func() (interface{}, error) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.listener = listener
+		return nil, nil
+	})
 }
 
 // AuthWithKeyPair performs challenge-response auth and stores the token.
 func (c *Client) AuthWithKeyPair(publicKeyB64, privateKeyB64 string) (string, error) {
+	value, err := c.dispatch.call(func() (interface{}, error) {
+		return c.authWithKeyPair(publicKeyB64, privateKeyB64)
+	})
+	if err != nil {
+		return "", err
+	}
+	if value == nil {
+		return "", nil
+	}
+	token, _ := value.(string)
+	return token, nil
+}
+
+func (c *Client) authWithKeyPair(publicKeyB64, privateKeyB64 string) (string, error) {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("AuthWithKeyPair", r)
@@ -144,7 +169,7 @@ func (c *Client) AuthWithKeyPair(publicKeyB64, privateKeyB64 string) (string, er
 	if !resp.Success || resp.Token == "" {
 		return "", fmt.Errorf("auth failed")
 	}
-	c.SetToken(resp.Token)
+	c.setToken(resp.Token)
 	return resp.Token, nil
 }
 
@@ -179,6 +204,13 @@ func ParseTerminalURL(qrURL string) (string, error) {
 
 // ApproveTerminalAuth encrypts the master key and posts /v1/auth/response.
 func (c *Client) ApproveTerminalAuth(terminalPublicKeyB64 string, masterKeyB64 string) error {
+	_, err := c.dispatch.call(func() (interface{}, error) {
+		return nil, c.approveTerminalAuth(terminalPublicKeyB64, masterKeyB64)
+	})
+	return err
+}
+
+func (c *Client) approveTerminalAuth(terminalPublicKeyB64 string, masterKeyB64 string) error {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("ApproveTerminalAuth", r)
@@ -222,16 +254,26 @@ func (c *Client) ApproveTerminalAuth(terminalPublicKeyB64 string, masterKeyB64 s
 
 // SetDebug enables debug logging for underlying sockets.
 func (c *Client) SetDebug(enabled bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.debug = enabled
-	if c.userSocket != nil {
-		c.userSocket.SetDebug(enabled)
-	}
+	_, _ = c.dispatch.call(func() (interface{}, error) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.debug = enabled
+		if c.userSocket != nil {
+			c.userSocket.SetDebug(enabled)
+		}
+		return nil, nil
+	})
 }
 
 // SetToken configures the auth token.
 func (c *Client) SetToken(token string) {
+	_, _ = c.dispatch.call(func() (interface{}, error) {
+		c.setToken(token)
+		return nil, nil
+	})
+}
+
+func (c *Client) setToken(token string) {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("SetToken", r)
@@ -244,6 +286,13 @@ func (c *Client) SetToken(token string) {
 
 // SetLogDirectory configures the log directory for SDK logs.
 func (c *Client) SetLogDirectory(path string) error {
+	_, err := c.dispatch.call(func() (interface{}, error) {
+		return nil, c.setLogDirectory(path)
+	})
+	return err
+}
+
+func (c *Client) setLogDirectory(path string) error {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("SetLogDirectory", r)
@@ -254,6 +303,10 @@ func (c *Client) SetLogDirectory(path string) error {
 
 // LogLine forwards a log line into the SDK log buffer.
 func (c *Client) LogLine(line string) {
+	_ = c.dispatch.do(func() { c.logLine(line) })
+}
+
+func (c *Client) logLine(line string) {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("LogLine", r)
@@ -264,6 +317,13 @@ func (c *Client) LogLine(line string) {
 
 // SetMasterKeyBase64 sets the 32-byte master key from base64.
 func (c *Client) SetMasterKeyBase64(keyB64 string) error {
+	_, err := c.dispatch.call(func() (interface{}, error) {
+		return nil, c.setMasterKeyBase64(keyB64)
+	})
+	return err
+}
+
+func (c *Client) setMasterKeyBase64(keyB64 string) error {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("SetMasterKeyBase64", r)
@@ -284,6 +344,13 @@ func (c *Client) SetMasterKeyBase64(keyB64 string) error {
 
 // SetSessionDataKey stores a raw 32-byte data encryption key (base64).
 func (c *Client) SetSessionDataKey(sessionID, keyB64 string) error {
+	_, err := c.dispatch.call(func() (interface{}, error) {
+		return nil, c.setSessionDataKey(sessionID, keyB64)
+	})
+	return err
+}
+
+func (c *Client) setSessionDataKey(sessionID, keyB64 string) error {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("SetSessionDataKey", r)
@@ -304,6 +371,13 @@ func (c *Client) SetSessionDataKey(sessionID, keyB64 string) error {
 
 // SetEncryptedSessionDataKey decrypts and stores a session data key.
 func (c *Client) SetEncryptedSessionDataKey(sessionID, encryptedB64 string) error {
+	_, err := c.dispatch.call(func() (interface{}, error) {
+		return nil, c.setEncryptedSessionDataKey(sessionID, encryptedB64)
+	})
+	return err
+}
+
+func (c *Client) setEncryptedSessionDataKey(sessionID, encryptedB64 string) error {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("SetEncryptedSessionDataKey", r)
@@ -334,6 +408,13 @@ func (c *Client) SetEncryptedSessionDataKey(sessionID, encryptedB64 string) erro
 
 // Connect opens a user-scoped websocket connection and begins emitting updates.
 func (c *Client) Connect() error {
+	_, err := c.dispatch.call(func() (interface{}, error) {
+		return nil, c.connect()
+	})
+	return err
+}
+
+func (c *Client) connect() error {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("Connect", r)
@@ -349,8 +430,8 @@ func (c *Client) Connect() error {
 	}
 
 	socket := websocket.NewUserClient(c.serverURL, token, debug)
-	socket.On(websocket.EventUpdate, c.handleUpdate)
-	socket.On(websocket.EventEphemeral, c.handleEphemeral)
+	socket.On(websocket.EventUpdate, c.handleUpdateQueued)
+	socket.On(websocket.EventEphemeral, c.handleEphemeralQueued)
 
 	if err := socket.Connect(); err != nil {
 		c.emitError(fmt.Sprintf("connect failed: %v", err))
@@ -368,13 +449,20 @@ func (c *Client) Connect() error {
 	c.mu.Unlock()
 
 	if listener != nil {
-		listener.OnConnected()
+		_ = c.callbacks.do(func() { listener.OnConnected() })
 	}
 	return nil
 }
 
 // Disconnect closes the websocket connection.
 func (c *Client) Disconnect() {
+	_, _ = c.dispatch.call(func() (interface{}, error) {
+		c.disconnect()
+		return nil, nil
+	})
+}
+
+func (c *Client) disconnect() {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("Disconnect", r)
@@ -390,12 +478,19 @@ func (c *Client) Disconnect() {
 		_ = socket.Close()
 	}
 	if listener != nil {
-		listener.OnDisconnected("closed")
+		_ = c.callbacks.do(func() { listener.OnDisconnected("closed") })
 	}
 }
 
 // SendMessage encrypts and sends a raw record JSON payload to a session.
 func (c *Client) SendMessage(sessionID string, rawRecordJSON string) error {
+	_, err := c.dispatch.call(func() (interface{}, error) {
+		return nil, c.sendMessage(sessionID, rawRecordJSON)
+	})
+	return err
+}
+
+func (c *Client) sendMessage(sessionID string, rawRecordJSON string) error {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("SendMessage", r)
@@ -418,6 +513,19 @@ func (c *Client) SendMessage(sessionID string, rawRecordJSON string) error {
 
 // ListSessions fetches sessions and caches data keys. Returns JSON response.
 func (c *Client) ListSessions() (resp string, err error) {
+	value, err := c.dispatch.call(func() (interface{}, error) {
+		return c.listSessions()
+	})
+	if err != nil {
+		return "", err
+	}
+	if value == nil {
+		return "", nil
+	}
+	return value.(string), nil
+}
+
+func (c *Client) listSessions() (resp string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("ListSessions", r)
@@ -440,7 +548,7 @@ func (c *Client) ListSessions() (resp string, err error) {
 				sessionID, _ := session["id"].(string)
 				dataKeyB64, _ := session["dataEncryptionKey"].(string)
 				if sessionID != "" && dataKeyB64 != "" {
-					_ = c.SetEncryptedSessionDataKey(sessionID, dataKeyB64)
+					_ = c.setEncryptedSessionDataKey(sessionID, dataKeyB64)
 				}
 				metadataB64, _ := session["metadata"].(string)
 				if metadataB64 != "" {
@@ -460,6 +568,19 @@ func (c *Client) ListSessions() (resp string, err error) {
 
 // ListMachines fetches machines and decrypts metadata/daemon state when possible.
 func (c *Client) ListMachines() (resp string, err error) {
+	value, err := c.dispatch.call(func() (interface{}, error) {
+		return c.listMachines()
+	})
+	if err != nil {
+		return "", err
+	}
+	if value == nil {
+		return "", nil
+	}
+	return value.(string), nil
+}
+
+func (c *Client) listMachines() (resp string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("ListMachines", r)
@@ -529,6 +650,19 @@ func (c *Client) decryptLegacyString(payload string) (string, error) {
 
 // GetSessionMessages fetches session messages and decrypts message content.
 func (c *Client) GetSessionMessages(sessionID string, limit int) (resp string, err error) {
+	value, err := c.dispatch.call(func() (interface{}, error) {
+		return c.getSessionMessages(sessionID, limit)
+	})
+	if err != nil {
+		return "", err
+	}
+	if value == nil {
+		return "", nil
+	}
+	return value.(string), nil
+}
+
+func (c *Client) getSessionMessages(sessionID string, limit int) (resp string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("GetSessionMessages", r)
@@ -583,6 +717,14 @@ func (c *Client) GetSessionMessages(sessionID string, limit int) (resp string, e
 	return string(encoded), nil
 }
 
+func (c *Client) handleEphemeralQueued(data map[string]interface{}) {
+	_ = c.dispatch.do(func() { c.handleEphemeral(data) })
+}
+
+func (c *Client) handleUpdateQueued(data map[string]interface{}) {
+	_ = c.dispatch.do(func() { c.handleUpdate(data) })
+}
+
 func (c *Client) handleEphemeral(data map[string]interface{}) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -621,7 +763,7 @@ func (c *Client) handleUpdate(data map[string]interface{}) {
 	case "new-session":
 		sessionID, _ = body["id"].(string)
 		if dataKey, ok := body["dataEncryptionKey"].(string); ok && dataKey != "" {
-			_ = c.SetEncryptedSessionDataKey(sessionID, dataKey)
+			_ = c.setEncryptedSessionDataKey(sessionID, dataKey)
 		}
 	case "update-session":
 		sessionID, _ = body["id"].(string)
@@ -637,16 +779,16 @@ func (c *Client) emitUpdate(sessionID string, payload map[string]interface{}) {
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		listener.OnError(fmt.Sprintf("encode update: %v", err))
+		_ = c.callbacks.do(func() { listener.OnError(fmt.Sprintf("encode update: %v", err)) })
 		return
 	}
-	listener.OnUpdate(sessionID, string(encoded))
+	_ = c.callbacks.do(func() { listener.OnUpdate(sessionID, string(encoded)) })
 }
 
 func (c *Client) emitError(message string) {
 	listener := c.getListener()
 	if listener != nil {
-		listener.OnError(message)
+		_ = c.callbacks.do(func() { listener.OnError(message) })
 	}
 }
 
@@ -723,6 +865,7 @@ func (c *Client) decryptPayload(sessionID, dataB64 string) ([]byte, error) {
 
 	// AES-GCM format has version byte 0 and 12-byte nonce.
 	if encrypted[0] == 0 && len(encrypted) >= 1+12+16 {
+		var aesErr error
 		key := dataKey
 		if len(key) != 32 {
 			if len(master) == 32 {
@@ -732,12 +875,26 @@ func (c *Client) decryptPayload(sessionID, dataB64 string) ([]byte, error) {
 			}
 		}
 		var result json.RawMessage
-		if err := crypto.DecryptWithDataKey(encrypted, key, &result); err != nil {
-			return nil, err
+		if err := crypto.DecryptWithDataKey(encrypted, key, &result); err == nil {
+			return []byte(result), nil
+		} else {
+			aesErr = err
 		}
-		return []byte(result), nil
+
+		// Fall back to legacy decoding if the AES decode fails. This avoids
+		// misclassifying legacy SecretBox payloads whose nonce happens to start
+		// with a 0 byte.
+		decrypted, legacyErr := decryptLegacyPayload(encrypted, dataKey, master)
+		if legacyErr == nil {
+			return decrypted, nil
+		}
+		return nil, aesErr
 	}
 
+	return decryptLegacyPayload(encrypted, dataKey, master)
+}
+
+func decryptLegacyPayload(encrypted, dataKey, master []byte) ([]byte, error) {
 	// Legacy SecretBox format: [nonce(24)][ciphertext]
 	var secretKey [32]byte
 	switch {

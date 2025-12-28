@@ -11,6 +11,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -157,11 +158,14 @@ func (m *logManager) getLogsSnapshot() []byte {
 var sdkLogs = newLogManager()
 var stderrCaptureOnce sync.Once
 var stderrCaptureEnabled bool
+var stderrRedirected bool
 
 func init() {
 	debug.SetTraceback("all")
 	debug.SetPanicOnFault(true)
-	if runtime.GOOS != "ios" {
+	if runtime.GOOS == "ios" {
+		redirectStderrToLogFile()
+	} else {
 		startStderrCapture()
 	}
 }
@@ -172,6 +176,10 @@ func logLine(line string) {
 		return
 	}
 	raw := line + "\n"
+	if stderrRedirected {
+		sdkLogs.appendLogLine(formatLine(raw))
+		return
+	}
 	fmt.Fprint(os.Stderr, raw)
 	if !stderrCaptureEnabled {
 		sdkLogs.appendLogLine(formatLine(raw))
@@ -181,6 +189,10 @@ func logLine(line string) {
 func logPanic(context string, value interface{}) {
 	stack := string(debug.Stack())
 	line := fmt.Sprintf("GO PANIC: %s: %v\n%s\n", context, value, stack)
+	if stderrRedirected {
+		sdkLogs.appendPanic(line)
+		return
+	}
 	fmt.Fprint(os.Stderr, line)
 	sdkLogs.appendPanic(line)
 }
@@ -208,6 +220,32 @@ func startStderrCapture() {
 				}
 			}
 		}()
+	})
+}
+
+func redirectStderrToLogFile() {
+	stderrCaptureOnce.Do(func() {
+		if err := sdkLogs.setDir(defaultLogDir()); err != nil {
+			return
+		}
+		sdkLogs.mu.Lock()
+		dir := sdkLogs.dir
+		base := sdkLogs.baseName
+		sdkLogs.mu.Unlock()
+		if dir == "" {
+			return
+		}
+		path := filepath.Join(dir, base)
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return
+		}
+		if err := syscall.Dup2(int(file.Fd()), int(os.Stderr.Fd())); err != nil {
+			_ = file.Close()
+			return
+		}
+		os.Stderr = file
+		stderrRedirected = true
 	})
 }
 

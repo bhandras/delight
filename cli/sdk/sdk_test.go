@@ -6,26 +6,61 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/bhandras/delight/cli/internal/crypto"
 	"github.com/stretchr/testify/require"
 )
 
 type captureListener struct {
+	mu sync.Mutex
+
 	lastSession string
 	lastUpdate  string
 	lastError   string
+
+	updateCh chan struct{}
+	errorCh  chan struct{}
+}
+
+func newCaptureListener() *captureListener {
+	return &captureListener{
+		updateCh: make(chan struct{}, 16),
+		errorCh:  make(chan struct{}, 16),
+	}
 }
 
 func (c *captureListener) OnConnected()                 {}
 func (c *captureListener) OnDisconnected(reason string) {}
 func (c *captureListener) OnUpdate(sessionID string, updateJSON string) {
+	c.mu.Lock()
 	c.lastSession = sessionID
 	c.lastUpdate = updateJSON
+	c.mu.Unlock()
+	select {
+	case c.updateCh <- struct{}{}:
+	default:
+	}
 }
 func (c *captureListener) OnError(message string) {
+	c.mu.Lock()
 	c.lastError = message
+	c.mu.Unlock()
+	select {
+	case c.errorCh <- struct{}{}:
+	default:
+	}
+}
+
+func (c *captureListener) waitUpdate(t *testing.T) {
+	t.Helper()
+	select {
+	case <-c.updateCh:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout waiting for update")
+	}
 }
 
 func TestDecryptLegacyString(t *testing.T) {
@@ -209,7 +244,7 @@ func TestGetSessionMessagesDecryptsContent(t *testing.T) {
 
 func TestHandleUpdateDecryptsNewMessage(t *testing.T) {
 	client := NewClient("http://example.com")
-	listener := &captureListener{}
+	listener := newCaptureListener()
 	client.SetListener(listener)
 
 	sessionID := "s1"
@@ -237,6 +272,9 @@ func TestHandleUpdateDecryptsNewMessage(t *testing.T) {
 	}
 	client.handleUpdate(update)
 
+	listener.waitUpdate(t)
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
 	require.Equal(t, sessionID, listener.lastSession)
 	require.NotEmpty(t, listener.lastUpdate)
 	require.Contains(t, listener.lastUpdate, "\"text\":\"hi\"")
@@ -431,7 +469,7 @@ func TestHandleUpdateNewSessionStoresDataKey(t *testing.T) {
 
 func TestHandleUpdateUpdateSessionEmits(t *testing.T) {
 	client := NewClient("http://example.com")
-	listener := &captureListener{}
+	listener := newCaptureListener()
 	client.SetListener(listener)
 	update := map[string]interface{}{
 		"body": map[string]interface{}{
@@ -440,6 +478,9 @@ func TestHandleUpdateUpdateSessionEmits(t *testing.T) {
 		},
 	}
 	client.handleUpdate(update)
+	listener.waitUpdate(t)
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
 	require.Equal(t, "s1", listener.lastSession)
 	require.NotEmpty(t, listener.lastUpdate)
 }
@@ -502,17 +543,23 @@ func TestEncryptPayloadMissingKeys(t *testing.T) {
 
 func TestHandleEphemeralEmitsUpdate(t *testing.T) {
 	client := NewClient("http://example.com")
-	listener := &captureListener{}
+	listener := newCaptureListener()
 	client.SetListener(listener)
 	client.handleEphemeral(map[string]interface{}{"t": "ping"})
+	listener.waitUpdate(t)
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
 	require.NotEmpty(t, listener.lastUpdate)
 }
 
 func TestHandleUpdateNilBodyEmitsUpdate(t *testing.T) {
 	client := NewClient("http://example.com")
-	listener := &captureListener{}
+	listener := newCaptureListener()
 	client.SetListener(listener)
 	client.handleUpdate(map[string]interface{}{})
+	listener.waitUpdate(t)
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
 	require.NotEmpty(t, listener.lastUpdate)
 	require.Equal(t, "", listener.lastSession)
 }
