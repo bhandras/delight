@@ -1,27 +1,42 @@
 // !$*UTF8*$!
 {
 	archiveVersion = 1;
-	classes = {};
+	classes = {
+	};
 	objectVersion = 56;
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A1B2C3D4E5F60718293A4B90 /* DelightHarnessApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6B /* DelightHarnessApp.swift */; };
 		A1B2C3D4E5F60718293A4B71 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6C /* ContentView.swift */; };
 		A1B2C3D4E5F60718293A4B72 /* SDKBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6D /* SDKBridge.swift */; };
-		A1B2C3D4E5F60718293A4B82 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B81 /* QRScannerView.swift */; };
 		A1B2C3D4E5F60718293A4B73 /* DelightSDK.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6E /* DelightSDK.xcframework */; };
-		A1B2C3D4E5F60718293A4B74 /* DelightSDK.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6E /* DelightSDK.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy); }; };
+		A1B2C3D4E5F60718293A4B74 /* DelightSDK.xcframework in CopyFiles */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6E /* DelightSDK.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A1B2C3D4E5F60718293A4B82 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B81 /* QRScannerView.swift */; };
+		A1B2C3D4E5F60718293A4B90 /* DelightHarnessApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6B /* DelightHarnessApp.swift */; };
+		A1B2C3D4E5F60718293A4B92 /* CrashLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B91 /* CrashLogger.swift */; };
+		B1C2D3E4F5A60718293B4C10 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A60718293B4C0F /* KeychainStore.swift */; };
+		C1D2E3F4A5B60718293C4D63 /* SDKBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1D2E3F4A5B60718293C4D62 /* SDKBridgeTests.swift */; };
+		C1D2E3F4A5B60718293C4D6B /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C1D2E3F4A5B60718293C4D6A /* XCTest.framework */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		C1D2E3F4A5B60718293C4D6D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1B2C3D4E5F60718293A4B5C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1B2C3D4E5F60718293A4B5D;
+			remoteInfo = DelightHarness;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXCopyFilesBuildPhase section */
-		A1B2C3D4E5F60718293A4B63 /* Embed Frameworks */ = {
+		A1B2C3D4E5F60718293A4B63 /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
-				A1B2C3D4E5F60718293A4B74 /* DelightSDK.xcframework in Embed Frameworks */,
+				A1B2C3D4E5F60718293A4B74 /* DelightSDK.xcframework in CopyFiles */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -32,20 +47,34 @@
 		A1B2C3D4E5F60718293A4B6B /* DelightHarnessApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DelightHarnessApp.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B6C /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B6D /* SDKBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SDKBridge.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60718293A4B81 /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B6E /* DelightSDK.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = DelightSDK.xcframework; path = ../cli/build/DelightSDK.xcframework; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B6F /* DelightHarness.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = DelightHarness.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1B2C3D4E5F60718293A4B81 /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B91 /* CrashLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashLogger.swift; sourceTree = "<group>"; };
+		B1C2D3E4F5A60718293B4C0F /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		C1D2E3F4A5B60718293C4D5F /* DelightHarnessTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = DelightHarnessTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C1D2E3F4A5B60718293C4D61 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		C1D2E3F4A5B60718293C4D62 /* SDKBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SDKBridgeTests.swift; sourceTree = "<group>"; };
+		C1D2E3F4A5B60718293C4D6A /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		A1B2C3D4E5F60718293A4B61 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				A1B2C3D4E5F60718293A4B73 /* DelightSDK.xcframework in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
+	A1B2C3D4E5F60718293A4B61 /* Frameworks */ = {
+		isa = PBXFrameworksBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+			A1B2C3D4E5F60718293A4B73 /* DelightSDK.xcframework in Frameworks */,
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
+	C1D2E3F4A5B60718293C4D65 /* Frameworks */ = {
+		isa = PBXFrameworksBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+			C1D2E3F4A5B60718293C4D6B /* XCTest.framework in Frameworks */,
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -54,8 +83,19 @@
 			children = (
 				A1B2C3D4E5F60718293A4B70 /* DelightHarness */,
 				A1B2C3D4E5F60718293A4B6E /* DelightSDK.xcframework */,
+				C1D2E3F4A5B60718293C4D60 /* DelightHarnessTests */,
+				C1D2E3F4A5B60718293C4D6A /* XCTest.framework */,
 				A1B2C3D4E5F60718293A4B5F /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		A1B2C3D4E5F60718293A4B5F /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4E5F60718293A4B6F /* DelightHarness.app */,
+				C1D2E3F4A5B60718293C4D5F /* DelightHarnessTests.xctest */,
+			);
+			name = Products;
 			sourceTree = "<group>";
 		};
 		A1B2C3D4E5F60718293A4B70 /* DelightHarness */ = {
@@ -64,42 +104,63 @@
 				A1B2C3D4E5F60718293A4B6B /* DelightHarnessApp.swift */,
 				A1B2C3D4E5F60718293A4B6C /* ContentView.swift */,
 				A1B2C3D4E5F60718293A4B6D /* SDKBridge.swift */,
+				A1B2C3D4E5F60718293A4B91 /* CrashLogger.swift */,
+				B1C2D3E4F5A60718293B4C0F /* KeychainStore.swift */,
 				A1B2C3D4E5F60718293A4B81 /* QRScannerView.swift */,
 				A1B2C3D4E5F60718293A4B6A /* Info.plist */,
 			);
 			path = DelightHarness;
 			sourceTree = "<group>";
 		};
-		A1B2C3D4E5F60718293A4B5F /* Products */ = {
+		C1D2E3F4A5B60718293C4D60 /* DelightHarnessTests */ = {
 			isa = PBXGroup;
 			children = (
-				A1B2C3D4E5F60718293A4B6F /* DelightHarness.app */,
+				C1D2E3F4A5B60718293C4D62 /* SDKBridgeTests.swift */,
+				C1D2E3F4A5B60718293C4D61 /* Info.plist */,
 			);
-			name = Products;
+			path = DelightHarnessTests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		A1B2C3D4E5F60718293A4B5D /* DelightHarness */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = A1B2C3D4E5F60718293A4B65 /* Build configuration list for PBXNativeTarget "DelightHarness" */;
-			buildPhases = (
-				A1B2C3D4E5F60718293A4B80 /* Build SDK */,
-				A1B2C3D4E5F60718293A4B60 /* Sources */,
-				A1B2C3D4E5F60718293A4B61 /* Frameworks */,
-				A1B2C3D4E5F60718293A4B62 /* Resources */,
-				A1B2C3D4E5F60718293A4B63 /* Embed Frameworks */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = DelightHarness;
-			productName = DelightHarness;
-			productReference = A1B2C3D4E5F60718293A4B6F /* DelightHarness.app */;
-			productType = "com.apple.product-type.application";
-		};
+	A1B2C3D4E5F60718293A4B5D /* DelightHarness */ = {
+		isa = PBXNativeTarget;
+		buildConfigurationList = A1B2C3D4E5F60718293A4B65 /* Build configuration list for PBXNativeTarget "DelightHarness" */;
+		buildPhases = (
+			A1B2C3D4E5F60718293A4B80 /* ShellScript */,
+			A1B2C3D4E5F60718293A4B60 /* Sources */,
+			A1B2C3D4E5F60718293A4B61 /* Frameworks */,
+			A1B2C3D4E5F60718293A4B62 /* Resources */,
+			A1B2C3D4E5F60718293A4B63 /* CopyFiles */,
+		);
+		buildRules = (
+		);
+		dependencies = (
+		);
+		name = DelightHarness;
+		productName = DelightHarness;
+		productReference = A1B2C3D4E5F60718293A4B6F /* DelightHarness.app */;
+		productType = "com.apple.product-type.application";
+	};
+	C1D2E3F4A5B60718293C4D5E /* DelightHarnessTests */ = {
+		isa = PBXNativeTarget;
+		buildConfigurationList = C1D2E3F4A5B60718293C4D67 /* Build configuration list for PBXNativeTarget "DelightHarnessTests" */;
+		buildPhases = (
+			C1D2E3F4A5B60718293C4D64 /* Sources */,
+			C1D2E3F4A5B60718293C4D65 /* Frameworks */,
+			C1D2E3F4A5B60718293C4D66 /* Resources */,
+		);
+		buildRules = (
+		);
+		dependencies = (
+			C1D2E3F4A5B60718293C4D6C /* PBXTargetDependency */,
+		);
+		name = DelightHarnessTests;
+		productName = DelightHarnessTests;
+		productReference = C1D2E3F4A5B60718293C4D5F /* DelightHarnessTests.xctest */;
+		productType = "com.apple.product-type.bundle.unit-test";
+	};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -110,6 +171,9 @@
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
 					A1B2C3D4E5F60718293A4B5D = {
+						CreatedOnToolsVersion = 15.0;
+					};
+					C1D2E3F4A5B60718293C4D5E = {
 						CreatedOnToolsVersion = 15.0;
 					};
 				};
@@ -128,12 +192,30 @@
 			projectRoot = "";
 			targets = (
 				A1B2C3D4E5F60718293A4B5D /* DelightHarness */,
+				C1D2E3F4A5B60718293C4D5E /* DelightHarnessTests */,
 			);
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+	A1B2C3D4E5F60718293A4B62 /* Resources */ = {
+		isa = PBXResourcesBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
+	C1D2E3F4A5B60718293C4D66 /* Resources */ = {
+		isa = PBXResourcesBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXShellScriptBuildPhase section */
-		A1B2C3D4E5F60718293A4B80 /* Build SDK */ = {
+		A1B2C3D4E5F60718293A4B80 /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -149,29 +231,37 @@
 		};
 /* End PBXShellScriptBuildPhase section */
 
-/* Begin PBXResourcesBuildPhase section */
-		A1B2C3D4E5F60718293A4B62 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXResourcesBuildPhase section */
-
 /* Begin PBXSourcesBuildPhase section */
-		A1B2C3D4E5F60718293A4B60 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				A1B2C3D4E5F60718293A4B90 /* DelightHarnessApp.swift in Sources */,
-				A1B2C3D4E5F60718293A4B71 /* ContentView.swift in Sources */,
-				A1B2C3D4E5F60718293A4B72 /* SDKBridge.swift in Sources */,
-				A1B2C3D4E5F60718293A4B82 /* QRScannerView.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
+	A1B2C3D4E5F60718293A4B60 /* Sources */ = {
+		isa = PBXSourcesBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+			A1B2C3D4E5F60718293A4B90 /* DelightHarnessApp.swift in Sources */,
+			A1B2C3D4E5F60718293A4B71 /* ContentView.swift in Sources */,
+			A1B2C3D4E5F60718293A4B72 /* SDKBridge.swift in Sources */,
+			A1B2C3D4E5F60718293A4B92 /* CrashLogger.swift in Sources */,
+			B1C2D3E4F5A60718293B4C10 /* KeychainStore.swift in Sources */,
+			A1B2C3D4E5F60718293A4B82 /* QRScannerView.swift in Sources */,
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
+	C1D2E3F4A5B60718293C4D64 /* Sources */ = {
+		isa = PBXSourcesBuildPhase;
+		buildActionMask = 2147483647;
+		files = (
+			C1D2E3F4A5B60718293C4D63 /* SDKBridgeTests.swift in Sources */,
+		);
+		runOnlyForDeploymentPostprocessing = 0;
+	};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		C1D2E3F4A5B60718293C4D6C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1B2C3D4E5F60718293A4B5D /* DelightHarness */;
+			targetProxy = C1D2E3F4A5B60718293C4D6D /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A1B2C3D4E5F60718293A4B66 /* Debug */ = {
@@ -296,6 +386,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = "";
 				INFOPLIST_FILE = DelightHarness/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -314,6 +405,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = "";
 				INFOPLIST_FILE = DelightHarness/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -322,6 +414,44 @@
 				PRODUCT_NAME = DelightHarness;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		C1D2E3F4A5B60718293C4D68 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				INFOPLIST_FILE = DelightHarnessTests/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.bhandras.delight.harness.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DelightHarness.app/DelightHarness";
+			};
+			name = Debug;
+		};
+		C1D2E3F4A5B60718293C4D69 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				INFOPLIST_FILE = DelightHarnessTests/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.bhandras.delight.harness.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DelightHarness.app/DelightHarness";
 			};
 			name = Release;
 		};
@@ -342,6 +472,15 @@
 			buildConfigurations = (
 				A1B2C3D4E5F60718293A4B68 /* Debug */,
 				A1B2C3D4E5F60718293A4B69 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C1D2E3F4A5B60718293C4D67 /* Build configuration list for PBXNativeTarget "DelightHarnessTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C1D2E3F4A5B60718293C4D68 /* Debug */,
+				C1D2E3F4A5B60718293C4D69 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
