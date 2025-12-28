@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import UIKit
 
 enum CrashLogger {
     static let logURL: URL = {
@@ -8,8 +9,31 @@ enum CrashLogger {
     }()
 
     private static var retainedHandle: FileHandle?
+    private static let runningFlagKey = "delight.harness.running"
+    private static let crashFlagKey = "delight.harness.crashed"
 
     static func setup() {
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: runningFlagKey) {
+            defaults.set(true, forKey: crashFlagKey)
+        }
+        defaults.set(true, forKey: runningFlagKey)
+        defaults.synchronize()
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            clearRunningFlag()
+        }
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            clearRunningFlag()
+        }
+
         FileManager.default.createFile(atPath: logURL.path, contents: nil, attributes: nil)
         guard let handle = try? FileHandle(forWritingTo: logURL) else {
             return
@@ -18,6 +42,8 @@ enum CrashLogger {
         retainedHandle = handle
         dup2(handle.fileDescriptor, STDERR_FILENO)
         dup2(handle.fileDescriptor, STDOUT_FILENO)
+        setvbuf(stderr, nil, _IONBF, 0)
+        setvbuf(stdout, nil, _IONBF, 0)
         NSSetUncaughtExceptionHandler(CrashLoggerHandleException)
     }
 
@@ -31,6 +57,20 @@ enum CrashLogger {
         message.withCString { ptr in
             _ = Darwin.write(STDERR_FILENO, ptr, strlen(ptr))
         }
+    }
+
+    static func consumeCrashFlag() -> Bool {
+        let defaults = UserDefaults.standard
+        let crashed = defaults.bool(forKey: crashFlagKey)
+        if crashed {
+            defaults.set(false, forKey: crashFlagKey)
+        }
+        return crashed
+    }
+
+    private static func clearRunningFlag() {
+        let defaults = UserDefaults.standard
+        defaults.set(false, forKey: runningFlagKey)
     }
 }
 

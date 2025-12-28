@@ -227,6 +227,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private static let settingsKeyPrefix = "delight.harness."
     private var selectedMetadata: SessionMetadata?
     private var logLines: [String] = []
+    private var needsSessionRefresh: Bool = false
 
     override init() {
         let defaults = UserDefaults.standard
@@ -252,10 +253,24 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func startup() {
+        if CrashLogger.consumeCrashFlag() {
+            resetAfterCrash()
+        }
         if !masterKey.isEmpty && (!token.isEmpty || (!publicKey.isEmpty && !privateKey.isEmpty)) {
             connect()
             listSessions()
         }
+    }
+
+    func resetAfterCrash() {
+        sessionID = ""
+        selectedMetadata = nil
+        messages = []
+        sessions = []
+        machines = []
+        logLines = []
+        needsSessionRefresh = true
+        log("Crash detected; cleared cached session state")
     }
 
     func generateKeys() {
@@ -365,8 +380,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             try client.setMasterKeyBase64(masterKey)
             try client.connect()
             status = "connected"
-            if sessions.isEmpty {
+            if sessions.isEmpty || needsSessionRefresh {
                 listSessions()
+                needsSessionRefresh = false
             }
         } catch {
             log("Connect error: \(error)")
@@ -410,6 +426,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     func selectSession(_ id: String) {
         sessionID = id
         selectedMetadata = sessions.first(where: { $0.id == id })?.metadata
+        messages = []
         fetchMessages()
     }
 
@@ -460,6 +477,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     @objc func onConnected() {
         updateStatus("connected")
+        if needsSessionRefresh {
+            listSessions()
+            needsSessionRefresh = false
+        }
     }
 
     @objc func onDisconnected(_ reason: String?) {

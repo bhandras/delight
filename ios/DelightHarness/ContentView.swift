@@ -372,9 +372,11 @@ private struct MessageBubble: View {
                 }
             }
             .padding(message.role == .user ? 12 : 0)
-            .padding(.leading, message.role == .user ? 0 : 2)
+            .padding(.leading, message.role == .user ? 0 : 4)
             .background(message.role == .user ? Theme.userBubble : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .clipIf(message.role == .user) {
+                $0.clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
             if message.role != .user { Spacer(minLength: 48) }
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
@@ -593,16 +595,38 @@ private struct ActivityChip: View {
     let text: String
 
     var body: some View {
+        let label = stripTrailingEllipsis(text)
         HStack {
-            AnimatedDots(color: Theme.accent)
-            Text(text)
+            Text(label)
                 .font(Theme.caption)
                 .foregroundColor(Theme.accent)
+            AnimatedDots(color: Theme.accent)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(Theme.toolChipBackground)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+private func stripTrailingEllipsis(_ input: String) -> String {
+    var value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+    if value.hasSuffix("...") {
+        value = String(value.dropLast(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+    } else if value.hasSuffix("…") {
+        value = String(value.dropLast(1)).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    return value
+}
+
+private extension View {
+    @ViewBuilder
+    func clipIf(_ condition: Bool, transform: (Self) -> some View) -> some View {
+        if condition {
+            transform(self)
+        } else {
+            self
+        }
     }
 }
 
@@ -1207,7 +1231,7 @@ private func statusInfo(for session: SessionSummary) -> SessionStatusInfo {
 private func vibingMessage(for sessionID: String) -> String {
     let messages = vibingMessages
     let index = Int(sessionID.hashValue.magnitude % UInt(messages.count))
-    return messages[index].lowercased() + "..."
+    return messages[index].lowercased()
 }
 
 private func sessionDisplayPath(for session: SessionSummary) -> String? {
