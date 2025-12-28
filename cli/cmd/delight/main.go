@@ -37,11 +37,22 @@ type AuthResponse struct {
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatalf("Error: %v", err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }
 
 func run() error {
+	workDir, err := os.Getwd()
+	if err != nil {
+		workDir = "."
+	}
+	logClose, err := setupLogging(workDir)
+	if err != nil {
+		return err
+	}
+	defer logClose()
+
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
@@ -51,10 +62,6 @@ func run() error {
 	args, err := parseFlags(cfg, os.Args[1:])
 	if err != nil {
 		return err
-	}
-
-	if cfg.Debug {
-		log.Printf("Config: ServerURL=%s, DelightHome=%s", cfg.ServerURL, cfg.DelightHome)
 	}
 
 	// Check for subcommands
@@ -108,16 +115,13 @@ func run() error {
 		log.Printf("Access token: %s...", token[:20])
 	}
 
+	if cfg.Debug {
+		log.Printf("Config: ServerURL=%s, DelightHome=%s", cfg.ServerURL, cfg.DelightHome)
+	}
+
 	log.Println("Authentication successful!")
 	log.Printf("Delight home: %s", cfg.DelightHome)
 	log.Printf("Server: %s", cfg.ServerURL)
-
-	// TODO: Parse command-line args for subcommands
-	// For MVP, just start a session in current directory
-	workDir, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get working directory: %w", err)
-	}
 
 	log.Printf("Starting Delight session in: %s", workDir)
 	log.Printf("Agent: %s", cfg.Agent)
@@ -141,6 +145,18 @@ func run() error {
 	}
 
 	return nil
+}
+
+func setupLogging(workDir string) (func(), error) {
+	logPath := filepath.Join(workDir, "delight.log")
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.SetOutput(io.Discard)
+		return func() {}, fmt.Errorf("failed to open log file %s: %w", logPath, err)
+	}
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	log.SetOutput(file)
+	return func() { _ = file.Close() }, nil
 }
 
 func parseFlags(cfg *config.Config, args []string) ([]string, error) {

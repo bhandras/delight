@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"strings"
 	"time"
 
 	"github.com/bhandras/delight/cli/internal/acp"
@@ -277,19 +278,8 @@ func (m *Manager) Start(workDir string) error {
 		return nil
 	}
 
-	if m.cfg.ACPEnable && m.agent != "codex" {
-		if err := m.ensureACPSessionID(); err != nil {
-			return fmt.Errorf("failed to load ACP session id: %w", err)
-		}
-		m.acpClient = acp.NewClient(m.cfg.ACPURL, m.acpAgent, m.debug)
-		m.modeMu.Lock()
-		m.mode = ModeRemote
-		m.modeMu.Unlock()
-		m.state.ControlledByUser = false
-		m.updateState()
-		log.Printf("ACP mode enabled: %s (%s)", m.cfg.ACPURL, m.acpAgent)
-		go m.keepAliveLoop()
-		return nil
+	if m.cfg.ACPEnable && m.agent != "codex" && m.debug {
+		log.Printf("ACP mode disabled (Claude TUI always on)")
 	}
 
 	if m.agent == "codex" {
@@ -752,15 +742,6 @@ func (m *Manager) handleMessage(data map[string]interface{}) {
 		return
 	}
 
-	if m.acpClient != nil {
-		text := msg.Content.Text
-		if text == "" {
-			return
-		}
-		go m.handleACPMessage(text)
-		return
-	}
-
 	if m.agent == "codex" {
 		if msg.Content.Text == "" {
 			return
@@ -775,12 +756,6 @@ func (m *Manager) handleMessage(data map[string]interface{}) {
 		return
 	}
 
-	// Handle the message based on current mode
-	m.modeMu.RLock()
-	currentMode := m.mode
-	m.modeMu.RUnlock()
-
-	// Get the message content from the nested text field
 	messageContent := msg.Content.Text
 	if messageContent == "" {
 		if m.debug {
@@ -788,26 +763,17 @@ func (m *Manager) handleMessage(data map[string]interface{}) {
 		}
 		return
 	}
+	messageContent = strings.TrimRight(messageContent, "\r\n")
 
-	if currentMode == ModeLocal {
-		// We're in local mode (terminal) - need to switch to remote mode
-		log.Println("Received message while in local mode - switching to remote mode")
+	if m.claudeProcess == nil {
+		if m.debug {
+			log.Printf("Claude process not running; ignoring message")
+		}
+		return
+	}
 
-		// Switch to remote mode
-		if err := m.SwitchToRemote(); err != nil {
-			log.Printf("Failed to switch to remote mode: %v", err)
-			return
-		}
-
-		// Now send the message to the remote bridge
-		if err := m.SendUserMessage(messageContent, msg.Meta); err != nil {
-			log.Printf("Failed to send message to remote bridge: %v", err)
-		}
-	} else {
-		// Already in remote mode - forward to bridge
-		if err := m.SendUserMessage(messageContent, msg.Meta); err != nil {
-			log.Printf("Failed to send message to remote bridge: %v", err)
-		}
+	if err := m.claudeProcess.SendLine(messageContent); err != nil && m.debug {
+		log.Printf("Failed to send input to Claude TUI: %v", err)
 	}
 }
 
@@ -1826,6 +1792,8 @@ func (m *Manager) handleRemoteMessage(msg *claude.RemoteMessage) error {
 		m.claudeSessionID = msg.SessionID
 	}
 
+	m.renderRemoteMessage(msg)
+
 	// Forward to server
 	if m.wsClient != nil && m.wsClient.IsConnected() {
 		payload := m.buildRawRecordFromRemote(msg)
@@ -1885,6 +1853,141 @@ func (m *Manager) handleRemoteMessage(msg *claude.RemoteMessage) error {
 	}
 
 	return nil
+}
+
+func (m *Manager) renderRemoteMessage(msg *claude.RemoteMessage) {
+	if m.GetMode() != ModeRemote {
+		return
+	}
+
+	switch msg.Type {
+	case "raw":
+		if len(msg.Message) == 0 {
+			return
+		}
+		var record map[string]interface{}
+		if err := json.Unmarshal(msg.Message, &record); err != nil {
+			return
+		}
+		printRawRecord(record)
+	case "error":
+		if msg.Error != "" {
+			fmt.Fprintf(os.Stdout, "claude error: %s\n", msg.Error)
+		}
+	}
+}
+
+func printRawRecord(record map[string]interface{}) {
+	role, _ := record["role"].(string)
+	if role != "agent" {
+		return
+	}
+	content, _ := record["content"].(map[string]interface{})
+	if content == nil {
+		return
+	}
+	contentType, _ := content["type"].(string)
+	if contentType != "output" {
+		return
+	}
+	data, _ := content["data"].(map[string]interface{})
+	if data == nil {
+		return
+	}
+	message, _ := data["message"].(map[string]interface{})
+	if message == nil {
+		return
+	}
+	msgRole, _ := message["role"].(string)
+	blocks := extractRemoteContentBlocks(message["content"])
+	if msgRole == "" || len(blocks) == 0 {
+		return
+	}
+
+	prefix := "you> "
+	if msgRole == "assistant" {
+		prefix = "claude> "
+	}
+
+	for _, block := range blocks {
+		blockType, _ := block["type"].(string)
+		switch blockType {
+		case "text":
+			if text, _ := block["text"].(string); text != "" {
+				fmt.Fprintln(os.Stdout, prefix+text)
+			}
+		case "tool_use":
+			name, _ := block["name"].(string)
+			id, _ := block["id"].(string)
+			summary := formatToolInput(block["input"])
+			line := prefix + "[tool] " + name
+			if id != "" {
+				line += " " + id
+			}
+			if summary != "" {
+				line += " - " + summary
+			}
+			fmt.Fprintln(os.Stdout, line)
+		case "tool_result":
+			summary := formatToolResult(block["content"])
+			line := prefix + "[tool_result]"
+			if summary != "" {
+				line += " " + summary
+			}
+			fmt.Fprintln(os.Stdout, line)
+		}
+	}
+}
+
+func formatToolInput(input interface{}) string {
+	if input == nil {
+		return ""
+	}
+	if inputMap, ok := input.(map[string]interface{}); ok {
+		if cmd, _ := inputMap["command"].(string); cmd != "" {
+			return cmd
+		}
+		if query, _ := inputMap["query"].(string); query != "" {
+			return query
+		}
+		if url, _ := inputMap["url"].(string); url != "" {
+			return url
+		}
+	}
+	blob, err := json.Marshal(input)
+	if err != nil {
+		return ""
+	}
+	s := string(blob)
+	if len(s) > 160 {
+		return s[:160] + "..."
+	}
+	return s
+}
+
+func formatToolResult(content interface{}) string {
+	switch v := content.(type) {
+	case string:
+		if len(v) > 160 {
+			return v[:160] + "..."
+		}
+		return v
+	case []interface{}:
+		if len(v) == 0 {
+			return ""
+		}
+		if text, ok := v[0].(map[string]interface{}); ok {
+			if t, _ := text["type"].(string); t == "text" {
+				if val, _ := text["text"].(string); val != "" {
+					if len(val) > 160 {
+						return val[:160] + "..."
+					}
+					return val
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // buildRawRecordFromRemote converts bridge RemoteMessage into the raw record
@@ -2667,6 +2770,9 @@ func (m *Manager) registerRPCHandlers() {
 
 	// Abort handler - abort current remote query
 	m.rpcManager.RegisterHandler(prefix+"abort", func(params json.RawMessage) (json.RawMessage, error) {
+		if m.agent == "claude" {
+			return nil, fmt.Errorf("remote abort not supported in Claude TUI mode")
+		}
 		if err := m.AbortRemote(); err != nil {
 			return nil, err
 		}
@@ -2675,6 +2781,9 @@ func (m *Manager) registerRPCHandlers() {
 
 	// Switch handler - switch between local/remote modes
 	m.rpcManager.RegisterHandler(prefix+"switch", func(params json.RawMessage) (json.RawMessage, error) {
+		if m.agent == "claude" {
+			return nil, fmt.Errorf("mode switching disabled in Claude TUI mode")
+		}
 		var req struct {
 			Mode string `json:"mode"`
 		}

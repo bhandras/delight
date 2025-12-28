@@ -2,12 +2,11 @@ package claude
 
 import (
 	"bufio"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -46,27 +45,23 @@ func NewScanner(projectPath, sessionID string, debug bool) *Scanner {
 	}
 }
 
-// getProjectHash returns the hash Claude uses for project directories
-// Claude hashes the project path to create a directory name
-func getProjectHash(projectPath string) string {
-	hash := sha256.Sum256([]byte(projectPath))
-	// Claude uses first 16 characters of hex-encoded hash
-	return hex.EncodeToString(hash[:])[:16]
+var projectPathSanitizer = regexp.MustCompile(`[\\\/\.:]`)
+
+func getProjectDir(projectPath string) string {
+	claudeConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if claudeConfigDir == "" {
+		homeDir, _ := os.UserHomeDir()
+		claudeConfigDir = filepath.Join(homeDir, ".claude")
+	}
+	projectID := projectPathSanitizer.ReplaceAllString(filepath.Clean(projectPath), "-")
+	return filepath.Join(claudeConfigDir, "projects", projectID)
 }
 
 // SessionFilePath returns the path to Claude's session file
 // Format: ~/.claude/projects/<project-hash>/<session-id>.jsonl
 func (s *Scanner) SessionFilePath() string {
-	projectHash := getProjectHash(s.projectPath)
-
-	homeDir, _ := os.UserHomeDir()
-	return filepath.Join(
-		homeDir,
-		".claude",
-		"projects",
-		projectHash,
-		s.sessionID+".jsonl",
-	)
+	projectDir := getProjectDir(s.projectPath)
+	return filepath.Join(projectDir, s.sessionID+".jsonl")
 }
 
 // Start begins watching the session file for new messages
@@ -207,16 +202,8 @@ func (s *Scanner) scanFile(filePath string) {
 // VerifySessionFile checks if a session file exists for the given session ID
 // This is used for dual verification of session detection
 func VerifySessionFile(projectPath, sessionID string) bool {
-	projectHash := getProjectHash(projectPath)
-
-	homeDir, _ := os.UserHomeDir()
-	filePath := filepath.Join(
-		homeDir,
-		".claude",
-		"projects",
-		projectHash,
-		sessionID+".jsonl",
-	)
+	projectDir := getProjectDir(projectPath)
+	filePath := filepath.Join(projectDir, sessionID+".jsonl")
 
 	_, err := os.Stat(filePath)
 	return err == nil

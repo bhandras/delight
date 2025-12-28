@@ -4,14 +4,19 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 // LauncherMessage represents a message from the launcher script via fd 3
@@ -34,6 +39,7 @@ type Process struct {
 	// fd 3 communication
 	fd3Reader *os.File
 	fd3Writer *os.File
+	ptyFile   *os.File
 
 	// Session tracking
 	claudeSessionID string
@@ -75,12 +81,9 @@ func NewProcess(workDir string, debug bool) (*Process, error) {
 	// The launcher script needs to find @anthropic-ai/claude-code
 	cmd.Env = append(os.Environ(), buildNodePath()...)
 
-	// stdio: [inherit, inherit, inherit, pipe]
-	// stdin, stdout, stderr are inherited for Claude's interactive TUI
+	// stdio: [pty, pty, pty, pipe]
+	// stdin, stdout, stderr are attached to a PTY for Claude's interactive TUI
 	// fd 3 (ExtraFiles[0]) is our pipe for receiving events
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 	cmd.ExtraFiles = []*os.File{fd3Writer}
 
 	return &Process{
@@ -177,9 +180,20 @@ func (p *Process) Start() error {
 		log.Println("Starting Claude Code process (interactive mode with fd3 tracking)...")
 	}
 
-	if err := p.cmd.Start(); err != nil {
+	ptyFile, err := pty.Start(p.cmd)
+	if err != nil {
 		return fmt.Errorf("failed to start claude: %w", err)
 	}
+	p.ptyFile = ptyFile
+	_ = pty.InheritSize(os.Stdin, ptyFile)
+
+	go func() {
+		_, _ = io.Copy(os.Stdout, ptyFile)
+	}()
+	go func() {
+		_, _ = io.Copy(ptyFile, os.Stdin)
+	}()
+	go p.watchWindowSize()
 
 	// Close write end in parent process (child has it via ExtraFiles)
 	p.fd3Writer.Close()
@@ -194,9 +208,28 @@ func (p *Process) Start() error {
 	return nil
 }
 
+func (p *Process) watchWindowSize() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGWINCH)
+	defer signal.Stop(ch)
+	for {
+		select {
+		case <-p.stopCh:
+			return
+		case <-ch:
+			if p.ptyFile != nil {
+				_ = pty.InheritSize(os.Stdin, p.ptyFile)
+			}
+		}
+	}
+}
+
 // readFd3Messages reads JSON messages from the launcher via fd 3
 func (p *Process) readFd3Messages() {
 	scanner := bufio.NewScanner(p.fd3Reader)
+	const maxScannerBuffer = 10 * 1024 * 1024
+	buf := make([]byte, 1024*1024)
+	scanner.Buffer(buf, maxScannerBuffer)
 
 	for scanner.Scan() {
 		select {
@@ -372,6 +405,9 @@ func (p *Process) Kill() error {
 	if p.fd3Reader != nil {
 		p.fd3Reader.Close()
 	}
+	if p.ptyFile != nil {
+		_ = p.ptyFile.Close()
+	}
 
 	if p.cmd == nil || p.cmd.Process == nil {
 		return nil
@@ -382,6 +418,37 @@ func (p *Process) Kill() error {
 	}
 
 	return p.cmd.Process.Kill()
+}
+
+// SendInput injects input into the Claude TUI (as if typed by the user).
+func (p *Process) SendInput(text string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.ptyFile == nil {
+		return fmt.Errorf("pty not initialized")
+	}
+
+	_, err := io.WriteString(p.ptyFile, text)
+	return err
+}
+
+// SendLine injects text and then presses Enter, with a small delay to avoid paste buffering.
+func (p *Process) SendLine(text string) error {
+	p.mu.Lock()
+	if p.ptyFile == nil {
+		p.mu.Unlock()
+		return fmt.Errorf("pty not initialized")
+	}
+	_, err := io.WriteString(p.ptyFile, text)
+	if err != nil {
+		p.mu.Unlock()
+		return err
+	}
+	p.mu.Unlock()
+
+	time.Sleep(50 * time.Millisecond)
+	return p.SendInput("\r")
 }
 
 // IsRunning returns whether the process is still running

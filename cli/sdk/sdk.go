@@ -37,6 +37,8 @@ type Client struct {
 	listener     Listener
 	userSocket   *websocket.Client
 	httpClient   *http.Client
+	logServer    *http.Server
+	logServerURL string
 }
 
 // KeyPair holds a base64-encoded keypair for gomobile bindings.
@@ -101,6 +103,11 @@ func (c *Client) SetListener(listener Listener) {
 
 // AuthWithKeyPair performs challenge-response auth and stores the token.
 func (c *Client) AuthWithKeyPair(publicKeyB64, privateKeyB64 string) (string, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("AuthWithKeyPair", r)
+		}
+	}()
 	priv, err := base64.StdEncoding.DecodeString(privateKeyB64)
 	if err != nil {
 		return "", fmt.Errorf("decode private key: %w", err)
@@ -144,6 +151,11 @@ func (c *Client) AuthWithKeyPair(publicKeyB64, privateKeyB64 string) (string, er
 // ParseTerminalURL extracts the terminal public key from a QR URL.
 // Accepts delight://terminal?<pubkey> and happy://terminal?<pubkey>.
 func ParseTerminalURL(qrURL string) (string, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("ParseTerminalURL", r)
+		}
+	}()
 	parsed, err := url.Parse(qrURL)
 	if err != nil {
 		return "", fmt.Errorf("parse url: %w", err)
@@ -167,6 +179,11 @@ func ParseTerminalURL(qrURL string) (string, error) {
 
 // ApproveTerminalAuth encrypts the master key and posts /v1/auth/response.
 func (c *Client) ApproveTerminalAuth(terminalPublicKeyB64 string, masterKeyB64 string) error {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("ApproveTerminalAuth", r)
+		}
+	}()
 	terminalPub, err := decodeBase64Any(terminalPublicKeyB64)
 	if err != nil {
 		return fmt.Errorf("decode terminal public key: %w", err)
@@ -215,13 +232,43 @@ func (c *Client) SetDebug(enabled bool) {
 
 // SetToken configures the auth token.
 func (c *Client) SetToken(token string) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("SetToken", r)
+		}
+	}()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.token = token
 }
 
+// SetLogDirectory configures the log directory for SDK logs.
+func (c *Client) SetLogDirectory(path string) error {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("SetLogDirectory", r)
+		}
+	}()
+	return sdkLogs.setDir(path)
+}
+
+// LogLine forwards a log line into the SDK log buffer.
+func (c *Client) LogLine(line string) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("LogLine", r)
+		}
+	}()
+	logLine(line)
+}
+
 // SetMasterKeyBase64 sets the 32-byte master key from base64.
 func (c *Client) SetMasterKeyBase64(keyB64 string) error {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("SetMasterKeyBase64", r)
+		}
+	}()
 	raw, err := base64.StdEncoding.DecodeString(keyB64)
 	if err != nil {
 		return fmt.Errorf("decode master key: %w", err)
@@ -237,6 +284,11 @@ func (c *Client) SetMasterKeyBase64(keyB64 string) error {
 
 // SetSessionDataKey stores a raw 32-byte data encryption key (base64).
 func (c *Client) SetSessionDataKey(sessionID, keyB64 string) error {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("SetSessionDataKey", r)
+		}
+	}()
 	raw, err := base64.StdEncoding.DecodeString(keyB64)
 	if err != nil {
 		return fmt.Errorf("decode data key: %w", err)
@@ -252,6 +304,11 @@ func (c *Client) SetSessionDataKey(sessionID, keyB64 string) error {
 
 // SetEncryptedSessionDataKey decrypts and stores a session data key.
 func (c *Client) SetEncryptedSessionDataKey(sessionID, encryptedB64 string) error {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("SetEncryptedSessionDataKey", r)
+		}
+	}()
 	c.mu.Lock()
 	master := c.masterSecret
 	c.mu.Unlock()
@@ -277,6 +334,11 @@ func (c *Client) SetEncryptedSessionDataKey(sessionID, encryptedB64 string) erro
 
 // Connect opens a user-scoped websocket connection and begins emitting updates.
 func (c *Client) Connect() error {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("Connect", r)
+		}
+	}()
 	c.mu.Lock()
 	token := c.token
 	debug := c.debug
@@ -313,6 +375,11 @@ func (c *Client) Connect() error {
 
 // Disconnect closes the websocket connection.
 func (c *Client) Disconnect() {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("Disconnect", r)
+		}
+	}()
 	c.mu.Lock()
 	socket := c.userSocket
 	listener := c.listener
@@ -329,6 +396,11 @@ func (c *Client) Disconnect() {
 
 // SendMessage encrypts and sends a raw record JSON payload to a session.
 func (c *Client) SendMessage(sessionID string, rawRecordJSON string) error {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("SendMessage", r)
+		}
+	}()
 	c.mu.Lock()
 	socket := c.userSocket
 	c.mu.Unlock()
@@ -345,7 +417,13 @@ func (c *Client) SendMessage(sessionID string, rawRecordJSON string) error {
 }
 
 // ListSessions fetches sessions and caches data keys. Returns JSON response.
-func (c *Client) ListSessions() (string, error) {
+func (c *Client) ListSessions() (resp string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("ListSessions", r)
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
 	respBody, err := c.doRequest("GET", "/v1/sessions", nil)
 	if err != nil {
 		return "", err
@@ -364,18 +442,103 @@ func (c *Client) ListSessions() (string, error) {
 				if sessionID != "" && dataKeyB64 != "" {
 					_ = c.SetEncryptedSessionDataKey(sessionID, dataKeyB64)
 				}
+				metadataB64, _ := session["metadata"].(string)
+				if metadataB64 != "" {
+					if decrypted, err := c.decryptLegacyString(metadataB64); err == nil {
+						session["metadata"] = decrypted
+					}
+				}
 			}
+		}
+		if encoded, err := json.Marshal(decoded); err == nil {
+			return string(encoded), nil
 		}
 	}
 
 	return string(respBody), nil
 }
 
+// ListMachines fetches machines and decrypts metadata/daemon state when possible.
+func (c *Client) ListMachines() (resp string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("ListMachines", r)
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+	respBody, err := c.doRequest("GET", "/v1/machines", nil)
+	if err != nil {
+		return "", err
+	}
+
+	var decoded []interface{}
+	if err := json.Unmarshal(respBody, &decoded); err != nil {
+		return string(respBody), nil
+	}
+
+	for _, item := range decoded {
+		machine, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		metadataB64, _ := machine["metadata"].(string)
+		if metadataB64 != "" {
+			if decrypted, err := c.decryptLegacyString(metadataB64); err == nil {
+				machine["metadata"] = decrypted
+			}
+		}
+		daemonStateB64, _ := machine["daemonState"].(string)
+		if daemonStateB64 != "" {
+			if decrypted, err := c.decryptLegacyString(daemonStateB64); err == nil {
+				machine["daemonState"] = decrypted
+			}
+		}
+	}
+
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		return string(respBody), nil
+	}
+	return string(encoded), nil
+}
+
+func (c *Client) decryptLegacyString(payload string) (string, error) {
+	c.mu.Lock()
+	secret := make([]byte, len(c.masterSecret))
+	copy(secret, c.masterSecret)
+	c.mu.Unlock()
+	if len(secret) != 32 {
+		return "", fmt.Errorf("master key not configured")
+	}
+	raw, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return "", fmt.Errorf("decode payload: %w", err)
+	}
+	var key [32]byte
+	copy(key[:], secret)
+	var decoded map[string]interface{}
+	if err := crypto.DecryptLegacy(raw, &key, &decoded); err != nil {
+		return "", fmt.Errorf("decrypt payload: %w", err)
+	}
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		return "", fmt.Errorf("marshal decrypted: %w", err)
+	}
+	return string(encoded), nil
+}
+
 // GetSessionMessages fetches session messages and decrypts message content.
-func (c *Client) GetSessionMessages(sessionID string, limit int) (string, error) {
+func (c *Client) GetSessionMessages(sessionID string, limit int) (resp string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("GetSessionMessages", r)
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
 	if sessionID == "" {
 		return "", fmt.Errorf("sessionID required")
 	}
+	logLine(fmt.Sprintf("GetSessionMessages sessionID=%s limit=%d", sessionID, limit))
 	endpoint := fmt.Sprintf("/v1/sessions/%s/messages", url.PathEscape(sessionID))
 	if limit > 0 {
 		endpoint = fmt.Sprintf("%s?limit=%d", endpoint, limit)
@@ -383,6 +546,7 @@ func (c *Client) GetSessionMessages(sessionID string, limit int) (string, error)
 
 	respBody, err := c.doRequest("GET", endpoint, nil)
 	if err != nil {
+		logLine(fmt.Sprintf("GetSessionMessages request error: %v", err))
 		return "", err
 	}
 
@@ -420,10 +584,20 @@ func (c *Client) GetSessionMessages(sessionID string, limit int) (string, error)
 }
 
 func (c *Client) handleEphemeral(data map[string]interface{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("handleEphemeral", r)
+		}
+	}()
 	c.emitUpdate("", data)
 }
 
 func (c *Client) handleUpdate(data map[string]interface{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("handleUpdate", r)
+		}
+	}()
 	body, _ := data["body"].(map[string]interface{})
 	if body == nil {
 		c.emitUpdate("", data)
@@ -611,7 +785,13 @@ func decodeBase64Any(input string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(input)
 }
 
-func (c *Client) doRequest(method, path string, body []byte) ([]byte, error) {
+func (c *Client) doRequest(method, path string, body []byte) (resp []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("doRequest", r)
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
 	c.mu.Lock()
 	token := c.token
 	baseURL := c.serverURL
@@ -639,17 +819,17 @@ func (c *Client) doRequest(method, path string, body []byte) ([]byte, error) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := client.Do(req)
+	httpResp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer httpResp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		return nil, fmt.Errorf("request failed: %s", string(respBody))
 	}
 	return respBody, nil
