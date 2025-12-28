@@ -94,6 +94,11 @@ type Manager struct {
 
 	spawnStoreMu sync.Mutex
 
+	// inboundQueue serializes inbound events (socket updates, mobile RPC, etc.)
+	// to avoid concurrent state mutation when clients deliver events in parallel.
+	inboundOnce  sync.Once
+	inboundQueue chan func()
+
 	shutdownOnce sync.Once
 }
 
@@ -130,6 +135,7 @@ func NewManager(cfg *config.Config, token string, debug bool) (*Manager, error) 
 		codexQueue:         make(chan codexMessage, 100),
 		codexStop:          make(chan struct{}),
 		stopCh:             make(chan struct{}),
+		inboundQueue:       make(chan func(), 256),
 		switchCh:           make(chan Mode, 1),
 		mode:               ModeLocal,
 		pendingPermissions: make(map[string]chan *claude.PermissionResponse),
@@ -138,6 +144,73 @@ func NewManager(cfg *config.Config, token string, debug bool) (*Manager, error) 
 			ControlledByUser: true,
 		},
 	}, nil
+}
+
+func (m *Manager) startInboundLoop() {
+	m.inboundOnce.Do(func() {
+		go func() {
+			for {
+				select {
+				case <-m.stopCh:
+					return
+				case fn := <-m.inboundQueue:
+					if fn != nil {
+						fn()
+					}
+				}
+			}
+		}()
+	})
+}
+
+func (m *Manager) enqueueInbound(fn func()) bool {
+	if fn == nil {
+		return false
+	}
+	select {
+	case <-m.stopCh:
+		return false
+	default:
+	}
+
+	select {
+	case m.inboundQueue <- fn:
+		return true
+	default:
+		if m.debug {
+			log.Printf("Inbound queue full; dropping event")
+		}
+		return false
+	}
+}
+
+func (m *Manager) handleUpdateQueued(data map[string]interface{}) {
+	_ = m.enqueueInbound(func() { m.handleUpdate(data) })
+}
+
+func (m *Manager) handleSessionUpdateQueued(data map[string]interface{}) {
+	_ = m.enqueueInbound(func() { m.handleSessionUpdate(data) })
+}
+
+func (m *Manager) runInboundRPC(fn func() (json.RawMessage, error)) (json.RawMessage, error) {
+	type rpcResult struct {
+		value json.RawMessage
+		err   error
+	}
+	done := make(chan rpcResult, 1)
+	if !m.enqueueInbound(func() {
+		val, err := fn()
+		done <- rpcResult{value: val, err: err}
+	}) {
+		return nil, fmt.Errorf("failed to schedule request (busy or shutting down)")
+	}
+
+	select {
+	case <-m.stopCh:
+		return nil, fmt.Errorf("session closed")
+	case res := <-done:
+		return res.value, res.err
+	}
 }
 
 // Start starts a new Delight session
@@ -153,6 +226,9 @@ func (m *Manager) Start(workDir string) error {
 
 	// Store working directory for mode switching
 	m.workDir = workDir
+
+	// Ensure inbound processing is serialized.
+	m.startInboundLoop()
 
 	// Get or create stable machine ID
 	machineIDPath := filepath.Join(m.cfg.DelightHome, "machine.id")
@@ -212,8 +288,8 @@ func (m *Manager) Start(workDir string) error {
 
 	// Register event handlers
 	// Prefer structured updates; legacy message handler kept for backward compatibility
-	m.wsClient.On(websocket.EventUpdate, m.handleUpdate)
-	m.wsClient.On(websocket.EventSessionUpdate, m.handleSessionUpdate)
+	m.wsClient.On(websocket.EventUpdate, m.handleUpdateQueued)
+	m.wsClient.On(websocket.EventSessionUpdate, m.handleSessionUpdateQueued)
 
 	if err := m.wsClient.Connect(); err != nil {
 		// WebSocket is optional - log the error but don't fail
@@ -2770,55 +2846,61 @@ func (m *Manager) registerRPCHandlers() {
 
 	// Abort handler - abort current remote query
 	m.rpcManager.RegisterHandler(prefix+"abort", func(params json.RawMessage) (json.RawMessage, error) {
-		if m.agent == "claude" {
-			return nil, fmt.Errorf("remote abort not supported in Claude TUI mode")
-		}
-		if err := m.AbortRemote(); err != nil {
-			return nil, err
-		}
-		return json.Marshal(map[string]bool{"success": true})
+		return m.runInboundRPC(func() (json.RawMessage, error) {
+			if m.agent == "claude" {
+				return nil, fmt.Errorf("remote abort not supported in Claude TUI mode")
+			}
+			if err := m.AbortRemote(); err != nil {
+				return nil, err
+			}
+			return json.Marshal(map[string]bool{"success": true})
+		})
 	})
 
 	// Switch handler - switch between local/remote modes
 	m.rpcManager.RegisterHandler(prefix+"switch", func(params json.RawMessage) (json.RawMessage, error) {
-		if m.agent == "claude" {
-			return nil, fmt.Errorf("mode switching disabled in Claude TUI mode")
-		}
-		var req struct {
-			Mode string `json:"mode"`
-		}
-		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, err
-		}
-
-		switch Mode(req.Mode) {
-		case ModeLocal:
-			if err := m.SwitchToLocal(); err != nil {
+		return m.runInboundRPC(func() (json.RawMessage, error) {
+			if m.agent == "claude" {
+				return nil, fmt.Errorf("mode switching disabled in Claude TUI mode")
+			}
+			var req struct {
+				Mode string `json:"mode"`
+			}
+			if err := json.Unmarshal(params, &req); err != nil {
 				return nil, err
 			}
-		case ModeRemote:
-			if err := m.SwitchToRemote(); err != nil {
-				return nil, err
-			}
-		default:
-			return nil, fmt.Errorf("unknown mode: %s", req.Mode)
-		}
 
-		return json.Marshal(map[string]string{"mode": string(m.GetMode())})
+			switch Mode(req.Mode) {
+			case ModeLocal:
+				if err := m.SwitchToLocal(); err != nil {
+					return nil, err
+				}
+			case ModeRemote:
+				if err := m.SwitchToRemote(); err != nil {
+					return nil, err
+				}
+			default:
+				return nil, fmt.Errorf("unknown mode: %s", req.Mode)
+			}
+
+			return json.Marshal(map[string]string{"mode": string(m.GetMode())})
+		})
 	})
 
 	// Permission handler - respond to permission requests
 	m.rpcManager.RegisterHandler(prefix+"permission", func(params json.RawMessage) (json.RawMessage, error) {
-		var req struct {
-			RequestID string `json:"requestId"`
-			Allow     bool   `json:"allow"`
-			Message   string `json:"message"`
-		}
-		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, err
-		}
+		return m.runInboundRPC(func() (json.RawMessage, error) {
+			var req struct {
+				RequestID string `json:"requestId"`
+				Allow     bool   `json:"allow"`
+				Message   string `json:"message"`
+			}
+			if err := json.Unmarshal(params, &req); err != nil {
+				return nil, err
+			}
 
-		m.HandlePermissionResponse(req.RequestID, req.Allow, req.Message)
-		return json.Marshal(map[string]bool{"success": true})
+			m.HandlePermissionResponse(req.RequestID, req.Allow, req.Message)
+			return json.Marshal(map[string]bool{"success": true})
+		})
 	})
 }

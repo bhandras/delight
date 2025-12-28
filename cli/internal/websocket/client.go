@@ -45,7 +45,7 @@ type Client struct {
 	machineID  string
 	clientType string
 	socket     *socket.Socket
-	mu         sync.RWMutex
+	mu         sync.Mutex
 	handlers   map[EventType]func(map[string]interface{})
 	done       chan struct{}
 	closeOnce  sync.Once
@@ -107,8 +107,16 @@ func (c *Client) On(eventType EventType, handler func(map[string]interface{})) {
 
 // Connect establishes a Socket.IO connection to the server
 func (c *Client) Connect() error {
-	if c.debug {
-		log.Printf("Connecting to Socket.IO: %s (path: /v1/updates)", c.serverURL)
+	c.mu.Lock()
+	debug := c.debug
+	serverURL := c.serverURL
+	token := c.token
+	clientType := c.clientType
+	sessionID := c.sessionID
+	machineID := c.machineID
+	c.mu.Unlock()
+	if debug {
+		log.Printf("Connecting to Socket.IO: %s (path: /v1/updates)", serverURL)
 	}
 
 	// Create Socket.IO options
@@ -120,31 +128,34 @@ func (c *Client) Connect() error {
 
 	// Set auth token, client type, and scope id (matching mobile app format)
 	auth := map[string]interface{}{
-		"token":      c.token,
-		"clientType": c.clientType,
+		"token":      token,
+		"clientType": clientType,
 	}
-	switch c.clientType {
+	switch clientType {
 	case "session-scoped":
-		auth["sessionId"] = c.sessionID
+		auth["sessionId"] = sessionID
 	case "machine-scoped":
-		auth["machineId"] = c.machineID
+		auth["machineId"] = machineID
 	}
 	opts.SetAuth(auth)
 
 	// Connect using base URL (path is set in options)
-	sock, err := socket.Connect(c.serverURL, opts)
+	sock, err := socket.Connect(serverURL, opts)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
+	c.mu.Lock()
 	c.socket = sock
+	c.mu.Unlock()
 
 	// Set up connect handler
 	sock.On(types.EventName("connect"), func(args ...any) {
 		c.mu.Lock()
 		c.connected = true
+		debug := c.debug
 		c.mu.Unlock()
 
-		if c.debug {
+		if debug {
 			log.Printf("Socket.IO connected! ID: %s", sock.Id())
 		}
 	})
@@ -153,6 +164,7 @@ func (c *Client) Connect() error {
 	sock.On(types.EventName("disconnect"), func(args ...any) {
 		c.mu.Lock()
 		c.connected = false
+		debug := c.debug
 		c.mu.Unlock()
 
 		reason := ""
@@ -161,13 +173,19 @@ func (c *Client) Connect() error {
 				reason = r
 			}
 		}
-		if c.debug {
+		if debug {
 			log.Printf("Socket.IO disconnected: %s", reason)
 		}
 	})
 
 	// Set up error handler
 	sock.On(types.EventName("connect_error"), func(args ...any) {
+		c.mu.Lock()
+		debug := c.debug
+		c.mu.Unlock()
+		if !debug {
+			return
+		}
 		if len(args) > 0 {
 			log.Printf("Socket.IO connection error: %v", args[0])
 		}
@@ -177,7 +195,10 @@ func (c *Client) Connect() error {
 	for _, eventType := range []EventType{EventMessage, EventUpdate, EventSessionAlive, EventUpdateMeta, EventUpdateState, EventSessionUpdate} {
 		et := eventType // Capture for closure
 		sock.On(types.EventName(et), func(args ...any) {
-			if c.debug {
+			c.mu.Lock()
+			debug := c.debug
+			c.mu.Unlock()
+			if debug {
 				log.Printf("Received event: %s", et)
 			}
 
@@ -189,9 +210,9 @@ func (c *Client) Connect() error {
 				}
 			}
 
-			c.mu.RLock()
+			c.mu.Lock()
 			handler, ok := c.handlers[et]
-			c.mu.RUnlock()
+			c.mu.Unlock()
 
 			if ok && handler != nil {
 				go handler(data)
@@ -199,7 +220,10 @@ func (c *Client) Connect() error {
 		})
 	}
 
-	if c.debug {
+	c.mu.Lock()
+	debug = c.debug
+	c.mu.Unlock()
+	if debug {
 		log.Println("Socket.IO connection initiated")
 	}
 
@@ -220,51 +244,48 @@ func (c *Client) WaitForConnect(timeout time.Duration) bool {
 
 // Emit sends an event to the server
 func (c *Client) Emit(eventType EventType, data map[string]interface{}) error {
-	c.mu.RLock()
+	c.mu.Lock()
 	sock := c.socket
-	c.mu.RUnlock()
-
+	debug := c.debug
 	if sock == nil {
+		c.mu.Unlock()
 		return fmt.Errorf("not connected")
 	}
-
-	if c.debug {
+	if debug {
 		log.Printf("Sending event: %s", eventType)
 	}
-
 	sock.Emit(string(eventType), data)
+	c.mu.Unlock()
 	return nil
 }
 
 // EmitRaw sends an arbitrary event name to the server.
 func (c *Client) EmitRaw(event string, data map[string]interface{}) error {
-	c.mu.RLock()
+	c.mu.Lock()
 	sock := c.socket
-	c.mu.RUnlock()
-
+	debug := c.debug
 	if sock == nil {
+		c.mu.Unlock()
 		return fmt.Errorf("not connected")
 	}
-
-	if c.debug {
+	if debug {
 		log.Printf("Sending raw event: %s", event)
 	}
-
 	sock.Emit(event, data)
+	c.mu.Unlock()
 	return nil
 }
 
 // EmitWithAck sends an event and waits for an ACK response.
 func (c *Client) EmitWithAck(event string, data map[string]interface{}, timeout time.Duration) (map[string]interface{}, error) {
-	c.mu.RLock()
+	c.mu.Lock()
 	sock := c.socket
-	c.mu.RUnlock()
-
+	debug := c.debug
 	if sock == nil {
+		c.mu.Unlock()
 		return nil, fmt.Errorf("not connected")
 	}
-
-	if c.debug {
+	if debug {
 		log.Printf("Sending raw event with ack: %s", event)
 	}
 
@@ -286,6 +307,7 @@ func (c *Client) EmitWithAck(event string, data map[string]interface{}, timeout 
 		}
 		resultCh <- nil
 	})
+	c.mu.Unlock()
 
 	select {
 	case res := <-resultCh:
@@ -299,8 +321,8 @@ func (c *Client) EmitWithAck(event string, data map[string]interface{}, timeout 
 
 // RawSocket exposes the underlying Socket.IO socket for low-level handlers.
 func (c *Client) RawSocket() *socket.Socket {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.socket
 }
 
@@ -407,23 +429,22 @@ func (c *Client) Close() error {
 	})
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.socket != nil {
-		c.socket.Disconnect()
-		c.socket = nil
-	}
-
+	sock := c.socket
+	c.socket = nil
 	c.connected = false
+	c.mu.Unlock()
+	if sock != nil {
+		sock.Disconnect()
+	}
 	return nil
 }
 
 // IsConnected returns whether the client is connected
 func (c *Client) IsConnected() bool {
-	c.mu.RLock()
+	c.mu.Lock()
 	sock := c.socket
 	connected := c.connected
-	c.mu.RUnlock()
+	c.mu.Unlock()
 
 	if connected {
 		return true
