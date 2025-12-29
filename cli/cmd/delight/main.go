@@ -23,12 +23,14 @@ const (
 	authChallenge = "delight-auth-challenge"
 )
 
+// AuthRequest is the request payload for the Delight auth endpoint.
 type AuthRequest struct {
 	PublicKey string `json:"publicKey"`
 	Challenge string `json:"challenge"`
 	Signature string `json:"signature"`
 }
 
+// AuthResponse is the response payload from the Delight auth endpoint.
 type AuthResponse struct {
 	Success bool   `json:"success"`
 	Token   string `json:"token"`
@@ -67,6 +69,9 @@ func run() error {
 	// Check for subcommands
 	if len(args) > 0 {
 		switch args[0] {
+		case "acp":
+			cfg.Agent = "acp"
+			args = args[1:]
 		case "claude":
 			cfg.Agent = "claude"
 			args = args[1:]
@@ -165,7 +170,7 @@ func parseFlags(cfg *config.Config, args []string) ([]string, error) {
 
 	acpURL := fs.String("acp-url", "", "ACP server URL")
 	acpAgent := fs.String("acp-agent", "", "ACP agent name")
-	agent := fs.String("agent", "", "Agent backend (claude|codex)")
+	agent := fs.String("agent", "", "Agent backend (acp|claude|codex)")
 	forceNewSession := fs.Bool("new-session", false, "Force creation of a new session")
 	showHelp := fs.Bool("help", false, "Show help")
 
@@ -186,8 +191,8 @@ func parseFlags(cfg *config.Config, args []string) ([]string, error) {
 	}
 	cfg.ACPEnable = cfg.ACPURL != "" && cfg.ACPAgent != ""
 	if *agent != "" {
-		if *agent != "claude" && *agent != "codex" {
-			return nil, fmt.Errorf("invalid --agent %q (expected claude or codex)", *agent)
+		if *agent != "acp" && *agent != "claude" && *agent != "codex" {
+			return nil, fmt.Errorf("invalid --agent %q (expected acp, claude, or codex)", *agent)
 		}
 		cfg.Agent = *agent
 	}
