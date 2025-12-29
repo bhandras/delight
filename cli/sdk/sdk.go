@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -501,12 +502,22 @@ func (c *Client) disconnect() {
 // SendMessage encrypts and sends a raw record JSON payload to a session.
 func (c *Client) SendMessage(sessionID string, rawRecordJSON string) error {
 	_, err := c.dispatch.call(func() (interface{}, error) {
-		return nil, c.sendMessage(sessionID, rawRecordJSON)
+		return nil, c.sendMessageWithLocalID(sessionID, "", rawRecordJSON)
 	})
 	return err
 }
 
-func (c *Client) sendMessage(sessionID string, rawRecordJSON string) error {
+// SendMessageWithLocalID encrypts and sends a raw record JSON payload to a session with a
+// client-generated idempotency key ("localId"). The server will echo the localId back in
+// message updates so callers can reconcile optimistic UI entries.
+func (c *Client) SendMessageWithLocalID(sessionID string, localID string, rawRecordJSON string) error {
+	_, err := c.dispatch.call(func() (interface{}, error) {
+		return nil, c.sendMessageWithLocalID(sessionID, localID, rawRecordJSON)
+	})
+	return err
+}
+
+func (c *Client) sendMessageWithLocalID(sessionID string, localID string, rawRecordJSON string) error {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("SendMessage", r)
@@ -523,6 +534,9 @@ func (c *Client) sendMessage(sessionID string, rawRecordJSON string) error {
 	encrypted, err := c.encryptPayload(sessionID, []byte(rawRecordJSON))
 	if err != nil {
 		return err
+	}
+	if localID != "" {
+		return socket.SendMessageWithLocalID(sessionID, encrypted, localID)
 	}
 	return socket.SendMessage(sessionID, encrypted)
 }
@@ -689,6 +703,18 @@ func (c *Client) GetSessionMessagesBuffer(sessionID string, limit int) (*Buffer,
 	return newBufferFromString(resp), nil
 }
 
+// GetSessionMessagesPageBuffer returns a page of session messages for infinite scroll.
+//
+// If beforeSeq > 0, it fetches messages with seq < beforeSeq.
+// If beforeSeq <= 0, it fetches the most recent page.
+func (c *Client) GetSessionMessagesPageBuffer(sessionID string, limit int, beforeSeq int64) (*Buffer, error) {
+	resp, err := c.getSessionMessagesPageDispatch(sessionID, limit, beforeSeq)
+	if err != nil {
+		return nil, err
+	}
+	return newBufferFromString(resp), nil
+}
+
 func (c *Client) getSessionMessagesDispatch(sessionID string, limit int) (resp string, err error) {
 	value, err := c.dispatch.call(func() (interface{}, error) {
 		return c.getSessionMessages(sessionID, limit)
@@ -702,7 +728,24 @@ func (c *Client) getSessionMessagesDispatch(sessionID string, limit int) (resp s
 	return value.(string), nil
 }
 
+func (c *Client) getSessionMessagesPageDispatch(sessionID string, limit int, beforeSeq int64) (resp string, err error) {
+	value, err := c.dispatch.call(func() (interface{}, error) {
+		return c.getSessionMessagesPage(sessionID, limit, beforeSeq)
+	})
+	if err != nil {
+		return "", err
+	}
+	if value == nil {
+		return "", nil
+	}
+	return value.(string), nil
+}
+
 func (c *Client) getSessionMessages(sessionID string, limit int) (resp string, err error) {
+	return c.getSessionMessagesPage(sessionID, limit, 0)
+}
+
+func (c *Client) getSessionMessagesPage(sessionID string, limit int, beforeSeq int64) (resp string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("GetSessionMessages", r)
@@ -712,10 +755,18 @@ func (c *Client) getSessionMessages(sessionID string, limit int) (resp string, e
 	if sessionID == "" {
 		return "", fmt.Errorf("sessionID required")
 	}
-	logLine(fmt.Sprintf("GetSessionMessages sessionID=%s limit=%d", sessionID, limit))
+	logLine(fmt.Sprintf("GetSessionMessages sessionID=%s limit=%d beforeSeq=%d", sessionID, limit, beforeSeq))
+
 	endpoint := fmt.Sprintf("/v1/sessions/%s/messages", url.PathEscape(sessionID))
+	values := url.Values{}
 	if limit > 0 {
-		endpoint = fmt.Sprintf("%s?limit=%d", endpoint, limit)
+		values.Set("limit", strconv.Itoa(limit))
+	}
+	if beforeSeq > 0 {
+		values.Set("beforeSeq", strconv.FormatInt(beforeSeq, 10))
+	}
+	if len(values) > 0 {
+		endpoint = endpoint + "?" + values.Encode()
 	}
 
 	respBody, err := c.doRequest("GET", endpoint, nil)

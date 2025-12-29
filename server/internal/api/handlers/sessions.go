@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -289,9 +290,23 @@ func (h *SessionHandler) GetSessionMessages(c *gin.Context) {
 		return
 	}
 
-	// Get pagination parameters
+	type PageInfo struct {
+		HasMore       bool   `json:"hasMore"`
+		NextBeforeSeq *int64 `json:"nextBeforeSeq,omitempty"`
+	}
+
+	// Get pagination parameters.
+	//
+	// Supported modes:
+	// - Legacy (limit + offset): returns messages ordered by seq ASC starting at offset.
+	// - Cursor (limit + beforeSeq): returns messages where seq < beforeSeq, ordered ASC.
+	// - Cursor (limit + afterSeq): returns messages where seq > afterSeq, ordered ASC.
+	// - Default (limit only): returns the most recent page (ordered ASC).
 	limit := int64(100)
 	offset := int64(0)
+	offsetProvided := false
+	beforeSeq := int64(0)
+	afterSeq := int64(0)
 
 	if limitStr := c.Query("limit"); limitStr != "" {
 		if l, err := strconv.ParseInt(limitStr, 10, 64); err == nil && l > 0 && l <= 500 {
@@ -300,19 +315,80 @@ func (h *SessionHandler) GetSessionMessages(c *gin.Context) {
 	}
 
 	if offsetStr := c.Query("offset"); offsetStr != "" {
+		offsetProvided = true
 		if o, err := strconv.ParseInt(offsetStr, 10, 64); err == nil && o >= 0 {
 			offset = o
 		}
 	}
 
-	// Get messages
-	messages, err := h.queries.ListMessages(c.Request.Context(), models.ListMessagesParams{
-		SessionID: sessionID,
-		Limit:     limit,
-		Offset:    offset,
-	})
+	if beforeStr := c.Query("beforeSeq"); beforeStr != "" {
+		if v, err := strconv.ParseInt(beforeStr, 10, 64); err == nil && v > 0 {
+			beforeSeq = v
+		}
+	}
 
-	if err != nil {
+	if afterStr := c.Query("afterSeq"); afterStr != "" {
+		if v, err := strconv.ParseInt(afterStr, 10, 64); err == nil && v > 0 {
+			afterSeq = v
+		}
+	}
+
+	var (
+		messages []models.SessionMessage
+		page     *PageInfo
+		listErr  error
+	)
+
+	// Get messages.
+	switch {
+	case beforeSeq > 0:
+		messages, listErr = h.listMessagesBeforeSeq(c.Request.Context(), sessionID, beforeSeq, limit)
+		if listErr == nil && len(messages) > 0 {
+			minSeq := messages[0].Seq
+			for _, msg := range messages[1:] {
+				if msg.Seq < minSeq {
+					minSeq = msg.Seq
+				}
+			}
+			hasMore, moreErr := h.hasMessagesBeforeSeq(c.Request.Context(), sessionID, minSeq)
+			if moreErr == nil {
+				page = &PageInfo{HasMore: hasMore, NextBeforeSeq: &minSeq}
+			}
+		} else if listErr == nil {
+			page = &PageInfo{HasMore: false}
+		}
+	case afterSeq > 0:
+		messages, listErr = h.listMessagesAfterSeq(c.Request.Context(), sessionID, afterSeq, limit)
+		if listErr == nil {
+			page = &PageInfo{HasMore: false}
+		}
+	case offsetProvided:
+		// Legacy support for offset-based paging.
+		messages, listErr = h.queries.ListMessages(c.Request.Context(), models.ListMessagesParams{
+			SessionID: sessionID,
+			Limit:     limit,
+			Offset:    offset,
+		})
+	default:
+		// Default: most recent page.
+		messages, listErr = h.listMessagesLatest(c.Request.Context(), sessionID, limit)
+		if listErr == nil && len(messages) > 0 {
+			minSeq := messages[0].Seq
+			for _, msg := range messages[1:] {
+				if msg.Seq < minSeq {
+					minSeq = msg.Seq
+				}
+			}
+			hasMore, moreErr := h.hasMessagesBeforeSeq(c.Request.Context(), sessionID, minSeq)
+			if moreErr == nil {
+				page = &PageInfo{HasMore: hasMore, NextBeforeSeq: &minSeq}
+			}
+		} else if listErr == nil {
+			page = &PageInfo{HasMore: false}
+		}
+	}
+
+	if listErr != nil {
 		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to list messages"})
 		return
 	}
@@ -324,6 +400,10 @@ func (h *SessionHandler) GetSessionMessages(c *gin.Context) {
 		log.Printf("[API] Sending message id=%s seq=%d content=%s", msg.ID, msg.Seq, msg.Content)
 	}
 
+	if page != nil {
+		c.JSON(http.StatusOK, gin.H{"messages": response, "page": page})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"messages": response})
 }
 
@@ -409,5 +489,109 @@ func (h *SessionHandler) toMessageResponse(msg models.SessionMessage) MessageRes
 		LocalID:   localID,
 		CreatedAt: msg.CreatedAt.UnixMilli(),
 		UpdatedAt: msg.UpdatedAt.UnixMilli(),
+	}
+}
+
+func (h *SessionHandler) listMessagesLatest(ctx context.Context, sessionID string, limit int64) ([]models.SessionMessage, error) {
+	// Query newest-first then reverse to keep responses chronological (seq ASC).
+	rows, err := h.db.QueryContext(ctx, `
+SELECT id, session_id, local_id, seq, content, created_at, updated_at
+FROM session_messages
+WHERE session_id = ?
+ORDER BY seq DESC
+LIMIT ?;
+`, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var messages []models.SessionMessage
+	for rows.Next() {
+		var msg models.SessionMessage
+		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.LocalID, &msg.Seq, &msg.Content, &msg.CreatedAt, &msg.UpdatedAt); err != nil {
+			return nil, err
+		}
+		messages = append(messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	reverseMessages(messages)
+	return messages, nil
+}
+
+func (h *SessionHandler) listMessagesBeforeSeq(ctx context.Context, sessionID string, beforeSeq int64, limit int64) ([]models.SessionMessage, error) {
+	// Query newest-first then reverse to keep responses chronological (seq ASC).
+	rows, err := h.db.QueryContext(ctx, `
+SELECT id, session_id, local_id, seq, content, created_at, updated_at
+FROM session_messages
+WHERE session_id = ?
+  AND seq < ?
+ORDER BY seq DESC
+LIMIT ?;
+`, sessionID, beforeSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var messages []models.SessionMessage
+	for rows.Next() {
+		var msg models.SessionMessage
+		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.LocalID, &msg.Seq, &msg.Content, &msg.CreatedAt, &msg.UpdatedAt); err != nil {
+			return nil, err
+		}
+		messages = append(messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	reverseMessages(messages)
+	return messages, nil
+}
+
+func (h *SessionHandler) listMessagesAfterSeq(ctx context.Context, sessionID string, afterSeq int64, limit int64) ([]models.SessionMessage, error) {
+	rows, err := h.db.QueryContext(ctx, `
+SELECT id, session_id, local_id, seq, content, created_at, updated_at
+FROM session_messages
+WHERE session_id = ?
+  AND seq > ?
+ORDER BY seq ASC
+LIMIT ?;
+`, sessionID, afterSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var messages []models.SessionMessage
+	for rows.Next() {
+		var msg models.SessionMessage
+		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.LocalID, &msg.Seq, &msg.Content, &msg.CreatedAt, &msg.UpdatedAt); err != nil {
+			return nil, err
+		}
+		messages = append(messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
+func (h *SessionHandler) hasMessagesBeforeSeq(ctx context.Context, sessionID string, beforeSeq int64) (bool, error) {
+	var exists bool
+	err := h.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1
+  FROM session_messages
+  WHERE session_id = ?
+    AND seq < ?
+  LIMIT 1
+);
+`, sessionID, beforeSeq).Scan(&exists)
+	return exists, err
+}
+
+func reverseMessages(messages []models.SessionMessage) {
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
 	}
 }

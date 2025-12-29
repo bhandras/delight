@@ -359,10 +359,19 @@ func (c *Client) RawSocket() *socket.Socket {
 
 // SendMessage sends a message for a session
 func (c *Client) SendMessage(sessionID, message string) error {
-	return c.Emit(EventMessage, map[string]interface{}{
+	return c.SendMessageWithLocalID(sessionID, message, "")
+}
+
+// SendMessageWithLocalID sends a message for a session with an idempotency key.
+func (c *Client) SendMessageWithLocalID(sessionID, message, localID string) error {
+	payload := map[string]interface{}{
 		"sid":     sessionID,
 		"message": message,
-	})
+	}
+	if localID != "" {
+		payload["localId"] = localID
+	}
+	return c.Emit(EventMessage, payload)
 }
 
 // UpdateMetadata sends a metadata update for a session
