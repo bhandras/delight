@@ -13,6 +13,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/claude"
 	"github.com/bhandras/delight/cli/internal/codex"
 	"github.com/bhandras/delight/cli/internal/config"
+	"github.com/bhandras/delight/cli/internal/session/runtime"
 	"github.com/bhandras/delight/cli/internal/storage"
 	"github.com/bhandras/delight/cli/internal/websocket"
 	"github.com/bhandras/delight/cli/pkg/types"
@@ -90,6 +91,8 @@ type Manager struct {
 	inboundQueue chan func()
 
 	shutdownOnce sync.Once
+
+	rt *runtime.Runtime
 
 	lastMachineKeepAliveSkipAt time.Time
 

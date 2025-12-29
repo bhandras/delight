@@ -112,21 +112,9 @@ func (m *Manager) handleThinkingState() {
 				return
 			}
 			if !m.enqueueInbound(func() {
-				m.thinking = thinking
-
+				m.setThinking(thinking)
 				if m.debug {
 					log.Printf("Thinking state changed: %v", thinking)
-				}
-
-				// Broadcast to server via WebSocket
-				if m.wsClient != nil && m.wsClient.IsConnected() {
-					m.wsClient.EmitEphemeral(map[string]interface{}{
-						"type":     "activity",
-						"id":       m.sessionID,
-						"active":   true,
-						"thinking": thinking,
-						"activeAt": time.Now().UnixMilli(),
-					})
 				}
 			}) {
 				return

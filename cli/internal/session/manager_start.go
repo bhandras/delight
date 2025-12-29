@@ -139,6 +139,8 @@ func (m *Manager) Start(workDir string) error {
 
 	log.Printf("Session created: %s", m.sessionID)
 
+	m.initRuntime()
+
 	// Connect WebSocket
 	m.wsClient = websocket.NewClient(m.cfg.ServerURL, m.token, m.sessionID, m.debug)
 
@@ -687,6 +689,10 @@ func (m *Manager) Close() error {
 
 	if m.codexClient != nil {
 		m.codexClient.Close()
+	}
+
+	if m.rt != nil {
+		m.rt.Stop()
 	}
 
 	return nil

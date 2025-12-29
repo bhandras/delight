@@ -166,11 +166,9 @@ func (m *Manager) handleCodexEventInbound(event map[string]interface{}) {
 	evtType, _ := event["type"].(string)
 	switch evtType {
 	case "task_started":
-		m.thinking = true
-		m.broadcastThinking(true)
+		m.setThinking(true)
 	case "task_complete", "turn_aborted":
-		m.thinking = false
-		m.broadcastThinking(false)
+		m.setThinking(false)
 	}
 
 	switch evtType {

@@ -269,11 +269,9 @@ func (m *Manager) handleRemoteMessageInbound(msg *claude.RemoteMessage) error {
 
 	// Track thinking state from assistant messages
 	if msg.Type == "assistant" {
-		m.thinking = true
-		m.broadcastThinking(true)
+		m.setThinking(true)
 	} else if msg.Type == "result" {
-		m.thinking = false
-		m.broadcastThinking(false)
+		m.setThinking(false)
 	}
 
 	// Track session ID from system init

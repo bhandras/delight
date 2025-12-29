@@ -64,8 +64,7 @@ func (m *Manager) handleACPMessage(content string) {
 		return
 	}
 
-	m.thinking = true
-	m.broadcastThinking(true)
+	m.setThinking(true)
 
 	ctx := context.Background()
 	result, err := m.acpClient.Run(ctx, m.acpSessionID, content)
@@ -73,8 +72,7 @@ func (m *Manager) handleACPMessage(content string) {
 		if m.debug {
 			log.Printf("ACP run error: %v", err)
 		}
-		m.thinking = false
-		m.broadcastThinking(false)
+		m.setThinking(false)
 		return
 	}
 	if m.debug && result != nil {
@@ -85,8 +83,7 @@ func (m *Manager) handleACPMessage(content string) {
 		if m.debug {
 			log.Printf("ACP awaiting permission: runId=%s", result.RunID)
 		}
-		m.thinking = false
-		m.broadcastThinking(false)
+		m.setThinking(false)
 
 		resumePayload, ok := m.requestACPAwaitResume(result.AwaitRequest)
 		if !ok {
@@ -109,8 +106,7 @@ func (m *Manager) handleACPMessage(content string) {
 			log.Printf("ACP resume status: %s", result.Status)
 		}
 
-		m.thinking = true
-		m.broadcastThinking(true)
+		m.setThinking(true)
 	}
 
 	if result != nil && result.OutputText != "" {
@@ -120,8 +116,7 @@ func (m *Manager) handleACPMessage(content string) {
 		m.sendAgentOutput(result.OutputText)
 	}
 
-	m.thinking = false
-	m.broadcastThinking(false)
+	m.setThinking(false)
 }
 
 func (m *Manager) requestACPAwaitResume(awaitRequest map[string]interface{}) (map[string]interface{}, bool) {
