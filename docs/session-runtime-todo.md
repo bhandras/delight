@@ -88,7 +88,7 @@ Goal: reduce cognitive load without behavior changes.
 
 Goal: replace ad-hoc state mutation and locks with a formal state machine.
 
-- [ ] Create `internal/session/runtime` with:
+- [x] Create `internal/session/runtime` with:
   - `state.go`, `events.go`, `runtime.go` (loop), `commands.go` (effects)
 - [ ] Move inbound queue responsibility from Manager into Runtime
 - [ ] Manager becomes a facade that wires:
