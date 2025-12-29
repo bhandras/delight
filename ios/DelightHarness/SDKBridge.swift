@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import DelightSDK
 
 struct SessionMetadata {
@@ -190,9 +191,22 @@ enum MessageBlock: Hashable {
 
 struct MessageItem: Identifiable, Hashable {
     let id: String
+    let seq: Int64?
+    let localID: String?
+    let uuid: String?
     let role: MessageRole
     let blocks: [MessageBlock]
     let createdAt: Int64?
+}
+
+struct ScrollRequest: Identifiable, Hashable {
+    enum Target: Hashable {
+        case message(id: String, anchor: UnitPoint)
+        case bottom
+    }
+
+    let id = UUID()
+    let target: Target
 }
 
 final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
@@ -219,6 +233,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
     @Published var sessions: [SessionSummary] = []
     @Published var messages: [MessageItem] = []
+    @Published var hasMoreHistory: Bool = false
+    @Published var isLoadingHistory: Bool = false
+    @Published var scrollRequest: ScrollRequest?
     @Published var machines: [MachineInfo] = []
     @Published var logServerURL: String = ""
     @Published var logServerRunning: Bool = false
@@ -230,6 +247,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private var selectedMetadata: SessionMetadata?
     private var logLines: [String] = []
     private var needsSessionRefresh: Bool = false
+    private var oldestLoadedSeq: Int64?
 
     // Calls into the gomobile-generated SDK must be serialized and must never be made
     // synchronously from inside a Go→Swift callback (e.g. `onUpdate`).
@@ -540,26 +558,66 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         sessionID = id
         selectedMetadata = sessions.first(where: { $0.id == id })?.metadata
         messages = []
-        fetchMessages()
+        hasMoreHistory = false
+        oldestLoadedSeq = nil
+        fetchLatestMessages(reset: true)
     }
 
     func fetchMessages() {
+        fetchLatestMessages(reset: true)
+    }
+
+    func fetchLatestMessages(reset: Bool) {
         guard !sessionID.isEmpty else {
             log("Session ID required")
             return
         }
         do {
-            let responseBuf = try sdkCallSync {
-                try client.getSessionMessagesBuffer(sessionID, limit: 50)
+            let responseBuf: SdkBuffer? = try sdkCallSync {
+                // Prefer cursor-based pagination if available.
+                try client.getSessionMessagesPageBuffer(sessionID, limit: 50, beforeSeq: 0)
             }
             guard let json = stringFromBuffer(responseBuf) else {
                 log("Get messages error: unable to decode response")
                 return
             }
             log("getSessionMessages raw: \(json)")
-            parseMessages(json)
+            applyMessagesResponse(json, reset: reset, scrollToBottom: true)
         } catch {
             log("Get messages error: \(error)")
+        }
+    }
+
+    func fetchOlderMessages() {
+        guard !sessionID.isEmpty else { return }
+        guard hasMoreHistory else { return }
+        guard !isLoadingHistory else { return }
+        guard let cursor = oldestLoadedSeq, cursor > 0 else { return }
+
+        isLoadingHistory = true
+
+        sdkCallAsync {
+            do {
+                let responseBuf = try self.sdkCallSync {
+                    try self.client.getSessionMessagesPageBuffer(self.sessionID, limit: 50, beforeSeq: cursor)
+                }
+                guard let json = self.stringFromBuffer(responseBuf) else {
+                    self.log("Get older messages error: unable to decode response")
+                    DispatchQueue.main.async {
+                        self.isLoadingHistory = false
+                    }
+                    return
+                }
+                DispatchQueue.main.async {
+                    self.applyMessagesResponse(json, reset: false, scrollToBottom: false)
+                    self.isLoadingHistory = false
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.isLoadingHistory = false
+                }
+                self.log("Get older messages error: \(error)")
+            }
         }
     }
 
@@ -575,16 +633,21 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
         let outgoingText = messageText
         messageText = ""
+        let localID = UUID().uuidString
 
         // Optimistic UI: show the user's message immediately.
         let optimistic = MessageItem(
-            id: "local-\(UUID().uuidString)",
+            id: "local-\(localID)",
+            seq: nil,
+            localID: localID,
+            uuid: nil,
             role: .user,
             blocks: [.text(outgoingText)],
             createdAt: Int64(Date().timeIntervalSince1970 * 1000)
         )
         DispatchQueue.main.async {
             self.messages.append(optimistic)
+            self.scrollRequest = ScrollRequest(target: .bottom)
         }
 
         let rawRecord: [String: Any] = [
@@ -598,12 +661,14 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             let data = try JSONSerialization.data(withJSONObject: rawRecord, options: [])
             let json = String(data: data, encoding: .utf8) ?? "{}"
             try sdkCallSync {
-                try client.sendMessage(sessionID, rawRecordJSON: json)
+                try client.sendMessage(withLocalID: sessionID, localID: localID, rawRecordJSON: json)
             }
             log("Sent message")
             // Pull latest state after send to incorporate server ordering + assistant reply.
+            //
+            // This merges (rather than replacing) so we don't blow away older pages.
             sdkCallAsync {
-                self.fetchMessages()
+                self.fetchLatestMessages(reset: false)
             }
         } catch {
             log("Send error: \(error)")
@@ -683,6 +748,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
         let id = message["id"] as? String ?? UUID().uuidString
         let createdAt = message["createdAt"] as? Int64
+        let seq = (message["seq"] as? NSNumber)?.int64Value ?? message["seq"] as? Int64
 
         var blocks = extractBlocks(from: content, sessionID: sessionID)
         if blocks.isEmpty, let text = extractText(from: content) {
@@ -698,7 +764,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
 
         let role = extractRole(from: message, content: content)
-        let serverItem = MessageItem(id: id, role: role, blocks: blocks, createdAt: createdAt)
+        let localID = message["localId"] as? String
+        let uuid = self.extractMessageUUID(from: content)
+        let serverItem = MessageItem(id: id, seq: seq, localID: localID, uuid: uuid, role: role, blocks: blocks, createdAt: createdAt)
 
         DispatchQueue.main.async {
             // Deduplicate if we already have this message.
@@ -706,17 +774,48 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 return
             }
 
-            // Reconcile optimistic messages: if we recently appended a local user bubble
-            // with identical text, remove it once the server echo arrives.
+            // Reconcile optimistic messages: replace in-place once the server echo arrives.
             if serverItem.role == .user {
-                if let idx = self.messages.firstIndex(where: { existing in
-                    existing.id.hasPrefix("local-") && existing.role == .user && existing.blocks == serverItem.blocks
+                if let localID = serverItem.localID, !localID.isEmpty {
+                    let optimisticID = "local-\(localID)"
+                    if let idx = self.messages.firstIndex(where: { $0.id == optimisticID }) {
+                        // Replace in-place to avoid a brief "duplicate bubble" flicker.
+                        self.messages[idx] = serverItem
+                        if self.shouldAutoScrollToBottom(afterAppending: serverItem) {
+                            self.scrollRequest = ScrollRequest(target: .bottom)
+                        }
+                        return
+                    }
+                }
+
+                // Deduplicate "echoes" of user messages coming from multiple sources.
+                //
+                // In practice we can see the same user message twice:
+                //  - A raw record sent from the mobile UI (no `uuid` in decrypted content).
+                //  - A later CLI-forwarded Claude session message (has `uuid`).
+                // Prefer the uuid-bearing message, since it represents the canonical
+                // transcript entry from the CLI session stream.
+                if self.squashUserEchoes(prefer: serverItem) {
+                    if self.shouldAutoScrollToBottom(afterAppending: serverItem) {
+                        self.scrollRequest = ScrollRequest(target: .bottom)
+                    }
+                    return
+                }
+
+                // Fallback heuristic when localId isn't present: match by normalized blocks.
+                let serverSig = self.blocksSignature(serverItem.blocks)
+                if let idx = self.messages.lastIndex(where: { existing in
+                    guard existing.id.hasPrefix("local-"), existing.role == .user else { return false }
+                    return self.blocksSignature(existing.blocks) == serverSig
                 }) {
                     self.messages.remove(at: idx)
                 }
             }
 
             self.messages.append(serverItem)
+            if self.shouldAutoScrollToBottom(afterAppending: serverItem) {
+                self.scrollRequest = ScrollRequest(target: .bottom)
+            }
         }
 
         // If we rendered a real message, ensure we clear thinking for this session.
@@ -1039,21 +1138,223 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func parseMessages(_ json: String) {
+        applyMessagesResponse(json, reset: true, scrollToBottom: false)
+    }
+
+    private struct MessagesPage {
+        let messages: [MessageItem]
+        let hasMore: Bool
+        let nextBeforeSeq: Int64?
+    }
+
+    private func applyMessagesResponse(
+        _ json: String,
+        reset: Bool,
+        scrollToBottom: Bool,
+        anchorID: String? = nil
+    ) {
+        let page = decodeMessagesPage(json)
+        DispatchQueue.main.async {
+            if reset {
+                self.messages = page.messages
+            } else {
+                self.messages = self.mergeMessages(existing: self.messages, incoming: page.messages)
+            }
+
+            self.oldestLoadedSeq = self.messages.compactMap(\.seq).min()
+            self.hasMoreHistory = page.hasMore
+
+            if scrollToBottom, !self.messages.isEmpty {
+                self.scrollRequest = ScrollRequest(target: .bottom)
+            } else if let anchorID {
+                self.scrollRequest = ScrollRequest(target: .message(id: anchorID, anchor: .top))
+            }
+        }
+
+        // Treat thinking events as ephemeral. We only show "vibing" while we have
+        // a fresh activity update; message history often contains "thinking" blocks
+        // that should not keep the UI stuck in thinking mode after a restart.
+        updateSessionThinking(false)
+    }
+
+    private func mergeMessages(existing: [MessageItem], incoming: [MessageItem]) -> [MessageItem] {
+        if existing.isEmpty { return incoming }
+        if incoming.isEmpty { return existing }
+
+        var resultByID: [String: MessageItem] = [:]
+        for message in existing {
+            resultByID[message.id] = message
+        }
+        for message in incoming {
+            resultByID[message.id] = message
+        }
+
+        // Reconcile optimistic messages (local user bubbles) once we see a server echo.
+        let serverLocalIDs = Set(
+            incoming
+                .compactMap(\.localID)
+                .filter { !$0.isEmpty }
+        )
+        let serverUserSignatures = Set(
+            incoming
+                .filter { $0.role == .user && !$0.id.hasPrefix("local-") }
+                .map { blocksSignature($0.blocks) }
+        )
+        let merged = resultByID.values.filter { item in
+            if item.id.hasPrefix("local-"), item.role == .user {
+                if let localID = item.localID, !localID.isEmpty, serverLocalIDs.contains(localID) {
+                    return false
+                }
+                return !serverUserSignatures.contains(blocksSignature(item.blocks))
+            }
+            return true
+        }
+
+        return squashDuplicateUserMessages(merged.sorted(by: messageSortKey))
+    }
+
+    private func squashDuplicateUserMessages(_ sorted: [MessageItem]) -> [MessageItem] {
+        // Prefer uuid-bearing user messages over non-uuid duplicates when they have the
+        // same content and occur within a short window (typically mobile-send + CLI echo).
+        if sorted.count < 2 { return sorted }
+
+        var result: [MessageItem] = []
+        result.reserveCapacity(sorted.count)
+
+        for item in sorted {
+            if item.role == .user,
+               let last = result.last,
+               last.role == .user,
+               blocksSignature(last.blocks) == blocksSignature(item.blocks),
+               isNearInTime(last.createdAt, item.createdAt) {
+                let keep = preferUUIDMessage(lhs: last, rhs: item)
+                result[result.count - 1] = keep
+                continue
+            }
+            result.append(item)
+        }
+        return result
+    }
+
+    private func isNearInTime(_ a: Int64?, _ b: Int64?, windowMs: Int64 = 5_000) -> Bool {
+        guard let a, let b else { return false }
+        let delta = a > b ? (a - b) : (b - a)
+        return delta <= windowMs
+    }
+
+    private func preferUUIDMessage(lhs: MessageItem, rhs: MessageItem) -> MessageItem {
+        // If exactly one has a uuid, keep that one.
+        let lhsHasUUID = (lhs.uuid ?? "").isEmpty == false
+        let rhsHasUUID = (rhs.uuid ?? "").isEmpty == false
+        if lhsHasUUID != rhsHasUUID {
+            return rhsHasUUID ? rhs : lhs
+        }
+        // Otherwise keep the later one (higher seq if present, else later createdAt).
+        if let lhsSeq = lhs.seq, let rhsSeq = rhs.seq, lhsSeq != rhsSeq {
+            return rhsSeq > lhsSeq ? rhs : lhs
+        }
+        if let lhsAt = lhs.createdAt, let rhsAt = rhs.createdAt, lhsAt != rhsAt {
+            return rhsAt > lhsAt ? rhs : lhs
+        }
+        return rhs
+    }
+
+    private func squashUserEchoes(prefer incoming: MessageItem) -> Bool {
+        guard incoming.role == .user else { return false }
+        let incomingSig = blocksSignature(incoming.blocks)
+
+        // If the incoming message has a uuid, replace any near-duplicate without a uuid.
+        if let uuid = incoming.uuid, !uuid.isEmpty {
+            if let idx = messages.lastIndex(where: { existing in
+                guard existing.role == .user else { return false }
+                if blocksSignature(existing.blocks) != incomingSig { return false }
+                if !isNearInTime(existing.createdAt, incoming.createdAt) { return false }
+                return (existing.uuid ?? "").isEmpty
+            }) {
+                messages[idx] = incoming
+                return true
+            }
+            return false
+        }
+
+        // If the incoming message has no uuid, and we already have the uuid-bearing
+        // near-duplicate, drop the incoming one.
+        if messages.contains(where: { existing in
+            guard existing.role == .user else { return false }
+            if blocksSignature(existing.blocks) != incomingSig { return false }
+            if !isNearInTime(existing.createdAt, incoming.createdAt) { return false }
+            return (existing.uuid ?? "").isEmpty == false
+        }) {
+            return true
+        }
+
+        return false
+    }
+
+    private func blocksSignature(_ blocks: [MessageBlock]) -> String {
+        // Stable, normalized representation used for deduping optimistic user messages
+        // against server echoes (both for realtime updates and page fetches).
+        let pieces: [String] = blocks.map { block in
+            switch block {
+            case .text(let text):
+                return "text:\(normalizeText(text))"
+            case .code(let language, let content):
+                let lang = (language ?? "").lowercased()
+                return "code(\(lang)):\(normalizeText(content))"
+            case .toolCall(let summary):
+                return "tool:\(normalizeText(summary.title))"
+            }
+        }
+        return pieces.joined(separator: "\n")
+    }
+
+    private func normalizeText(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func messageSortKey(_ lhs: MessageItem, _ rhs: MessageItem) -> Bool {
+        let lhsSeq = lhs.seq ?? Int64.max
+        let rhsSeq = rhs.seq ?? Int64.max
+        if lhsSeq != rhsSeq { return lhsSeq < rhsSeq }
+
+        let lhsTime = lhs.createdAt ?? 0
+        let rhsTime = rhs.createdAt ?? 0
+        if lhsTime != rhsTime { return lhsTime < rhsTime }
+
+        return lhs.id < rhs.id
+    }
+
+    private func shouldAutoScrollToBottom(afterAppending newItem: MessageItem) -> Bool {
+        // Keep the transcript pinned to the bottom whenever a conversational message
+        // arrives (user or assistant). History pagination is handled separately and
+        // explicitly opts out of scrolling to bottom.
+        return newItem.role == .user || newItem.role == .assistant
+    }
+
+    private func decodeMessagesPage(_ json: String) -> MessagesPage {
         guard let data = json.data(using: .utf8) else {
-            return
+            return MessagesPage(messages: [], hasMore: false, nextBeforeSeq: nil)
         }
         let parsed: Any
         do {
             parsed = try JSONSerialization.jsonObject(with: data, options: [])
         } catch {
             log("Parse messages error: \(error)")
-            return
+            return MessagesPage(messages: [], hasMore: false, nextBeforeSeq: nil)
         }
 
         let itemsArray: [Any]
+        var hasMore: Bool = false
+        var nextBeforeSeq: Int64?
         if let dict = parsed as? [String: Any] {
             if let messages = dict["messages"] as? [Any] {
                 itemsArray = messages
+                if let page = dict["page"] as? [String: Any] {
+                    hasMore = page["hasMore"] as? Bool ?? false
+                    nextBeforeSeq = page["nextBeforeSeq"] as? Int64 ?? (page["nextBeforeSeq"] as? NSNumber)?.int64Value
+                }
             } else if let dataDict = dict["data"] as? [String: Any],
                       let messages = dataDict["messages"] as? [Any] {
                 itemsArray = messages
@@ -1096,6 +1397,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             guard let dict = item as? [String: Any] else { continue }
             let id = dict["id"] as? String ?? UUID().uuidString
             let createdAt = dict["createdAt"] as? Int64
+            let seq = dict["seq"] as? Int64 ?? (dict["seq"] as? NSNumber)?.int64Value
             let content = normalizeContent(firstNonNull(dict["content"], dict["message"], dict["data"]))
             if isNullMessage(content) || isFileHistorySnapshot(content) {
                 continue
@@ -1140,19 +1442,19 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if let primaryKey {
                 seenKeys.insert(primaryKey)
             }
-            messages.append(MessageItem(id: id, role: role, blocks: blocks, createdAt: createdAt))
+            messages.append(MessageItem(id: id, seq: seq, localID: localID, uuid: uuid, role: role, blocks: blocks, createdAt: createdAt))
         }
 
-        DispatchQueue.main.async {
-            self.messages = messages
-        }
-        // Treat thinking events as ephemeral. We only show "vibing" while we have
-        // a fresh activity update; message history often contains "thinking" blocks
-        // that should not keep the UI stuck in thinking mode after a restart.
-        updateSessionThinking(false)
         if sawThinkingOnly && messages.isEmpty {
             log("Only thinking blocks found (no renderable messages).")
         }
+
+        // Best-effort inference for servers/clients that don't include `page` metadata.
+        if nextBeforeSeq == nil {
+            nextBeforeSeq = messages.compactMap(\.seq).min()
+        }
+
+        return MessagesPage(messages: messages, hasMore: hasMore, nextBeforeSeq: nextBeforeSeq)
     }
 
     private func normalizeContent(_ content: Any?) -> Any? {

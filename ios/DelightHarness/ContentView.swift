@@ -406,6 +406,7 @@ private struct TerminalRow: View {
 private struct TerminalDetailView: View {
     @ObservedObject var model: HarnessViewModel
     let session: SessionSummary
+    @State private var initialScrollDone: Bool = false
 
     var body: some View {
         ZStack {
@@ -414,21 +415,17 @@ private struct TerminalDetailView: View {
                 if session.agentState?.controlledByUser == true {
                     ControlStatusBanner()
                 }
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 12) {
-                            ForEach(Array(model.messages.enumerated()), id: \.offset) { _, message in
-                                MessageBubble(message: message)
-                                    .id(message.id)
-                            }
-                        }
-                        .padding()
-                    }
-                    .onChange(of: model.messages.count) { _ in
-                        if let last = model.messages.last {
-                            proxy.scrollTo(last.id, anchor: .bottom)
-                        }
-                    }
+                TerminalMessagesView(
+                    messages: model.messages,
+                    hasMoreHistory: model.hasMoreHistory,
+                    isLoadingHistory: model.isLoadingHistory,
+                    onLoadOlder: { model.fetchOlderMessages() },
+                    scrollRequest: model.scrollRequest,
+                    onConsumeScrollRequest: { model.scrollRequest = nil }
+                )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    model.scrollRequest = ScrollRequest(target: .bottom)
                 }
 
                 ConnectionStatusRow(status: statusInfo(for: session), activityText: session.thinking ? vibingMessage(for: session.id) : nil)
@@ -461,12 +458,13 @@ private struct TerminalDetailView: View {
             }
         }
         .onAppear {
+            initialScrollDone = false
             model.selectSession(session.id)
         }
     }
 }
 
-private struct MessageBubble: View {
+struct MessageBubble: View {
     let message: MessageItem
 
     var body: some View {
