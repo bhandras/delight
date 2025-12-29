@@ -1,0 +1,214 @@
+package session
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+
+	"github.com/bhandras/delight/cli/internal/acp"
+	"github.com/bhandras/delight/cli/pkg/types"
+)
+
+func (m *Manager) ensureACPSessionID() error {
+	if m.acpSessionID != "" {
+		return nil
+	}
+	if m.sessionID == "" {
+		return fmt.Errorf("missing happy session id")
+	}
+
+	path := filepath.Join(m.cfg.DelightHome, "acp.sessions.json")
+	store := map[string]string{}
+	if data, err := os.ReadFile(path); err == nil {
+		var payload struct {
+			Sessions map[string]string `json:"sessions"`
+		}
+		if err := json.Unmarshal(data, &payload); err == nil && payload.Sessions != nil {
+			store = payload.Sessions
+		}
+	}
+
+	if existing, ok := store[m.sessionID]; ok && existing != "" {
+		m.acpSessionID = existing
+		return nil
+	}
+
+	sessionID, err := acp.NewUUID()
+	if err != nil {
+		return err
+	}
+	store[m.sessionID] = sessionID
+
+	payload := struct {
+		Sessions map[string]string `json:"sessions"`
+	}{
+		Sessions: store,
+	}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, out, 0600); err != nil {
+		return err
+	}
+
+	m.acpSessionID = sessionID
+	return nil
+}
+
+func (m *Manager) handleACPMessage(content string) {
+	if m.acpClient == nil {
+		return
+	}
+
+	m.thinking = true
+	m.broadcastThinking(true)
+
+	ctx := context.Background()
+	result, err := m.acpClient.Run(ctx, m.acpSessionID, content)
+	if err != nil {
+		if m.debug {
+			log.Printf("ACP run error: %v", err)
+		}
+		m.thinking = false
+		m.broadcastThinking(false)
+		return
+	}
+	if m.debug && result != nil {
+		log.Printf("ACP run status: %s runId=%s awaiting=%v", result.Status, result.RunID, result.AwaitRequest != nil)
+	}
+
+	for result != nil && result.Status == "awaiting" && result.AwaitRequest != nil {
+		if m.debug {
+			log.Printf("ACP awaiting permission: runId=%s", result.RunID)
+		}
+		m.thinking = false
+		m.broadcastThinking(false)
+
+		resumePayload, ok := m.requestACPAwaitResume(result.AwaitRequest)
+		if !ok {
+			if m.debug {
+				log.Printf("ACP await resume aborted")
+			}
+			return
+		}
+		if m.debug {
+			log.Printf("ACP resuming run: %s", result.RunID)
+		}
+		result, err = m.acpClient.Resume(ctx, result.RunID, resumePayload)
+		if err != nil {
+			if m.debug {
+				log.Printf("ACP resume error: %v", err)
+			}
+			return
+		}
+		if m.debug {
+			log.Printf("ACP resume status: %s", result.Status)
+		}
+
+		m.thinking = true
+		m.broadcastThinking(true)
+	}
+
+	if result != nil && result.OutputText != "" {
+		if m.debug {
+			log.Printf("ACP output: %q", result.OutputText)
+		}
+		m.sendAgentOutput(result.OutputText)
+	}
+
+	m.thinking = false
+	m.broadcastThinking(false)
+}
+
+func (m *Manager) requestACPAwaitResume(awaitRequest map[string]interface{}) (map[string]interface{}, bool) {
+	requestID, err := acp.NewUUID()
+	if err != nil {
+		if m.debug {
+			log.Printf("ACP await request id error: %v", err)
+		}
+		return nil, false
+	}
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"await": awaitRequest,
+	})
+	if err != nil {
+		return nil, false
+	}
+
+	response, err := m.handlePermissionRequest(requestID, "acp.await", payload)
+	if err != nil {
+		if m.debug {
+			log.Printf("ACP permission error: %v", err)
+		}
+		return nil, false
+	}
+	if m.debug {
+		log.Printf("ACP permission response received: requestId=%s", requestID)
+	}
+
+	allow := response != nil && response.Behavior == "allow"
+	message := ""
+	if response != nil {
+		message = response.Message
+	}
+
+	return map[string]interface{}{
+		"allow":   allow,
+		"message": message,
+	}, true
+}
+
+func (m *Manager) sendAgentOutput(text string) {
+	if m.wsClient == nil || !m.wsClient.IsConnected() {
+		return
+	}
+
+	uuid := types.NewCUID()
+
+	message := map[string]interface{}{
+		"role":    "assistant",
+		"model":   "acp",
+		"content": []map[string]interface{}{{"type": "text", "text": text}},
+	}
+	payload := map[string]interface{}{
+		"role": "agent",
+		"content": map[string]interface{}{
+			"type": "output",
+			"data": map[string]interface{}{
+				"type":             "assistant",
+				"isSidechain":      false,
+				"isCompactSummary": false,
+				"isMeta":           false,
+				"uuid":             uuid,
+				"parentUuid":       nil,
+				"message":          message,
+			},
+		},
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		if m.debug {
+			log.Printf("ACP output marshal error: %v", err)
+		}
+		return
+	}
+
+	encrypted, err := m.encrypt(data)
+	if err != nil {
+		if m.debug {
+			log.Printf("ACP output encrypt error: %v", err)
+		}
+		return
+	}
+
+	m.wsClient.EmitMessage(map[string]interface{}{
+		"sid":     m.sessionID,
+		"message": encrypted,
+	})
+}
