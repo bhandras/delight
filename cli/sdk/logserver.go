@@ -293,7 +293,7 @@ func addrToIP(addr net.Addr) string {
 	return ""
 }
 
-func (c *Client) StartLogServer() (string, error) {
+func (c *Client) startLogServer() (string, error) {
 	c.mu.Lock()
 	if c.logServer != nil {
 		url := c.logServerURL
@@ -341,6 +341,16 @@ func (c *Client) StartLogServer() (string, error) {
 	c.mu.Unlock()
 	logLine("Go log server started at " + url)
 	return url, nil
+}
+
+// StartLogServerBuffer starts the HTTP log server and returns its base URL as a
+// Buffer (gomobile-safe).
+func (c *Client) StartLogServerBuffer() (*Buffer, error) {
+	url, err := c.startLogServer()
+	if err != nil {
+		return nil, err
+	}
+	return newBufferFromString(url), nil
 }
 
 func (c *Client) StopLogServer() error {

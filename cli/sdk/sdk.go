@@ -44,22 +44,6 @@ type Client struct {
 	callbacks *dispatcher
 }
 
-// KeyPair holds a base64-encoded keypair for gomobile bindings.
-type KeyPair struct {
-	publicKey  string
-	privateKey string
-}
-
-// PublicKey returns the base64-encoded public key.
-func (k *KeyPair) PublicKey() string {
-	return k.publicKey
-}
-
-// PrivateKey returns the base64-encoded private key.
-func (k *KeyPair) PrivateKey() string {
-	return k.privateKey
-}
-
 // NewClient creates a new SDK client.
 func NewClient(serverURL string) *Client {
 	return &Client{
@@ -81,8 +65,7 @@ func (c *Client) SetServerURL(serverURL string) {
 	})
 }
 
-// GenerateMasterKeyBase64 creates a new 32-byte master key (base64).
-func GenerateMasterKeyBase64() (string, error) {
+func generateMasterKeyBase64() (string, error) {
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		return "", fmt.Errorf("generate master key: %w", err)
@@ -90,16 +73,32 @@ func GenerateMasterKeyBase64() (string, error) {
 	return base64.StdEncoding.EncodeToString(secret), nil
 }
 
-// GenerateEd25519KeyPair creates a new signing keypair for /v1/auth.
-func GenerateEd25519KeyPair() (*KeyPair, error) {
+// GenerateMasterKeyBase64Buffer returns a gomobile-safe Buffer containing a new
+// 32-byte master key (base64).
+func GenerateMasterKeyBase64Buffer() (*Buffer, error) {
+	key, err := generateMasterKeyBase64()
+	if err != nil {
+		return nil, err
+	}
+	return newBufferFromString(key), nil
+}
+
+func generateEd25519KeyPairBase64() (publicKeyB64 string, privateKeyB64 string, err error) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("generate ed25519 keypair: %w", err)
+		return "", "", fmt.Errorf("generate ed25519 keypair: %w", err)
 	}
-	return &KeyPair{
-		publicKey:  base64.StdEncoding.EncodeToString(pub),
-		privateKey: base64.StdEncoding.EncodeToString(priv),
-	}, nil
+	return base64.StdEncoding.EncodeToString(pub), base64.StdEncoding.EncodeToString(priv), nil
+}
+
+// GenerateEd25519KeyPairBuffers returns a new keypair as base64 Buffers
+// (gomobile-safe).
+func GenerateEd25519KeyPairBuffers() (*KeyPairBuffers, error) {
+	pub, priv, err := generateEd25519KeyPairBase64()
+	if err != nil {
+		return nil, err
+	}
+	return newKeyPairBuffers(pub, priv), nil
 }
 
 // SetListener registers the listener for SDK events.
@@ -112,8 +111,17 @@ func (c *Client) SetListener(listener Listener) {
 	})
 }
 
-// AuthWithKeyPair performs challenge-response auth and stores the token.
-func (c *Client) AuthWithKeyPair(publicKeyB64, privateKeyB64 string) (string, error) {
+// AuthWithKeyPairBuffer is a gomobile-safe wrapper that returns the token in a
+// Buffer.
+func (c *Client) AuthWithKeyPairBuffer(publicKeyB64, privateKeyB64 string) (*Buffer, error) {
+	token, err := c.authWithKeyPairDispatch(publicKeyB64, privateKeyB64)
+	if err != nil {
+		return nil, err
+	}
+	return newBufferFromString(token), nil
+}
+
+func (c *Client) authWithKeyPairDispatch(publicKeyB64, privateKeyB64 string) (string, error) {
 	value, err := c.dispatch.call(func() (interface{}, error) {
 		return c.authWithKeyPair(publicKeyB64, privateKeyB64)
 	})
@@ -173,9 +181,7 @@ func (c *Client) authWithKeyPair(publicKeyB64, privateKeyB64 string) (string, er
 	return resp.Token, nil
 }
 
-// ParseTerminalURL extracts the terminal public key from a QR URL.
-// Accepts delight://terminal?<pubkey> and happy://terminal?<pubkey>.
-func ParseTerminalURL(qrURL string) (string, error) {
+func parseTerminalURL(qrURL string) (string, error) {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("ParseTerminalURL", r)
@@ -200,6 +206,16 @@ func ParseTerminalURL(qrURL string) (string, error) {
 		return "", fmt.Errorf("decode public key: %w", err)
 	}
 	return base64.StdEncoding.EncodeToString(pubBytes), nil
+}
+
+// ParseTerminalURLBuffer is a gomobile-safe wrapper that returns the extracted
+// terminal public key as a Buffer.
+func ParseTerminalURLBuffer(qrURL string) (*Buffer, error) {
+	value, err := parseTerminalURL(qrURL)
+	if err != nil {
+		return nil, err
+	}
+	return newBufferFromString(value), nil
 }
 
 // ApproveTerminalAuth encrypts the master key and posts /v1/auth/response.
@@ -511,8 +527,16 @@ func (c *Client) sendMessage(sessionID string, rawRecordJSON string) error {
 	return socket.SendMessage(sessionID, encrypted)
 }
 
-// ListSessions fetches sessions and caches data keys. Returns JSON response.
-func (c *Client) ListSessions() (resp string, err error) {
+// ListSessionsBuffer returns ListSessions JSON as a gomobile-safe Buffer.
+func (c *Client) ListSessionsBuffer() (*Buffer, error) {
+	resp, err := c.listSessionsDispatch()
+	if err != nil {
+		return nil, err
+	}
+	return newBufferFromString(resp), nil
+}
+
+func (c *Client) listSessionsDispatch() (resp string, err error) {
 	value, err := c.dispatch.call(func() (interface{}, error) {
 		return c.listSessions()
 	})
@@ -566,8 +590,16 @@ func (c *Client) listSessions() (resp string, err error) {
 	return string(respBody), nil
 }
 
-// ListMachines fetches machines and decrypts metadata/daemon state when possible.
-func (c *Client) ListMachines() (resp string, err error) {
+// ListMachinesBuffer returns ListMachines JSON as a gomobile-safe Buffer.
+func (c *Client) ListMachinesBuffer() (*Buffer, error) {
+	resp, err := c.listMachinesDispatch()
+	if err != nil {
+		return nil, err
+	}
+	return newBufferFromString(resp), nil
+}
+
+func (c *Client) listMachinesDispatch() (resp string, err error) {
 	value, err := c.dispatch.call(func() (interface{}, error) {
 		return c.listMachines()
 	})
@@ -648,8 +680,16 @@ func (c *Client) decryptLegacyString(payload string) (string, error) {
 	return string(encoded), nil
 }
 
-// GetSessionMessages fetches session messages and decrypts message content.
-func (c *Client) GetSessionMessages(sessionID string, limit int) (resp string, err error) {
+// GetSessionMessagesBuffer returns GetSessionMessages JSON as a gomobile-safe Buffer.
+func (c *Client) GetSessionMessagesBuffer(sessionID string, limit int) (*Buffer, error) {
+	resp, err := c.getSessionMessagesDispatch(sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return newBufferFromString(resp), nil
+}
+
+func (c *Client) getSessionMessagesDispatch(sessionID string, limit int) (resp string, err error) {
 	value, err := c.dispatch.call(func() (interface{}, error) {
 		return c.getSessionMessages(sessionID, limit)
 	})

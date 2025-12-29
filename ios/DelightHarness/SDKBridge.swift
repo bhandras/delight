@@ -260,9 +260,46 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         configureLogDirectory()
         ensureKeys()
         sdkCallQueue.setSpecific(key: sdkCallQueueKey, value: ())
-        sdkCallSync {
-            self.client.setListener(self)
+        // Intentionally do not register a Go→Swift listener for now.
+        // The iOS harness can function by polling (`fetchMessages`) after user actions.
+        // This also avoids re-entrant call patterns during debugging.
+    }
+
+    private func stringFromBuffer(_ buffer: SdkBuffer?) -> String? {
+        guard let buffer else { return nil }
+        let length = Int(buffer.len())
+        if length == 0 {
+            return ""
         }
+        var data = Data(count: length)
+        var written: Int = 0
+        var copyError: Error?
+        let ok: Bool = data.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return false }
+            let ptr = Int64(UInt(bitPattern: base))
+            do {
+                try buffer.copy(to: ptr, dstLen: length, ret0_: &written)
+                return true
+            } catch {
+                copyError = error
+                return false
+            }
+        }
+        if let copyError {
+            log("Buffer copy error: \(copyError)")
+            return nil
+        }
+        guard ok else {
+            log("Buffer copy failed")
+            return nil
+        }
+        if written < 0 {
+            return nil
+        }
+        if written < data.count {
+            data = data.prefix(written)
+        }
+        return String(data: data, encoding: .utf8)
     }
 
     private func sdkCallSync<T>(_ work: () throws -> T) rethrows -> T {
@@ -307,12 +344,16 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     func generateKeys() {
         var error: NSError?
-        let master = SdkGenerateMasterKeyBase64(&error)
+        let masterBuf = SdkGenerateMasterKeyBase64Buffer(&error)
         if let error {
             log("Generate master key error: \(error)")
             return
         }
-        guard let keypair = SdkGenerateEd25519KeyPair(&error) else {
+        guard let master = stringFromBuffer(masterBuf) else {
+            log("Generate master key error: unable to decode master key")
+            return
+        }
+        guard let keypair = SdkGenerateEd25519KeyPairBuffers(&error) else {
             log("Generate keypair error: \(error?.localizedDescription ?? "unknown error")")
             return
         }
@@ -320,9 +361,14 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             log("Generate keypair error: \(error)")
             return
         }
+        guard let pub = stringFromBuffer(keypair.publicKey()),
+              let priv = stringFromBuffer(keypair.privateKey()) else {
+            log("Generate keypair error: unable to decode keypair")
+            return
+        }
         masterKey = master
-        publicKey = keypair.publicKey()
-        privateKey = keypair.privateKey()
+        publicKey = pub
+        privateKey = priv
         log("Generated master + ed25519 keypair")
     }
 
@@ -362,23 +408,30 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func authWithKeypair() {
-        var error: NSError?
-        let newToken = sdkCallSync {
-            client.auth(withKeyPair: publicKey, privateKeyB64: privateKey, error: &error)
-        }
-        if let error {
+        do {
+            let tokenBuf = try sdkCallSync {
+                try client.auth(withKeyPairBuffer: publicKey, privateKeyB64: privateKey)
+            }
+            guard let tokenValue = stringFromBuffer(tokenBuf) else {
+                log("Auth error: unable to decode token")
+                return
+            }
+            token = tokenValue
+            log("Auth ok")
+        } catch {
             log("Auth error: \(error)")
-            return
         }
-        token = newToken
-        log("Auth ok")
     }
 
     func approveTerminal() {
         var error: NSError?
-        let terminalKey = SdkParseTerminalURL(terminalURL, &error)
+        let terminalKeyBuf = SdkParseTerminalURLBuffer(terminalURL, &error)
         if let error {
             log("Approve error: \(error)")
+            return
+        }
+        guard let terminalKey = stringFromBuffer(terminalKeyBuf) else {
+            log("Approve error: unable to decode terminal key")
             return
         }
         do {
@@ -407,10 +460,19 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     return
                 }
                 log("Token missing; attempting auth with keypair.")
-                let newToken = sdkCallSync {
-                    client.auth(withKeyPair: publicKey, privateKeyB64: privateKey, error: nil)
+                do {
+                    let tokenBuf = try sdkCallSync {
+                        try client.auth(withKeyPairBuffer: publicKey, privateKeyB64: privateKey)
+                    }
+                    guard let tokenValue = stringFromBuffer(tokenBuf) else {
+                        log("Auth error: unable to decode token")
+                        return
+                    }
+                    token = tokenValue
+                } catch {
+                    log("Auth error: \(error)")
+                    return
                 }
-                token = newToken
                 log("Auth ok")
             }
             try sdkCallSync {
@@ -439,31 +501,33 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func listSessions() {
-        var error: NSError?
-        let response = sdkCallSync {
-            client.listSessions(&error)
-        }
-        if let error {
+        do {
+            let responseBuf = try sdkCallSync {
+                try client.listSessionsBuffer()
+            }
+            guard let json = stringFromBuffer(responseBuf) else {
+                log("List sessions error: unable to decode response")
+                return
+            }
+            parseSessions(json)
+            listMachines()
+            log("Sessions loaded")
+        } catch {
             log("List sessions error: \(error)")
-            return
         }
-        parseSessions(response)
-        listMachines()
-        log("Sessions loaded")
     }
 
     func listMachines() {
-        var error: NSError?
-        let response = sdkCallSync {
-            client.listMachines(&error)
-        }
-        if let error {
+        do {
+            let responseBuf = try sdkCallSync {
+                try client.listMachinesBuffer()
+            }
+            if let json = stringFromBuffer(responseBuf), !json.isEmpty {
+                parseMachines(json)
+                log("Machines loaded")
+            }
+        } catch {
             log("List machines error: \(error)")
-            return
-        }
-        if !response.isEmpty {
-            parseMachines(response)
-            log("Machines loaded")
         }
     }
 
@@ -479,16 +543,19 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             log("Session ID required")
             return
         }
-        var error: NSError?
-        let response = sdkCallSync {
-            client.getSessionMessages(sessionID, limit: 50, error: &error)
-        }
-        if let error {
+        do {
+            let responseBuf = try sdkCallSync {
+                try client.getSessionMessagesBuffer(sessionID, limit: 50)
+            }
+            guard let json = stringFromBuffer(responseBuf) else {
+                log("Get messages error: unable to decode response")
+                return
+            }
+            log("getSessionMessages raw: \(json)")
+            parseMessages(json)
+        } catch {
             log("Get messages error: \(error)")
-            return
         }
-        log("getSessionMessages raw: \(response)")
-        parseMessages(response)
     }
 
     func sendMessage() {
@@ -683,18 +750,17 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func startLogServer() {
-        var error: NSError?
-        let url = sdkCallSync {
-            client.startLogServer(&error)
-        }
-        if let error {
+        do {
+            let urlBuf = try sdkCallSync {
+                try client.startLogServerBuffer()
+            }
+            logServerURL = stringFromBuffer(urlBuf) ?? ""
+            logServerRunning = !logServerURL.isEmpty
+            if logServerRunning {
+                log("Log server running at \(logServerURL)")
+            }
+        } catch {
             log("Start log server error: \(error)")
-            return
-        }
-        logServerURL = url
-        logServerRunning = !logServerURL.isEmpty
-        if logServerRunning {
-            log("Log server running at \(logServerURL)")
         }
     }
 
