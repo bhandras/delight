@@ -635,6 +635,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         messageText = ""
         let localID = UUID().uuidString
 
+        updateSessionThinking(true)
+
         // Optimistic UI: show the user's message immediately.
         let optimistic = MessageItem(
             id: "local-\(localID)",
@@ -671,6 +673,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 self.fetchLatestMessages(reset: false)
             }
         } catch {
+            updateSessionThinking(false)
             log("Send error: \(error)")
         }
     }
@@ -1170,11 +1173,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 self.scrollRequest = ScrollRequest(target: .message(id: anchorID, anchor: .top))
             }
         }
-
-        // Treat thinking events as ephemeral. We only show "vibing" while we have
-        // a fresh activity update; message history often contains "thinking" blocks
-        // that should not keep the UI stuck in thinking mode after a restart.
-        updateSessionThinking(false)
     }
 
     private func mergeMessages(existing: [MessageItem], incoming: [MessageItem]) -> [MessageItem] {
