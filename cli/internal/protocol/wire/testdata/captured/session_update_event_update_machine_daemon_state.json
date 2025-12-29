@@ -1,0 +1,13 @@
+{
+  "body": {
+    "daemonState": {
+      "value": "cipher",
+      "version": 2
+    },
+    "machineId": "\u003cid\u003e",
+    "t": "update-machine"
+  },
+  "createdAt": 1767034856140,
+  "id": "c1767034856140863000",
+  "seq": 4
+}

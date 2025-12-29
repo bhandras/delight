@@ -1,0 +1,13 @@
+{
+  "body": {
+    "machineId": "\u003cid\u003e",
+    "metadata": {
+      "value": "cipher",
+      "version": 2
+    },
+    "t": "update-machine"
+  },
+  "createdAt": 1767034856144,
+  "id": "c1767034856144915000",
+  "seq": 5
+}

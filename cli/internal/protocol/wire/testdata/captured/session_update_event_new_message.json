@@ -1,0 +1,20 @@
+{
+  "body": {
+    "message": {
+      "content": {
+        "c": "cipher",
+        "t": "encrypted"
+      },
+      "createdAt": 1767034856000,
+      "id": "c1767034856201859000",
+      "localId": "\u003cid\u003e",
+      "seq": 1,
+      "updatedAt": 1767034856000
+    },
+    "sid": "\u003cid\u003e",
+    "t": "new-message"
+  },
+  "createdAt": 1767034856204,
+  "id": "c1767034856203528000",
+  "seq": 6
+}

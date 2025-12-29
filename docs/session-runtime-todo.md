@@ -62,8 +62,12 @@ Problem: gomobile exported methods can be invoked concurrently from Swift; Go si
   - Enable by running the CLI with:
     - `DELIGHT_WIRE_DUMP=1` (writes to repo-relative testdata), or
     - `DELIGHT_WIRE_DUMP_DIR=/path` (writes to an explicit directory)
-- [ ] Commit a few sanitized fixtures from
+- [x] Commit a few sanitized fixtures from
   `cli/internal/protocol/wire/testdata/captured/`.
+  - `session_message_event.json`
+  - `session_update_event_new_message.json`
+  - `rpc_session_permission.json`
+  - `rpc_machine_ping.json`
 
 ## Phase 3 — Mechanical split of `manager.go`
 
