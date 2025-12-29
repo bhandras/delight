@@ -638,6 +638,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             handleActivityUpdate(updateJSON)
             if let updateSessionID = extractUpdateSessionID(from: updateJSON) {
                 guard updateSessionID == self.sessionID else { return }
+                if tryAppendMessageFromUpdate(updateJSON, sessionID: updateSessionID) {
+                    // If we successfully rendered the message from the update payload,
+                    // don't immediately refetch from the server. This avoids any risk of
+                    // "stale" pagination/ordering issues (limit=50) and also reduces load.
+                    return
+                }
                 updateThinkingFromUpdate(updateJSON, targetSessionID: updateSessionID)
                 if shouldFetchMessages(fromUpdateJSON: updateJSON) {
                     sdkCallAsync {
@@ -650,11 +656,72 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
         guard let sessionID else { return }
         if sessionID == self.sessionID {
+            if let updateJSON, tryAppendMessageFromUpdate(updateJSON, sessionID: sessionID) {
+                return
+            }
             sdkCallAsync {
                 guard self.sessionID == sessionID else { return }
                 self.fetchMessages()
             }
         }
+    }
+
+    private func tryAppendMessageFromUpdate(_ updateJSON: String, sessionID: String) -> Bool {
+        guard let data = updateJSON.data(using: .utf8),
+              let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let body = decoded["body"] as? [String: Any],
+              let type = body["t"] as? String, type == "new-message",
+              let message = body["message"] as? [String: Any] else {
+            return false
+        }
+
+        // Ignore messages we intentionally don't render as transcript entries.
+        let content = normalizeContent(firstNonNull(message["content"], message["data"]))
+        if isNullMessage(content) || isFileHistorySnapshot(content) || isToolResultMessage(content) {
+            return true
+        }
+
+        let id = message["id"] as? String ?? UUID().uuidString
+        let createdAt = message["createdAt"] as? Int64
+
+        var blocks = extractBlocks(from: content, sessionID: sessionID)
+        if blocks.isEmpty, let text = extractText(from: content) {
+            blocks = [.text(text)]
+        }
+        if blocks.isEmpty {
+            if containsThinkingBlock(content) {
+                // Thinking-only events are handled via `updateThinkingFromUpdate`.
+                return true
+            }
+            logUnsupportedMessage(id: id, content: content)
+            return false
+        }
+
+        let role = extractRole(from: message, content: content)
+        let serverItem = MessageItem(id: id, role: role, blocks: blocks, createdAt: createdAt)
+
+        DispatchQueue.main.async {
+            // Deduplicate if we already have this message.
+            if self.messages.contains(where: { $0.id == serverItem.id }) {
+                return
+            }
+
+            // Reconcile optimistic messages: if we recently appended a local user bubble
+            // with identical text, remove it once the server echo arrives.
+            if serverItem.role == .user {
+                if let idx = self.messages.firstIndex(where: { existing in
+                    existing.id.hasPrefix("local-") && existing.role == .user && existing.blocks == serverItem.blocks
+                }) {
+                    self.messages.remove(at: idx)
+                }
+            }
+
+            self.messages.append(serverItem)
+        }
+
+        // If we rendered a real message, ensure we clear thinking for this session.
+        updateSessionThinking(false, sessionID: sessionID)
+        return true
     }
 
     private func shouldFetchMessages(fromUpdateJSON json: String) -> Bool {
