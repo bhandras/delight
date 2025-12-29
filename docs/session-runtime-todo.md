@@ -42,18 +42,18 @@ Problem: gomobile exported methods can be invoked concurrently from Swift; Go si
 
 ### 2.1 Add `internal/protocol/wire`
 
-- [ ] `update.go`: typed parsing for `update` events and `new-message` payload extraction
-- [ ] `rpc.go`: typed request/response structs for:
+- [x] `update.go`: typed parsing for `update` events and `new-message` payload extraction
+- [x] `rpc.go`: typed request/response structs for:
   - session RPC (`switch`, `abort`, `permission`)
   - machine RPC (`spawn-happy-session`, `stop-session`, `stop-daemon`)
-- [ ] `message.go`: canonical internal representation for:
+- [x] `message.go`: canonical internal representation for:
   - encrypted payload
   - plaintext user message
 
 ### 2.2 Replace inline structs and map parsing
 
-- [ ] Replace inline RPC structs in `session/manager.go`
-- [ ] Replace `handleUpdate` / `handleMessage` manual extraction logic with typed parser
+- [x] Replace inline RPC structs in `session/manager.go`
+- [x] Replace `handleUpdate` / `handleMessage` manual extraction logic with typed parser
 
 ### 2.3 Tests
 

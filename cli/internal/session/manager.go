@@ -952,52 +952,22 @@ func (m *Manager) handleMessage(data map[string]interface{}) {
 		log.Printf("Received message from server: %+v", data)
 	}
 
-	// Extract encrypted content - mobile app sends "message", web might send "content"
-	// Accept both string and structured envelopes
-	contentB64 := ""
-
-	// message field could be string or map
-	if msgVal, ok := data["message"]; ok {
-		switch v := msgVal.(type) {
-		case string:
-			contentB64 = v
-		case map[string]interface{}:
-			if cVal, ok := v["content"]; ok {
-				switch c := cVal.(type) {
-				case string:
-					contentB64 = c
-				case map[string]interface{}:
-					if inner, ok := c["c"].(string); ok {
-						contentB64 = inner
-					}
-				}
-			}
-		}
-	}
-
-	// content field could be string or map
-	if contentB64 == "" {
-		if cVal, ok := data["content"]; ok {
-			switch c := cVal.(type) {
-			case string:
-				contentB64 = c
-			case map[string]interface{}:
-				if inner, ok := c["c"].(string); ok {
-					contentB64 = inner
-				}
-			}
-		}
-	}
-
-	if contentB64 == "" {
+	cipher, localID, ok, err := wire.ExtractMessageCipher(data)
+	if err != nil {
 		if m.debug {
-			log.Println("Message has no usable content field")
+			log.Printf("Message parse error: %v", err)
+		}
+		return
+	}
+	if !ok || cipher == "" {
+		if m.debug {
+			log.Println("Message has no usable ciphertext payload")
 		}
 		return
 	}
 
 	// Decrypt the message content
-	decrypted, err := m.decrypt(contentB64)
+	decrypted, err := m.decrypt(cipher)
 	if err != nil {
 		if m.debug {
 			log.Printf("Failed to decrypt message: %v", err)
@@ -1005,17 +975,8 @@ func (m *Manager) handleMessage(data map[string]interface{}) {
 		return
 	}
 
-	// Parse the decrypted message
-	// Mobile app sends: { "role": "user", "content": { "type": "text", "text": "message" } }
-	var msg struct {
-		Role    string `json:"role"`
-		Content struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		Meta map[string]interface{} `json:"meta,omitempty"`
-	}
-	if err := json.Unmarshal(decrypted, &msg); err != nil {
+	text, meta, ok, err := wire.ParseUserTextRecord(decrypted)
+	if err != nil {
 		if m.debug {
 			log.Printf("Failed to parse decrypted message: %v", err)
 		}
@@ -1023,27 +984,27 @@ func (m *Manager) handleMessage(data map[string]interface{}) {
 	}
 
 	if m.debug {
-		log.Printf("Decrypted message: role=%s type=%s text=%s", msg.Role, msg.Content.Type, msg.Content.Text)
+		log.Printf("Decrypted message: localId=%s text=%s", localID, text)
 	}
 
-	if msg.Role != "user" || msg.Content.Type != "text" || msg.Content.Text == "" {
+	if !ok || text == "" {
 		if m.debug {
-			log.Printf("Ignoring message with empty or unsupported content: role=%s type=%s", msg.Role, msg.Content.Type)
+			log.Printf("Ignoring message with empty or unsupported content")
 		}
 		return
 	}
 
 	if m.fakeAgent {
-		m.sendFakeAgentResponse(msg.Content.Text)
+		m.sendFakeAgentResponse(text)
 		return
 	}
 
 	if m.agent == "codex" {
-		if msg.Content.Text == "" {
+		if text == "" {
 			return
 		}
 		select {
-		case m.codexQueue <- codexMessage{text: msg.Content.Text, meta: msg.Meta}:
+		case m.codexQueue <- codexMessage{text: text, meta: meta}:
 		default:
 			if m.debug {
 				log.Printf("Codex queue full; dropping message")
@@ -1052,7 +1013,7 @@ func (m *Manager) handleMessage(data map[string]interface{}) {
 		return
 	}
 
-	messageContent := msg.Content.Text
+	messageContent := text
 	if messageContent == "" {
 		if m.debug {
 			log.Printf("Empty message content, ignoring")
@@ -1740,13 +1701,7 @@ func (m *Manager) registerMachineRPCHandlers() {
 
 	m.machineRPC.RegisterHandler(prefix+"spawn-happy-session", func(params json.RawMessage) (json.RawMessage, error) {
 		return m.runInboundRPC(func() (json.RawMessage, error) {
-			var req struct {
-				Directory                    string `json:"directory"`
-				ApprovedNewDirectoryCreation bool   `json:"approvedNewDirectoryCreation"`
-				SessionID                    string `json:"sessionId"`
-				MachineID                    string `json:"machineId"`
-				Agent                        string `json:"agent"`
-			}
+			var req wire.SpawnHappySessionRequest
 			if err := json.Unmarshal(params, &req); err != nil {
 				return nil, err
 			}
@@ -1808,9 +1763,7 @@ func (m *Manager) registerMachineRPCHandlers() {
 
 	m.machineRPC.RegisterHandler(prefix+"stop-session", func(params json.RawMessage) (json.RawMessage, error) {
 		return m.runInboundRPC(func() (json.RawMessage, error) {
-			var req struct {
-				SessionID string `json:"sessionId"`
-			}
+			var req wire.StopSessionRequest
 			if err := json.Unmarshal(params, &req); err != nil {
 				return nil, err
 			}
@@ -3148,9 +3101,7 @@ func (m *Manager) registerRPCHandlers() {
 			if m.agent == "claude" {
 				return nil, fmt.Errorf("mode switching disabled in Claude TUI mode")
 			}
-			var req struct {
-				Mode string `json:"mode"`
-			}
+			var req wire.SwitchModeRequest
 			if err := json.Unmarshal(params, &req); err != nil {
 				return nil, err
 			}
@@ -3175,11 +3126,7 @@ func (m *Manager) registerRPCHandlers() {
 	// Permission handler - respond to permission requests
 	m.rpcManager.RegisterHandler(prefix+"permission", func(params json.RawMessage) (json.RawMessage, error) {
 		return m.runInboundRPC(func() (json.RawMessage, error) {
-			var req struct {
-				RequestID string `json:"requestId"`
-				Allow     bool   `json:"allow"`
-				Message   string `json:"message"`
-			}
+			var req wire.PermissionResponseRequest
 			if err := json.Unmarshal(params, &req); err != nil {
 				return nil, err
 			}

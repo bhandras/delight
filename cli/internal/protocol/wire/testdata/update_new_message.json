@@ -1,0 +1,12 @@
+{
+  "body": {
+    "t": "new-message",
+    "message": {
+      "content": {
+        "t": "encrypted",
+        "c": "cipher"
+      }
+    }
+  }
+}
+

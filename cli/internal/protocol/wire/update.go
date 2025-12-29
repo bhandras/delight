@@ -5,23 +5,33 @@ import (
 	"fmt"
 )
 
+// UpdateEnvelope is the typed wrapper for server "update" events.
 type UpdateEnvelope struct {
+	// Body is the typed payload for an update event.
 	Body UpdateBody `json:"body"`
 }
 
+// UpdateBody is the payload inside an update event.
 type UpdateBody struct {
-	T       string         `json:"t"`
+	// T is the update type (e.g. "new-message").
+	T string `json:"t"`
+	// Message contains the payload for message-oriented updates.
 	Message *UpdateMessage `json:"message,omitempty"`
 }
 
+// UpdateMessage is the message payload inside an update event.
 type UpdateMessage struct {
+	// Content is the encrypted content payload.
 	Content *EncryptedContent `json:"content,omitempty"`
 }
 
+// EncryptedContent contains ciphertext for an encrypted message.
 type EncryptedContent struct {
+	// C is the ciphertext.
 	C string `json:"c"`
 }
 
+// ParseUpdateEnvelope parses an update event payload into a typed envelope.
 func ParseUpdateEnvelope(v any) (*UpdateEnvelope, error) {
 	raw, err := json.Marshal(v)
 	if err != nil {
@@ -34,6 +44,8 @@ func ParseUpdateEnvelope(v any) (*UpdateEnvelope, error) {
 	return &env, nil
 }
 
+// ExtractNewMessageCipher extracts the ciphertext from an update event when
+// `body.t == "new-message"`.
 func ExtractNewMessageCipher(v any) (string, bool, error) {
 	env, err := ParseUpdateEnvelope(v)
 	if err != nil {

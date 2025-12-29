@@ -1,0 +1,11 @@
+{
+  "sid": "s1",
+  "localId": "lid-1",
+  "message": {
+    "content": {
+      "t": "encrypted",
+      "c": "cipher"
+    }
+  }
+}
+
