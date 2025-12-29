@@ -231,6 +231,14 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private var logLines: [String] = []
     private var needsSessionRefresh: Bool = false
 
+    // Calls into the gomobile-generated SDK must be serialized and must never be made
+    // synchronously from inside a Go→Swift callback (e.g. `onUpdate`).
+    //
+    // We saw a reproducible Go runtime crash ("bulkBarrierPreWrite: unaligned arguments")
+    // when Swift called back into Go from inside a listener callback stack.
+    private let sdkCallQueue = DispatchQueue(label: "com.bhandras.delight.harness.sdkCallQueue")
+    private let sdkCallQueueKey = DispatchSpecificKey<Void>()
+
     override init() {
         let defaults = UserDefaults.standard
         let loadedServerURL = defaults.string(forKey: Self.settingsKeyPrefix + "serverURL") ?? "http://localhost:3005"
@@ -251,7 +259,23 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         privateKey = loadedPrivateKey
         configureLogDirectory()
         ensureKeys()
-        self.client.setListener(self)
+        sdkCallQueue.setSpecific(key: sdkCallQueueKey, value: ())
+        sdkCallSync {
+            self.client.setListener(self)
+        }
+    }
+
+    private func sdkCallSync<T>(_ work: () throws -> T) rethrows -> T {
+        if DispatchQueue.getSpecific(key: sdkCallQueueKey) != nil {
+            return try work()
+        }
+        return try sdkCallQueue.sync {
+            try work()
+        }
+    }
+
+    private func sdkCallAsync(_ work: @escaping () -> Void) {
+        sdkCallQueue.async(execute: work)
     }
 
     func startup() {
@@ -267,7 +291,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func resetAfterCrash() {
-        client.disconnect()
+        sdkCallAsync {
+            self.client.disconnect()
+        }
         sessionID = ""
         selectedMetadata = nil
         messages = []
@@ -308,12 +334,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         publicKey = ""
         privateKey = ""
         token = ""
-        DispatchQueue.global(qos: .userInitiated).async {
+        sdkCallAsync {
             self.client.disconnect()
-            DispatchQueue.main.async {
-                self.status = "disconnected"
-                self.log("Keys reset")
-            }
+        }
+        DispatchQueue.main.async {
+            self.status = "disconnected"
+            self.log("Keys reset")
         }
     }
 
@@ -326,18 +352,20 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     func logout() {
         token = ""
-        DispatchQueue.global(qos: .userInitiated).async {
+        sdkCallAsync {
             self.client.disconnect()
-            DispatchQueue.main.async {
-                self.status = "disconnected"
-                self.log("Logged out")
-            }
+        }
+        DispatchQueue.main.async {
+            self.status = "disconnected"
+            self.log("Logged out")
         }
     }
 
     func authWithKeypair() {
         var error: NSError?
-        let newToken = client.auth(withKeyPair: publicKey, privateKeyB64: privateKey, error: &error)
+        let newToken = sdkCallSync {
+            client.auth(withKeyPair: publicKey, privateKeyB64: privateKey, error: &error)
+        }
         if let error {
             log("Auth error: \(error)")
             return
@@ -354,7 +382,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             return
         }
         do {
-            try client.approveTerminalAuth(terminalKey, masterKeyB64: masterKey)
+            try sdkCallSync {
+                try client.approveTerminalAuth(terminalKey, masterKeyB64: masterKey)
+            }
             log("Approved terminal auth")
         } catch {
             log("Approve error: \(error)")
@@ -377,14 +407,18 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     return
                 }
                 log("Token missing; attempting auth with keypair.")
-                let newToken = client.auth(withKeyPair: publicKey, privateKeyB64: privateKey, error: nil)
+                let newToken = sdkCallSync {
+                    client.auth(withKeyPair: publicKey, privateKeyB64: privateKey, error: nil)
+                }
                 token = newToken
                 log("Auth ok")
             }
-            client.setServerURL(serverURL)
-            client.setToken(token)
-            try client.setMasterKeyBase64(masterKey)
-            try client.connect()
+            try sdkCallSync {
+                client.setServerURL(serverURL)
+                client.setToken(token)
+                try client.setMasterKeyBase64(masterKey)
+                try client.connect()
+            }
             status = "connected"
             if sessions.isEmpty || needsSessionRefresh {
                 listSessions()
@@ -396,17 +430,19 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func disconnect() {
-        DispatchQueue.global(qos: .userInitiated).async {
+        sdkCallAsync {
             self.client.disconnect()
-            DispatchQueue.main.async {
-                self.status = "disconnected"
-            }
+        }
+        DispatchQueue.main.async {
+            self.status = "disconnected"
         }
     }
 
     func listSessions() {
         var error: NSError?
-        let response = client.listSessions(&error)
+        let response = sdkCallSync {
+            client.listSessions(&error)
+        }
         if let error {
             log("List sessions error: \(error)")
             return
@@ -418,7 +454,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     func listMachines() {
         var error: NSError?
-        let response = client.listMachines(&error)
+        let response = sdkCallSync {
+            client.listMachines(&error)
+        }
         if let error {
             log("List machines error: \(error)")
             return
@@ -442,7 +480,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             return
         }
         var error: NSError?
-        let response = client.getSessionMessages(sessionID, limit: 50, error: &error)
+        let response = sdkCallSync {
+            client.getSessionMessages(sessionID, limit: 50, error: &error)
+        }
         if let error {
             log("Get messages error: \(error)")
             return
@@ -471,7 +511,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         do {
             let data = try JSONSerialization.data(withJSONObject: rawRecord, options: [])
             let json = String(data: data, encoding: .utf8) ?? "{}"
-            try client.sendMessage(sessionID, rawRecordJSON: json)
+            try sdkCallSync {
+                try client.sendMessage(sessionID, rawRecordJSON: json)
+            }
             log("Sent message")
             fetchMessages()
         } catch {
@@ -485,8 +527,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         updateStatus("connected")
         clearThinkingState()
         if needsSessionRefresh {
-            listSessions()
             needsSessionRefresh = false
+            // Avoid calling back into Go synchronously from a Go→Swift callback stack.
+            DispatchQueue.main.async {
+                self.listSessions()
+            }
         }
     }
 
@@ -496,20 +541,29 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     @objc func onUpdate(_ sessionID: String?, updateJSON: String?) {
-        log("Update: \(updateJSON ?? "")")
+        // IMPORTANT: `onUpdate` is invoked from Go into Swift. Do NOT call back into Go
+        // synchronously from this callback, or we can trigger re-entrant cgo calls and
+        // crash the Go runtime.
         if let updateJSON {
+            logSwiftOnly("Update: \(updateJSON)")
             handleActivityUpdate(updateJSON)
             if let updateSessionID = extractUpdateSessionID(from: updateJSON) {
                 guard updateSessionID == self.sessionID else { return }
                 if shouldFetchMessages(fromUpdateJSON: updateJSON) {
-                    fetchMessages()
+                    DispatchQueue.main.async {
+                        guard self.sessionID == updateSessionID else { return }
+                        self.fetchMessages()
+                    }
                 }
                 return
             }
         }
         guard let sessionID else { return }
         if sessionID == self.sessionID {
-            fetchMessages()
+            DispatchQueue.main.async {
+                guard self.sessionID == sessionID else { return }
+                self.fetchMessages()
+            }
         }
     }
 
@@ -604,7 +658,14 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     private func log(_ message: String) {
-        client.logLine(message)
+        // Bridge logs to Go asynchronously to avoid re-entrant calls from callbacks.
+        sdkCallAsync {
+            self.client.logLine(message)
+        }
+        logSwiftOnly(message)
+    }
+
+    private func logSwiftOnly(_ message: String) {
         DispatchQueue.main.async {
             self.lastLogLine = message
             self.logLines.append(message)
@@ -623,7 +684,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     func startLogServer() {
         var error: NSError?
-        let url = client.startLogServer(&error)
+        let url = sdkCallSync {
+            client.startLogServer(&error)
+        }
         if let error {
             log("Start log server error: \(error)")
             return
@@ -637,7 +700,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     func stopLogServer() {
         do {
-            _ = try client.stopLogServer()
+            _ = try sdkCallSync {
+                try client.stopLogServer()
+            }
         } catch {
             log("Stop log server error: \(error)")
         }
@@ -657,7 +722,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
         let logDir = dir.appendingPathComponent("delight-logs", isDirectory: true).path
         do {
-            _ = try client.setLogDirectory(logDir)
+            _ = try sdkCallSync {
+                try client.setLogDirectory(logDir)
+            }
         } catch {
             log("Set log directory error: \(error)")
         }
