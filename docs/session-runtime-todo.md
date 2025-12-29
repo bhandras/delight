@@ -73,7 +73,7 @@ Problem: gomobile exported methods can be invoked concurrently from Swift; Go si
 
 Goal: reduce cognitive load without behavior changes.
 
-- [ ] Split into:
+- [x] Split into:
   - `manager_start.go`
   - `manager_rpc.go`
   - `manager_machine.go`
