@@ -33,6 +33,7 @@ require (
 	github.com/zishang520/socket.io/servers/engine/v3 v3.0.0-rc.9 // indirect
 	github.com/zishang520/socket.io/servers/socket/v3 v3.0.0-rc.9 // indirect
 	github.com/zishang520/webtransport-go v0.9.1 // indirect
+	golang.org/x/mobile v0.0.0-20251209145715-2553ed8ce294 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.31.0 // indirect
