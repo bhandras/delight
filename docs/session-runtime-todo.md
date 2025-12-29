@@ -57,7 +57,13 @@ Problem: gomobile exported methods can be invoked concurrently from Swift; Go si
 
 ### 2.3 Tests
 
-- [ ] Golden tests with real captured payloads from logs.
+- [x] Golden tests for typed wire parsers.
+- [x] Wire payload dump helper for capturing real fixtures.
+  - Enable by running the CLI with:
+    - `DELIGHT_WIRE_DUMP=1` (writes to repo-relative testdata), or
+    - `DELIGHT_WIRE_DUMP_DIR=/path` (writes to an explicit directory)
+- [ ] Commit a few sanitized fixtures from
+  `cli/internal/protocol/wire/testdata/captured/`.
 
 ## Phase 3 — Mechanical split of `manager.go`
 

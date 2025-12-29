@@ -952,6 +952,8 @@ func (m *Manager) handleMessage(data map[string]interface{}) {
 		log.Printf("Received message from server: %+v", data)
 	}
 
+	wire.DumpToTestdata("session_message_event", data)
+
 	cipher, localID, ok, err := wire.ExtractMessageCipher(data)
 	if err != nil {
 		if m.debug {
@@ -1515,6 +1517,8 @@ func (m *Manager) handleUpdate(data map[string]interface{}) {
 		log.Printf("Received update from server: %+v", data)
 	}
 
+	wire.DumpToTestdata("session_update_event", data)
+
 	cipher, ok, err := wire.ExtractNewMessageCipher(data)
 	if err != nil {
 		if m.debug {
@@ -1701,6 +1705,7 @@ func (m *Manager) registerMachineRPCHandlers() {
 
 	m.machineRPC.RegisterHandler(prefix+"spawn-happy-session", func(params json.RawMessage) (json.RawMessage, error) {
 		return m.runInboundRPC(func() (json.RawMessage, error) {
+			wire.DumpToTestdata("rpc_machine_spawn_happy_session", params)
 			var req wire.SpawnHappySessionRequest
 			if err := json.Unmarshal(params, &req); err != nil {
 				return nil, err
@@ -1763,6 +1768,7 @@ func (m *Manager) registerMachineRPCHandlers() {
 
 	m.machineRPC.RegisterHandler(prefix+"stop-session", func(params json.RawMessage) (json.RawMessage, error) {
 		return m.runInboundRPC(func() (json.RawMessage, error) {
+			wire.DumpToTestdata("rpc_machine_stop_session", params)
 			var req wire.StopSessionRequest
 			if err := json.Unmarshal(params, &req); err != nil {
 				return nil, err
@@ -1789,6 +1795,7 @@ func (m *Manager) registerMachineRPCHandlers() {
 
 	m.machineRPC.RegisterHandler(prefix+"stop-daemon", func(params json.RawMessage) (json.RawMessage, error) {
 		return m.runInboundRPC(func() (json.RawMessage, error) {
+			wire.DumpToTestdata("rpc_machine_stop_daemon", params)
 			log.Printf("Stop-daemon requested")
 			m.scheduleShutdown()
 			m.forceExitAfter(2 * time.Second)
@@ -1798,6 +1805,7 @@ func (m *Manager) registerMachineRPCHandlers() {
 
 	m.machineRPC.RegisterHandler(prefix+"ping", func(params json.RawMessage) (json.RawMessage, error) {
 		return m.runInboundRPC(func() (json.RawMessage, error) {
+			wire.DumpToTestdata("rpc_machine_ping", params)
 			return json.Marshal(map[string]bool{"success": true})
 		})
 	})
@@ -3085,6 +3093,7 @@ func (m *Manager) registerRPCHandlers() {
 	// Abort handler - abort current remote query
 	m.rpcManager.RegisterHandler(prefix+"abort", func(params json.RawMessage) (json.RawMessage, error) {
 		return m.runInboundRPC(func() (json.RawMessage, error) {
+			wire.DumpToTestdata("rpc_session_abort", params)
 			if m.agent == "claude" {
 				return nil, fmt.Errorf("remote abort not supported in Claude TUI mode")
 			}
@@ -3098,6 +3107,7 @@ func (m *Manager) registerRPCHandlers() {
 	// Switch handler - switch between local/remote modes
 	m.rpcManager.RegisterHandler(prefix+"switch", func(params json.RawMessage) (json.RawMessage, error) {
 		return m.runInboundRPC(func() (json.RawMessage, error) {
+			wire.DumpToTestdata("rpc_session_switch", params)
 			if m.agent == "claude" {
 				return nil, fmt.Errorf("mode switching disabled in Claude TUI mode")
 			}
@@ -3126,6 +3136,7 @@ func (m *Manager) registerRPCHandlers() {
 	// Permission handler - respond to permission requests
 	m.rpcManager.RegisterHandler(prefix+"permission", func(params json.RawMessage) (json.RawMessage, error) {
 		return m.runInboundRPC(func() (json.RawMessage, error) {
+			wire.DumpToTestdata("rpc_session_permission", params)
 			var req wire.PermissionResponseRequest
 			if err := json.Unmarshal(params, &req); err != nil {
 				return nil, err
