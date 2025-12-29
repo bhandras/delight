@@ -260,9 +260,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         configureLogDirectory()
         ensureKeys()
         sdkCallQueue.setSpecific(key: sdkCallQueueKey, value: ())
-        // Intentionally do not register a Go→Swift listener for now.
-        // The iOS harness can function by polling (`fetchMessages`) after user actions.
-        // This also avoids re-entrant call patterns during debugging.
+        // Register the Go→Swift listener for live updates.
+        //
+        // IMPORTANT: Never call into Go synchronously from within the listener
+        // callback stack. All callbacks should schedule work asynchronously.
+        sdkCallAsync {
+            self.client.setListener(self)
+        }
     }
 
     private func stringFromBuffer(_ buffer: SdkBuffer?) -> String? {
@@ -479,6 +483,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 client.setServerURL(serverURL)
                 client.setToken(token)
                 try client.setMasterKeyBase64(masterKey)
+                client.setListener(self)
                 try client.connect()
             }
             status = "connected"
@@ -568,11 +573,25 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             return
         }
 
+        let outgoingText = messageText
+        messageText = ""
+
+        // Optimistic UI: show the user's message immediately.
+        let optimistic = MessageItem(
+            id: "local-\(UUID().uuidString)",
+            role: .user,
+            blocks: [.text(outgoingText)],
+            createdAt: Int64(Date().timeIntervalSince1970 * 1000)
+        )
+        DispatchQueue.main.async {
+            self.messages.append(optimistic)
+        }
+
         let rawRecord: [String: Any] = [
             "role": "user",
             "content": [
                 "type": "text",
-                "text": messageText
+                "text": outgoingText
             ]
         ]
         do {
@@ -582,7 +601,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 try client.sendMessage(sessionID, rawRecordJSON: json)
             }
             log("Sent message")
-            fetchMessages()
+            // Pull latest state after send to incorporate server ordering + assistant reply.
+            sdkCallAsync {
+                self.fetchMessages()
+            }
         } catch {
             log("Send error: \(error)")
         }
@@ -616,8 +638,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             handleActivityUpdate(updateJSON)
             if let updateSessionID = extractUpdateSessionID(from: updateJSON) {
                 guard updateSessionID == self.sessionID else { return }
+                updateThinkingFromUpdate(updateJSON, targetSessionID: updateSessionID)
                 if shouldFetchMessages(fromUpdateJSON: updateJSON) {
-                    DispatchQueue.main.async {
+                    sdkCallAsync {
                         guard self.sessionID == updateSessionID else { return }
                         self.fetchMessages()
                     }
@@ -627,7 +650,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
         guard let sessionID else { return }
         if sessionID == self.sessionID {
-            DispatchQueue.main.async {
+            sdkCallAsync {
                 guard self.sessionID == sessionID else { return }
                 self.fetchMessages()
             }
@@ -1091,6 +1114,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     private func updateThinkingFromUpdate(_ json: String) {
+        updateThinkingFromUpdate(json, targetSessionID: sessionID)
+    }
+
+    private func updateThinkingFromUpdate(_ json: String, targetSessionID: String?) {
+        guard let targetSessionID, !targetSessionID.isEmpty else {
+            return
+        }
         guard let data = json.data(using: .utf8),
               let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return
@@ -1101,11 +1131,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
         let content = normalizeContent(firstNonNull(message["content"], message["data"]))
         let hasThinking = containsThinkingBlock(content)
-        let blocks = extractBlocks(from: content, sessionID: sessionID)
+        let blocks = extractBlocks(from: content, sessionID: targetSessionID)
         if hasThinking && blocks.isEmpty {
-            updateSessionThinking(true)
+            updateSessionThinking(true, sessionID: targetSessionID)
         } else if !blocks.isEmpty {
-            updateSessionThinking(false)
+            updateSessionThinking(false, sessionID: targetSessionID)
         }
     }
 
@@ -1328,8 +1358,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     private func updateSessionThinking(_ thinking: Bool) {
-        let targetID = sessionID
-        guard !targetID.isEmpty else { return }
+        updateSessionThinking(thinking, sessionID: sessionID)
+    }
+
+    private func updateSessionThinking(_ thinking: Bool, sessionID: String?) {
+        guard let targetID = sessionID, !targetID.isEmpty else { return }
         DispatchQueue.main.async {
             if let index = self.sessions.firstIndex(where: { $0.id == targetID }) {
                 let updated = self.sessions[index].updatingActivity(
