@@ -51,6 +51,9 @@ type Client struct {
 	closeOnce  sync.Once
 	debug      bool
 	connected  bool
+
+	lastConnectErrAt  time.Time
+	lastConnectErrMsg string
 }
 
 // NewClient creates a new Socket.IO client
@@ -114,9 +117,15 @@ func (c *Client) Connect() error {
 	clientType := c.clientType
 	sessionID := c.sessionID
 	machineID := c.machineID
+	prevSock := c.socket
+	c.socket = nil
+	c.connected = false
 	c.mu.Unlock()
 	if debug {
 		log.Printf("Connecting to Socket.IO: %s (path: /v1/updates)", serverURL)
+	}
+	if prevSock != nil {
+		prevSock.Disconnect()
 	}
 
 	// Create Socket.IO options
@@ -125,6 +134,13 @@ func (c *Client) Connect() error {
 	// Set the path (like JS client does)
 	opts.SetPath("/v1/updates")
 	opts.SetTransports(types.NewSet(socket.Polling, socket.WebSocket))
+	opts.SetForceNew(true)
+	opts.SetMultiplex(false)
+
+	// Reduce connect_error log spam by backing off reconnection attempts.
+	opts.SetReconnectionDelay(5_000)
+	opts.SetReconnectionDelayMax(30_000)
+	opts.SetTimeout(15 * time.Second)
 
 	// Set auth token, client type, and scope id (matching mobile app format)
 	auth := map[string]interface{}{
@@ -180,15 +196,7 @@ func (c *Client) Connect() error {
 
 	// Set up error handler
 	sock.On(types.EventName("connect_error"), func(args ...any) {
-		c.mu.Lock()
-		debug := c.debug
-		c.mu.Unlock()
-		if !debug {
-			return
-		}
-		if len(args) > 0 {
-			log.Printf("Socket.IO connection error: %v", args[0])
-		}
+		c.logConnectError(args)
 	})
 
 	// Set up event handlers for each event type
@@ -215,7 +223,9 @@ func (c *Client) Connect() error {
 			c.mu.Unlock()
 
 			if ok && handler != nil {
-				go handler(data)
+				// Keep handler execution synchronous to avoid unbounded goroutine
+				// creation and to preserve event ordering. Handlers should return quickly.
+				handler(data)
 			}
 		})
 	}
@@ -228,6 +238,27 @@ func (c *Client) Connect() error {
 	}
 
 	return nil
+}
+
+func (c *Client) logConnectError(args []any) {
+	c.mu.Lock()
+	debug := c.debug
+	now := time.Now()
+	msg := ""
+	if len(args) > 0 && args[0] != nil {
+		msg = fmt.Sprint(args[0])
+	}
+	lastAt := c.lastConnectErrAt
+	lastMsg := c.lastConnectErrMsg
+	shouldLog := debug && (msg != "" && (msg != lastMsg || now.Sub(lastAt) > 5*time.Second))
+	if shouldLog {
+		c.lastConnectErrAt = now
+		c.lastConnectErrMsg = msg
+	}
+	c.mu.Unlock()
+	if shouldLog {
+		log.Printf("Socket.IO connection error: %s", msg)
+	}
 }
 
 // WaitForConnect waits for the socket to report connected or times out.

@@ -14,8 +14,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bhandras/delight/cli/internal/acp"
@@ -23,6 +23,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/codex"
 	"github.com/bhandras/delight/cli/internal/config"
 	"github.com/bhandras/delight/cli/internal/crypto"
+	"github.com/bhandras/delight/cli/internal/protocol/wire"
 	"github.com/bhandras/delight/cli/internal/storage"
 	"github.com/bhandras/delight/cli/internal/websocket"
 	"github.com/bhandras/delight/cli/pkg/types"
@@ -100,6 +101,8 @@ type Manager struct {
 	inboundQueue chan func()
 
 	shutdownOnce sync.Once
+
+	lastMachineKeepAliveSkipAt time.Time
 }
 
 type codexMessage struct {
@@ -210,6 +213,43 @@ func (m *Manager) runInboundRPC(fn func() (json.RawMessage, error)) (json.RawMes
 		return nil, fmt.Errorf("session closed")
 	case res := <-done:
 		return res.value, res.err
+	}
+}
+
+func (m *Manager) runInboundErr(fn func() error) error {
+	done := make(chan error, 1)
+	if !m.enqueueInbound(func() {
+		done <- fn()
+	}) {
+		return fmt.Errorf("failed to schedule request (busy or shutting down)")
+	}
+
+	select {
+	case <-m.stopCh:
+		return fmt.Errorf("session closed")
+	case err := <-done:
+		return err
+	}
+}
+
+func (m *Manager) runInboundPermissionDecision(fn func() (*codex.PermissionDecision, error)) (*codex.PermissionDecision, error) {
+	type result struct {
+		decision *codex.PermissionDecision
+		err      error
+	}
+	done := make(chan result, 1)
+	if !m.enqueueInbound(func() {
+		decision, err := fn()
+		done <- result{decision: decision, err: err}
+	}) {
+		return nil, fmt.Errorf("failed to schedule request (busy or shutting down)")
+	}
+
+	select {
+	case <-m.stopCh:
+		return nil, fmt.Errorf("session closed")
+	case res := <-done:
+		return res.decision, res.err
 	}
 }
 
@@ -452,15 +492,19 @@ func (m *Manager) handleSessionIDDetection() {
 
 		// Dual verification: also check that the session file exists
 		if claude.WaitForSessionFile(m.metadata.Path, claudeSessionID, 5*time.Second) {
-			m.claudeSessionID = claudeSessionID
-			log.Printf("Claude session verified: %s", claudeSessionID)
+			if !m.enqueueInbound(func() {
+				m.claudeSessionID = claudeSessionID
+				log.Printf("Claude session verified: %s", claudeSessionID)
 
-			// Start session file scanner
-			m.sessionScanner = claude.NewScanner(m.metadata.Path, claudeSessionID, m.debug)
-			m.sessionScanner.Start()
+				// Start session file scanner
+				m.sessionScanner = claude.NewScanner(m.metadata.Path, claudeSessionID, m.debug)
+				m.sessionScanner.Start()
 
-			// Forward session messages to server
-			go m.forwardSessionMessages()
+				// Forward session messages to server
+				go m.forwardSessionMessages()
+			}) {
+				return
+			}
 		} else {
 			if m.debug {
 				log.Printf("Session file not found for UUID: %s (may be a different UUID)", claudeSessionID)
@@ -481,22 +525,25 @@ func (m *Manager) handleThinkingState() {
 			if !ok {
 				return
 			}
+			if !m.enqueueInbound(func() {
+				m.thinking = thinking
 
-			m.thinking = thinking
+				if m.debug {
+					log.Printf("Thinking state changed: %v", thinking)
+				}
 
-			if m.debug {
-				log.Printf("Thinking state changed: %v", thinking)
-			}
-
-			// Broadcast to server via WebSocket
-			if m.wsClient != nil && m.wsClient.IsConnected() {
-				m.wsClient.EmitEphemeral(map[string]interface{}{
-					"type":     "activity",
-					"id":       m.sessionID,
-					"active":   true,
-					"thinking": thinking,
-					"activeAt": time.Now().UnixMilli(),
-				})
+				// Broadcast to server via WebSocket
+				if m.wsClient != nil && m.wsClient.IsConnected() {
+					m.wsClient.EmitEphemeral(map[string]interface{}{
+						"type":     "activity",
+						"id":       m.sessionID,
+						"active":   true,
+						"thinking": thinking,
+						"activeAt": time.Now().UnixMilli(),
+					})
+				}
+			}) {
+				return
 			}
 		}
 	}
@@ -1142,6 +1189,24 @@ func (m *Manager) handleCodexEvent(event map[string]interface{}) {
 		return
 	}
 
+	// Detach from caller's map to avoid races and make inbound processing deterministic.
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	var copyEvent map[string]interface{}
+	if err := json.Unmarshal(payload, &copyEvent); err != nil {
+		return
+	}
+
+	_ = m.enqueueInbound(func() { m.handleCodexEventInbound(copyEvent) })
+}
+
+func (m *Manager) handleCodexEventInbound(event map[string]interface{}) {
+	if event == nil {
+		return
+	}
+
 	evtType, _ := event["type"].(string)
 	switch evtType {
 	case "task_started":
@@ -1213,29 +1278,31 @@ func (m *Manager) handleCodexEvent(event map[string]interface{}) {
 }
 
 func (m *Manager) handleCodexPermission(requestID string, toolName string, input map[string]interface{}) (*codex.PermissionDecision, error) {
-	payload, err := json.Marshal(input)
-	if err != nil {
-		return nil, err
-	}
-	response, err := m.handlePermissionRequest(requestID, toolName, payload)
-	if err != nil {
+	return m.runInboundPermissionDecision(func() (*codex.PermissionDecision, error) {
+		payload, err := json.Marshal(input)
+		if err != nil {
+			return nil, err
+		}
+		response, err := m.handlePermissionRequest(requestID, toolName, payload)
+		if err != nil {
+			return &codex.PermissionDecision{
+				Decision: "denied",
+				Message:  err.Error(),
+			}, nil
+		}
+		decision := "denied"
+		if response != nil && response.Behavior == "allow" {
+			decision = "approved"
+		}
+		message := ""
+		if response != nil {
+			message = response.Message
+		}
 		return &codex.PermissionDecision{
-			Decision: "denied",
-			Message:  err.Error(),
+			Decision: decision,
+			Message:  message,
 		}, nil
-	}
-	decision := "denied"
-	if response != nil && response.Behavior == "allow" {
-		decision = "approved"
-	}
-	message := ""
-	if response != nil {
-		message = response.Message
-	}
-	return &codex.PermissionDecision{
-		Decision: decision,
-		Message:  message,
-	}, nil
+	})
 }
 
 func (m *Manager) sendCodexRecord(data map[string]interface{}) {
@@ -1308,41 +1375,27 @@ func (m *Manager) handleUpdate(data map[string]interface{}) {
 		log.Printf("Received update from server: %+v", data)
 	}
 
-	body, ok := data["body"].(map[string]interface{})
-	if !ok {
+	cipher, ok, err := wire.ExtractNewMessageCipher(data)
+	if err != nil {
+		if m.debug {
+			log.Printf("Update parse error: %v", err)
+		}
+		return
+	}
+	if !ok || cipher == "" {
 		return
 	}
 
-	t, _ := body["t"].(string)
-	switch t {
-	case "new-message":
-		// Extract cipher from structured content and delegate to handleMessage
-		msgObj, ok := body["message"].(map[string]interface{})
-		if !ok {
-			return
-		}
-		contentObj, ok := msgObj["content"].(map[string]interface{})
-		if !ok {
-			return
-		}
-		cipher, _ := contentObj["c"].(string)
-		if cipher == "" {
-			return
-		}
-
-		// Build a minimal payload compatible with handleMessage
-		payload := map[string]interface{}{
-			"message": map[string]interface{}{
-				"content": map[string]interface{}{
-					"t": "encrypted",
-					"c": cipher,
-				},
+	// Build a minimal payload compatible with handleMessage
+	payload := map[string]interface{}{
+		"message": map[string]interface{}{
+			"content": map[string]interface{}{
+				"t": "encrypted",
+				"c": cipher,
 			},
-		}
-		m.handleMessage(payload)
-	default:
-		// Other update types are ignored here
+		},
 	}
+	m.handleMessage(payload)
 }
 
 // handleSessionUpdate handles session update events
@@ -1364,25 +1417,33 @@ func (m *Manager) keepAliveLoop() {
 		case <-m.stopCh:
 			return
 		case <-machineTicker.C:
-			// Send machine keep-alive via machine-scoped socket
-			if m.machineClient != nil && m.machineClient.IsConnected() {
-				if err := m.machineClient.EmitRaw("machine-alive", map[string]interface{}{
-					"machineId": m.machineID,
-					"time":      time.Now().UnixMilli(),
-				}); err != nil && m.debug {
-					log.Printf("Machine keep-alive error: %v", err)
+			_ = m.enqueueInbound(func() {
+				// Send machine keep-alive via machine-scoped socket
+				if m.machineClient != nil && m.machineClient.IsConnected() {
+					if err := m.machineClient.EmitRaw("machine-alive", map[string]interface{}{
+						"machineId": m.machineID,
+						"time":      time.Now().UnixMilli(),
+					}); err != nil && m.debug {
+						log.Printf("Machine keep-alive error: %v", err)
+					}
+				} else if m.debug {
+					now := time.Now()
+					if m.lastMachineKeepAliveSkipAt.IsZero() || now.Sub(m.lastMachineKeepAliveSkipAt) > 2*time.Minute {
+						m.lastMachineKeepAliveSkipAt = now
+						log.Printf("Machine keep-alive skipped (no machine socket)")
+					}
 				}
-			} else if m.debug {
-				log.Printf("Machine keep-alive skipped (no machine socket)")
-			}
+			})
 
 		case <-sessionTicker.C:
-			// Send session keep-alive
-			if m.wsClient != nil && m.wsClient.IsConnected() {
-				if err := m.wsClient.KeepSessionAlive(m.sessionID, m.thinking); err != nil && m.debug {
-					log.Printf("Session keep-alive error: %v", err)
+			_ = m.enqueueInbound(func() {
+				// Send session keep-alive
+				if m.wsClient != nil && m.wsClient.IsConnected() {
+					if err := m.wsClient.KeepSessionAlive(m.sessionID, m.thinking); err != nil && m.debug {
+						log.Printf("Session keep-alive error: %v", err)
+					}
 				}
-			}
+			})
 		}
 	}
 }
@@ -1499,106 +1560,114 @@ func (m *Manager) registerMachineRPCHandlers() {
 	prefix := m.machineID + ":"
 
 	m.machineRPC.RegisterHandler(prefix+"spawn-happy-session", func(params json.RawMessage) (json.RawMessage, error) {
-		var req struct {
-			Directory                    string `json:"directory"`
-			ApprovedNewDirectoryCreation bool   `json:"approvedNewDirectoryCreation"`
-			SessionID                    string `json:"sessionId"`
-			MachineID                    string `json:"machineId"`
-			Agent                        string `json:"agent"`
-		}
-		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, err
-		}
-		if req.Directory == "" {
-			return nil, fmt.Errorf("directory is required")
-		}
-
-		if _, err := os.Stat(req.Directory); err != nil {
-			if os.IsNotExist(err) {
-				if !req.ApprovedNewDirectoryCreation {
-					return json.Marshal(map[string]interface{}{
-						"type":      "requestToApproveDirectoryCreation",
-						"directory": req.Directory,
-					})
-				}
-				if err := os.MkdirAll(req.Directory, 0700); err != nil {
-					return nil, fmt.Errorf("failed to create directory: %w", err)
-				}
-			} else {
-				return nil, fmt.Errorf("failed to stat directory: %w", err)
+		return m.runInboundRPC(func() (json.RawMessage, error) {
+			var req struct {
+				Directory                    string `json:"directory"`
+				ApprovedNewDirectoryCreation bool   `json:"approvedNewDirectoryCreation"`
+				SessionID                    string `json:"sessionId"`
+				MachineID                    string `json:"machineId"`
+				Agent                        string `json:"agent"`
 			}
-		}
+			if err := json.Unmarshal(params, &req); err != nil {
+				return nil, err
+			}
+			if req.Directory == "" {
+				return nil, fmt.Errorf("directory is required")
+			}
 
-		child, err := NewManager(m.cfg, m.token, m.debug)
-		if err != nil {
-			return nil, err
-		}
-		if req.Agent == "claude" || req.Agent == "codex" {
-			child.agent = req.Agent
-		}
-		child.disableMachineSocket = true
+			if _, err := os.Stat(req.Directory); err != nil {
+				if os.IsNotExist(err) {
+					if !req.ApprovedNewDirectoryCreation {
+						return json.Marshal(map[string]interface{}{
+							"type":      "requestToApproveDirectoryCreation",
+							"directory": req.Directory,
+						})
+					}
+					if err := os.MkdirAll(req.Directory, 0700); err != nil {
+						return nil, fmt.Errorf("failed to create directory: %w", err)
+					}
+				} else {
+					return nil, fmt.Errorf("failed to stat directory: %w", err)
+				}
+			}
 
-		if err := child.Start(req.Directory); err != nil {
-			return nil, err
-		}
-		if child.sessionID == "" {
-			return nil, fmt.Errorf("session id not assigned")
-		}
+			child, err := NewManager(m.cfg, m.token, m.debug)
+			if err != nil {
+				return nil, err
+			}
+			if req.Agent == "claude" || req.Agent == "codex" {
+				child.agent = req.Agent
+			}
+			child.disableMachineSocket = true
 
-		m.spawnMu.Lock()
-		m.spawnedSessions[child.sessionID] = child
-		m.spawnMu.Unlock()
+			if err := child.Start(req.Directory); err != nil {
+				return nil, err
+			}
+			if child.sessionID == "" {
+				return nil, fmt.Errorf("session id not assigned")
+			}
 
-		m.registerSpawnedSession(child.sessionID, req.Directory)
-
-		go func(sessionID string, mgr *Manager) {
-			_ = mgr.Wait()
 			m.spawnMu.Lock()
-			delete(m.spawnedSessions, sessionID)
+			m.spawnedSessions[child.sessionID] = child
 			m.spawnMu.Unlock()
-		}(child.sessionID, child)
 
-		return json.Marshal(map[string]interface{}{
-			"type":      "success",
-			"sessionId": child.sessionID,
+			m.registerSpawnedSession(child.sessionID, req.Directory)
+
+			go func(sessionID string, mgr *Manager) {
+				_ = mgr.Wait()
+				m.spawnMu.Lock()
+				delete(m.spawnedSessions, sessionID)
+				m.spawnMu.Unlock()
+			}(child.sessionID, child)
+
+			return json.Marshal(map[string]interface{}{
+				"type":      "success",
+				"sessionId": child.sessionID,
+			})
 		})
 	})
 
 	m.machineRPC.RegisterHandler(prefix+"stop-session", func(params json.RawMessage) (json.RawMessage, error) {
-		var req struct {
-			SessionID string `json:"sessionId"`
-		}
-		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, err
-		}
-		if req.SessionID == "" {
-			return nil, fmt.Errorf("sessionId is required")
-		}
+		return m.runInboundRPC(func() (json.RawMessage, error) {
+			var req struct {
+				SessionID string `json:"sessionId"`
+			}
+			if err := json.Unmarshal(params, &req); err != nil {
+				return nil, err
+			}
+			if req.SessionID == "" {
+				return nil, fmt.Errorf("sessionId is required")
+			}
 
-		m.spawnMu.Lock()
-		child, ok := m.spawnedSessions[req.SessionID]
-		if ok {
-			delete(m.spawnedSessions, req.SessionID)
-		}
-		m.spawnMu.Unlock()
+			m.spawnMu.Lock()
+			child, ok := m.spawnedSessions[req.SessionID]
+			if ok {
+				delete(m.spawnedSessions, req.SessionID)
+			}
+			m.spawnMu.Unlock()
 
-		if !ok {
-			return nil, fmt.Errorf("session not found")
-		}
-		_ = child.Close()
-		m.removeSpawnedSession(req.SessionID)
-		return json.Marshal(map[string]string{"message": "Session stopped"})
+			if !ok {
+				return nil, fmt.Errorf("session not found")
+			}
+			_ = child.Close()
+			m.removeSpawnedSession(req.SessionID)
+			return json.Marshal(map[string]string{"message": "Session stopped"})
+		})
 	})
 
 	m.machineRPC.RegisterHandler(prefix+"stop-daemon", func(params json.RawMessage) (json.RawMessage, error) {
-		log.Printf("Stop-daemon requested")
-		m.scheduleShutdown()
-		m.forceExitAfter(2 * time.Second)
-		return json.Marshal(map[string]string{"message": "Daemon stop request acknowledged, starting shutdown sequence..."})
+		return m.runInboundRPC(func() (json.RawMessage, error) {
+			log.Printf("Stop-daemon requested")
+			m.scheduleShutdown()
+			m.forceExitAfter(2 * time.Second)
+			return json.Marshal(map[string]string{"message": "Daemon stop request acknowledged, starting shutdown sequence..."})
+		})
 	})
 
 	m.machineRPC.RegisterHandler(prefix+"ping", func(params json.RawMessage) (json.RawMessage, error) {
-		return json.Marshal(map[string]bool{"success": true})
+		return m.runInboundRPC(func() (json.RawMessage, error) {
+			return json.Marshal(map[string]bool{"success": true})
+		})
 	})
 }
 
@@ -1850,6 +1919,28 @@ func (m *Manager) AbortRemote() error {
 
 // handleRemoteMessage processes messages from the remote bridge
 func (m *Manager) handleRemoteMessage(msg *claude.RemoteMessage) error {
+	if msg == nil {
+		return nil
+	}
+
+	// Detach from caller-owned struct/slices to avoid concurrent mutation issues.
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	var copyMsg claude.RemoteMessage
+	if err := json.Unmarshal(payload, &copyMsg); err != nil {
+		return err
+	}
+
+	return m.runInboundErr(func() error { return m.handleRemoteMessageInbound(&copyMsg) })
+}
+
+func (m *Manager) handleRemoteMessageInbound(msg *claude.RemoteMessage) error {
+	if msg == nil {
+		return nil
+	}
+
 	if m.debug {
 		log.Printf("Remote message: type=%s", msg.Type)
 	}
