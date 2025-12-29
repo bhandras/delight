@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bhandras/delight/cli/internal/claude"
+	"github.com/bhandras/delight/cli/internal/protocol/wire"
 	"github.com/bhandras/delight/cli/pkg/types"
 )
 
@@ -304,9 +305,9 @@ func (m *Manager) handleRemoteMessageInbound(msg *claude.RemoteMessage) error {
 			return nil
 		}
 
-		m.wsClient.EmitMessage(map[string]interface{}{
-			"sid":     m.sessionID,
-			"message": encrypted,
+		m.wsClient.EmitMessage(wire.OutboundMessagePayload{
+			SID:     m.sessionID,
+			Message: encrypted,
 		})
 	}
 
@@ -320,20 +321,20 @@ func (m *Manager) handleRemoteMessageInbound(msg *claude.RemoteMessage) error {
 		}
 		if err := json.Unmarshal(msg.Usage, &usage); err == nil {
 			total := usage.InputTokens + usage.OutputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens
-			_ = m.wsClient.EmitRaw("usage-report", map[string]interface{}{
-				"key":       "claude-session",
-				"sessionId": m.sessionID,
-				"tokens": map[string]interface{}{
-					"total":          total,
-					"input":          usage.InputTokens,
-					"output":         usage.OutputTokens,
-					"cache_creation": usage.CacheCreationInputTokens,
-					"cache_read":     usage.CacheReadInputTokens,
+			_ = m.wsClient.EmitRaw("usage-report", wire.UsageReportPayload{
+				Key:       "claude-session",
+				SessionID: m.sessionID,
+				Tokens: wire.UsageReportTokens{
+					Total:         total,
+					Input:         usage.InputTokens,
+					Output:        usage.OutputTokens,
+					CacheCreation: usage.CacheCreationInputTokens,
+					CacheRead:     usage.CacheReadInputTokens,
 				},
-				"cost": map[string]interface{}{
-					"total":  0,
-					"input":  0,
-					"output": 0,
+				Cost: wire.UsageReportCost{
+					Total:  0,
+					Input:  0,
+					Output: 0,
 				},
 			})
 		}
@@ -800,8 +801,8 @@ func (m *Manager) sendFakeAgentResponse(userText string) {
 		return
 	}
 
-	m.wsClient.EmitMessage(map[string]interface{}{
-		"sid":     m.sessionID,
-		"message": encrypted,
+	m.wsClient.EmitMessage(wire.OutboundMessagePayload{
+		SID:     m.sessionID,
+		Message: encrypted,
 	})
 }

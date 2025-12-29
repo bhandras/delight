@@ -120,15 +120,15 @@ func (m *Manager) registerRPCHandlers() {
 
 	// Permission handler - respond to permission requests
 	m.rpcManager.RegisterHandler(prefix+"permission", func(params json.RawMessage) (json.RawMessage, error) {
-		return m.runInboundRPC(func() (json.RawMessage, error) {
-			wire.DumpToTestdata("rpc_session_permission", params)
-			var req wire.PermissionResponseRequest
-			if err := json.Unmarshal(params, &req); err != nil {
-				return nil, err
-			}
+		wire.DumpToTestdata("rpc_session_permission", params)
+		var req wire.PermissionResponseRequest
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, err
+		}
 
-			m.HandlePermissionResponse(req.RequestID, req.Allow, req.Message)
-			return json.Marshal(map[string]bool{"success": true})
-		})
+		// This handler must not go through the inbound queue, since permission
+		// requests are awaited synchronously in the inbound event loop.
+		m.HandlePermissionResponse(req.RequestID, req.Allow, req.Message)
+		return json.Marshal(map[string]bool{"success": true})
 	})
 }

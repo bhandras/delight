@@ -663,7 +663,7 @@ func TestACPFlowWithAwait(t *testing.T) {
 		t.Fatalf("emit message: %v", err)
 	}
 
-	requestID := waitForPermissionRequest(t, ephemeralCh, sessionID)
+	requestID := waitForPermissionRequest(t, ephemeralCh, sessionID, &cliBuf, &serverBuf)
 	paramsBytes, err := json.Marshal(map[string]interface{}{
 		"requestId": requestID,
 		"allow":     true,
@@ -1181,25 +1181,9 @@ func encryptPayload(t *testing.T, secret *[32]byte, payload interface{}) string 
 func decryptUpdateText(t *testing.T, secret *[32]byte, update map[string]interface{}) (string, bool) {
 	t.Helper()
 
-	body, _ := update["body"].(map[string]interface{})
-	if body == nil {
-		t.Fatalf("update missing body: %+v", update)
-	}
-	message, _ := body["message"].(map[string]interface{})
-	content, _ := message["content"].(map[string]interface{})
-	cipher, _ := content["c"].(string)
-	if cipher == "" {
-		t.Fatalf("update missing cipher: %+v", update)
-	}
-
-	encrypted, err := base64.StdEncoding.DecodeString(cipher)
-	if err != nil {
-		t.Fatalf("decode cipher: %v", err)
-	}
-
-	var decrypted interface{}
-	if err := crypto.DecryptLegacy(encrypted, secret, &decrypted); err != nil {
-		t.Fatalf("decrypt payload: %v", err)
+	decrypted, ok := decryptUpdatePayload(t, secret, update)
+	if !ok {
+		return "", false
 	}
 
 	text := extractAssistantText(decrypted)
@@ -1209,18 +1193,24 @@ func decryptUpdateText(t *testing.T, secret *[32]byte, update map[string]interfa
 	return text, true
 }
 
-func decryptUpdatePayload(t *testing.T, secret *[32]byte, update map[string]interface{}) interface{} {
+func decryptUpdatePayload(t *testing.T, secret *[32]byte, update map[string]interface{}) (interface{}, bool) {
 	t.Helper()
 
 	body, _ := update["body"].(map[string]interface{})
 	if body == nil {
-		t.Fatalf("update missing body: %+v", update)
+		return nil, false
 	}
 	message, _ := body["message"].(map[string]interface{})
+	if message == nil {
+		return nil, false
+	}
 	content, _ := message["content"].(map[string]interface{})
+	if content == nil {
+		return nil, false
+	}
 	cipher, _ := content["c"].(string)
 	if cipher == "" {
-		t.Fatalf("update missing cipher: %+v", update)
+		return nil, false
 	}
 
 	encrypted, err := base64.StdEncoding.DecodeString(cipher)
@@ -1233,7 +1223,7 @@ func decryptUpdatePayload(t *testing.T, secret *[32]byte, update map[string]inte
 		t.Fatalf("decrypt payload: %v", err)
 	}
 
-	return decrypted
+	return decrypted, true
 }
 
 func extractAssistantText(payload interface{}) string {
@@ -1504,7 +1494,10 @@ func waitForAssistantText(t *testing.T, updateCh <-chan map[string]interface{}, 
 	for {
 		select {
 		case update := <-updateCh:
-			payload := decryptUpdatePayload(t, secret, update)
+			payload, ok := decryptUpdatePayload(t, secret, update)
+			if !ok {
+				continue
+			}
 			lastPayload = payload
 			if text := extractAssistantText(payload); text != "" {
 				return text
@@ -1519,12 +1512,20 @@ func waitForAssistantText(t *testing.T, updateCh <-chan map[string]interface{}, 
 	}
 }
 
-func waitForPermissionRequest(t *testing.T, ephemeralCh <-chan map[string]interface{}, sessionID string) string {
+func waitForPermissionRequest(
+	t *testing.T,
+	ephemeralCh <-chan map[string]interface{},
+	sessionID string,
+	cliBuf *bytes.Buffer,
+	serverBuf *bytes.Buffer,
+) string {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
+	var lastEp map[string]interface{}
 	for {
 		select {
 		case ep := <-ephemeralCh:
+			lastEp = ep
 			tval, _ := ep["type"].(string)
 			if tval != "permission-request" {
 				continue
@@ -1537,7 +1538,20 @@ func waitForPermissionRequest(t *testing.T, ephemeralCh <-chan map[string]interf
 				return requestID
 			}
 		case <-deadline:
-			t.Fatal("timeout waiting for permission-request")
+			if lastEp != nil {
+				pretty, _ := json.Marshal(lastEp)
+				t.Fatalf(
+					"timeout waiting for permission-request (last ephemeral: %s)\ncli logs:\n%s\nserver logs:\n%s",
+					pretty,
+					cliBuf.String(),
+					serverBuf.String(),
+				)
+			}
+			t.Fatalf(
+				"timeout waiting for permission-request\ncli logs:\n%s\nserver logs:\n%s",
+				cliBuf.String(),
+				serverBuf.String(),
+			)
 		}
 	}
 }

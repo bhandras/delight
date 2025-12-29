@@ -9,8 +9,39 @@ import (
 	"path/filepath"
 
 	"github.com/bhandras/delight/cli/internal/acp"
+	"github.com/bhandras/delight/cli/internal/protocol/wire"
 	"github.com/bhandras/delight/cli/pkg/types"
 )
+
+func (m *Manager) startACP() error {
+	if m.cfg == nil {
+		return fmt.Errorf("missing config")
+	}
+	if m.cfg.ACPURL == "" || m.acpAgent == "" {
+		return fmt.Errorf("acp is not configured (missing url or agent)")
+	}
+	if m.sessionID == "" {
+		return fmt.Errorf("missing happy session id")
+	}
+
+	if err := m.ensureACPSessionID(); err != nil {
+		return err
+	}
+
+	m.acpClient = acp.NewClient(m.cfg.ACPURL, m.acpAgent, m.debug)
+
+	m.modeMu.Lock()
+	m.mode = ModeRemote
+	m.modeMu.Unlock()
+
+	m.state.ControlledByUser = false
+
+	if m.debug {
+		log.Printf("ACP ready (agent=%s session=%s)", m.acpAgent, m.acpSessionID)
+	}
+
+	return nil
+}
 
 func (m *Manager) ensureACPSessionID() error {
 	if m.acpSessionID != "" {
@@ -202,8 +233,8 @@ func (m *Manager) sendAgentOutput(text string) {
 		return
 	}
 
-	m.wsClient.EmitMessage(map[string]interface{}{
-		"sid":     m.sessionID,
-		"message": encrypted,
+	m.wsClient.EmitMessage(wire.OutboundMessagePayload{
+		SID:     m.sessionID,
+		Message: encrypted,
 	})
 }

@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"github.com/bhandras/delight/cli/internal/codex"
+	"github.com/bhandras/delight/cli/internal/protocol/wire"
 	"github.com/bhandras/delight/cli/pkg/types"
 )
 
@@ -293,9 +294,9 @@ func (m *Manager) sendCodexRecord(data map[string]interface{}) {
 		return
 	}
 
-	m.wsClient.EmitMessage(map[string]interface{}{
-		"sid":     m.sessionID,
-		"message": encrypted,
+	m.wsClient.EmitMessage(wire.OutboundMessagePayload{
+		SID:     m.sessionID,
+		Message: encrypted,
 	})
 }
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bhandras/delight/cli/internal/claude"
+	"github.com/bhandras/delight/cli/internal/protocol/wire"
 )
 
 func extractClaudeUserText(raw json.RawMessage) string {
@@ -196,10 +197,10 @@ func (m *Manager) forwardSessionMessageInbound(msg *claude.SessionMessage) {
 	}
 
 	if m.wsClient != nil && m.wsClient.IsConnected() {
-		m.wsClient.EmitMessage(map[string]interface{}{
-			"sid":     m.sessionID,
-			"localId": msg.UUID,
-			"message": encrypted,
+		m.wsClient.EmitMessage(wire.OutboundMessagePayload{
+			SID:     m.sessionID,
+			LocalID: msg.UUID,
+			Message: encrypted,
 		})
 	}
 }

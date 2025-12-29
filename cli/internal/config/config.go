@@ -7,21 +7,25 @@ import (
 )
 
 type Config struct {
-	// Server configuration
+	// ServerURL is the base URL of the Delight server API.
 	ServerURL string
-	ACPURL    string
-	ACPAgent  string
+	// ACPURL is the base URL for the ACP HTTP API.
+	ACPURL string
+	// ACPAgent is the ACP agent name to use for runs.
+	ACPAgent string
+	// ACPEnable indicates whether ACP is configured and enabled.
 	ACPEnable bool
 
-	// Local paths
-	DelightHome string // ~/.delight or ~/.delight-dev
-	AccessKey   string // Path to access key file
+	// DelightHome is the directory where Delight stores local state.
+	DelightHome string
+	// AccessKey is the path to the access key file.
+	AccessKey string
 
-	// Runtime
+	// Debug enables verbose logging.
 	Debug bool
-	// Agent selects the local agent backend (claude|codex).
+	// Agent selects the local agent backend (acp|claude|codex).
 	Agent string
-	// FakeAgent enables a stub agent for integration tests
+	// FakeAgent enables a stub agent for integration tests.
 	FakeAgent bool
 	// ForceNewSession forces creating a new session tag on every run.
 	ForceNewSession bool
@@ -63,10 +67,14 @@ func Load() (*Config, error) {
 		getenvFirst("DELIGHT_FAKE_AGENT", "HAPPY_FAKE_AGENT") == "1"
 	agent := getenvFirst("DELIGHT_AGENT", "HAPPY_AGENT")
 	if agent == "" {
-		agent = "claude"
+		if acpEnable {
+			agent = "acp"
+		} else {
+			agent = "claude"
+		}
 	}
-	if agent != "claude" && agent != "codex" {
-		return nil, fmt.Errorf("invalid DELIGHT_AGENT %q (expected claude or codex)", agent)
+	if agent != "acp" && agent != "claude" && agent != "codex" {
+		return nil, fmt.Errorf("invalid DELIGHT_AGENT %q (expected acp, claude, or codex)", agent)
 	}
 
 	return &Config{

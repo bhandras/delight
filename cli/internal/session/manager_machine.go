@@ -50,7 +50,7 @@ func (m *Manager) registerMachineRPCHandlers() {
 			if err != nil {
 				return nil, err
 			}
-			if req.Agent == "claude" || req.Agent == "codex" {
+			if req.Agent == "acp" || req.Agent == "claude" || req.Agent == "codex" {
 				child.agent = req.Agent
 			}
 			child.disableMachineSocket = true
@@ -140,11 +140,15 @@ func (m *Manager) updateMachineState() error {
 		return fmt.Errorf("failed to encrypt daemon state: %w", err)
 	}
 
-	resp, err := m.machineClient.EmitWithAck("machine-update-state", map[string]interface{}{
-		"machineId":       m.machineID,
-		"daemonState":     base64.StdEncoding.EncodeToString(encryptedState),
-		"expectedVersion": m.machineStateVer,
-	}, 5*time.Second)
+	resp, err := m.machineClient.EmitWithAck(
+		"machine-update-state",
+		wire.MachineUpdateStatePayload{
+			MachineID:       m.machineID,
+			DaemonState:     base64.StdEncoding.EncodeToString(encryptedState),
+			ExpectedVersion: m.machineStateVer,
+		},
+		5*time.Second,
+	)
 	if err != nil {
 		return err
 	}
@@ -177,11 +181,15 @@ func (m *Manager) updateMachineMetadata() error {
 		return fmt.Errorf("failed to encrypt machine metadata: %w", err)
 	}
 
-	resp, err := m.machineClient.EmitWithAck("machine-update-metadata", map[string]interface{}{
-		"machineId":       m.machineID,
-		"metadata":        base64.StdEncoding.EncodeToString(encryptedMeta),
-		"expectedVersion": m.machineMetaVer,
-	}, 5*time.Second)
+	resp, err := m.machineClient.EmitWithAck(
+		"machine-update-metadata",
+		wire.MachineUpdateMetadataPayload{
+			MachineID:       m.machineID,
+			Metadata:        base64.StdEncoding.EncodeToString(encryptedMeta),
+			ExpectedVersion: m.machineMetaVer,
+		},
+		5*time.Second,
+	)
 	if err != nil {
 		return err
 	}

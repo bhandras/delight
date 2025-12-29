@@ -141,6 +141,15 @@ func (m *Manager) Start(workDir string) error {
 
 	m.initRuntime()
 
+	if m.agent == "acp" {
+		if !m.cfg.ACPEnable {
+			return fmt.Errorf("acp agent selected but ACP is not configured")
+		}
+		if err := m.startACP(); err != nil {
+			return err
+		}
+	}
+
 	// Connect WebSocket
 	m.wsClient = websocket.NewClient(m.cfg.ServerURL, m.token, m.sessionID, m.debug)
 
@@ -164,6 +173,9 @@ func (m *Manager) Start(workDir string) error {
 			log.Println("WebSocket connected")
 			m.rpcManager.RegisterAll()
 			_ = m.wsClient.KeepSessionAlive(m.sessionID, m.thinking)
+			if m.agent == "acp" {
+				m.updateState()
+			}
 		} else {
 			log.Printf("Warning: WebSocket connection timeout")
 		}
@@ -186,9 +198,9 @@ func (m *Manager) Start(workDir string) error {
 					log.Println("Machine WebSocket connected")
 				}
 				m.machineRPC.RegisterAll()
-				_ = m.machineClient.EmitRaw("machine-alive", map[string]interface{}{
-					"machineId": m.machineID,
-					"time":      time.Now().UnixMilli(),
+				_ = m.machineClient.EmitRaw("machine-alive", wire.MachineAlivePayload{
+					MachineID: m.machineID,
+					Time:      time.Now().UnixMilli(),
 				})
 				if err := m.updateMachineState(); err != nil && m.debug {
 					log.Printf("Machine state update error: %v", err)
@@ -212,14 +224,19 @@ func (m *Manager) Start(workDir string) error {
 		return nil
 	}
 
-	if m.cfg.ACPEnable && m.agent != "codex" && m.debug {
-		log.Printf("ACP mode disabled (Claude TUI always on)")
+	if m.cfg.ACPEnable && m.agent != "acp" && m.debug {
+		log.Printf("ACP configured but disabled (agent=%s)", m.agent)
 	}
 
 	if m.agent == "codex" {
 		if err := m.startCodex(); err != nil {
 			return err
 		}
+		go m.keepAliveLoop()
+		return nil
+	}
+
+	if m.agent == "acp" {
 		go m.keepAliveLoop()
 		return nil
 	}
@@ -497,6 +514,11 @@ func (m *Manager) handleMessage(data map[string]interface{}) {
 	messageContent = strings.TrimRight(messageContent, "\r\n")
 	m.rememberRemoteInput(messageContent)
 
+	if m.agent == "acp" {
+		m.handleACPMessage(messageContent)
+		return
+	}
+
 	if m.claudeProcess == nil {
 		if m.debug {
 			log.Printf("Claude process not running; ignoring message")
@@ -562,9 +584,9 @@ func (m *Manager) keepAliveLoop() {
 			_ = m.enqueueInbound(func() {
 				// Send machine keep-alive via machine-scoped socket
 				if m.machineClient != nil && m.machineClient.IsConnected() {
-					if err := m.machineClient.EmitRaw("machine-alive", map[string]interface{}{
-						"machineId": m.machineID,
-						"time":      time.Now().UnixMilli(),
+					if err := m.machineClient.EmitRaw("machine-alive", wire.MachineAlivePayload{
+						MachineID: m.machineID,
+						Time:      time.Now().UnixMilli(),
 					}); err != nil && m.debug {
 						log.Printf("Machine keep-alive error: %v", err)
 					}

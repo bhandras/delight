@@ -13,6 +13,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/claude"
 	"github.com/bhandras/delight/cli/internal/codex"
 	"github.com/bhandras/delight/cli/internal/config"
+	"github.com/bhandras/delight/cli/internal/protocol/wire"
 	"github.com/bhandras/delight/cli/internal/session/runtime"
 	"github.com/bhandras/delight/cli/internal/storage"
 	"github.com/bhandras/delight/cli/internal/websocket"
@@ -162,17 +163,19 @@ func (m *Manager) handlePermissionRequest(requestID string, toolName string, inp
 	m.pendingPermissions[requestID] = responseCh
 	m.permissionMu.Unlock()
 
-	// Send permission request to mobile app via RPC
-	if m.wsClient != nil && m.wsClient.IsConnected() {
-		if err := m.wsClient.EmitRaw("permission-request", map[string]interface{}{
-			"sid":       m.sessionID,
-			"requestId": requestID,
-			"toolName":  toolName,
-			"input":     string(input),
-		}); err != nil {
-			if m.debug {
-				log.Printf("Failed to send permission request: %v", err)
-			}
+	// Send permission request to mobile app via RPC.
+	//
+	// Do not gate on IsConnected here; permission requests can race the initial
+	// Socket.IO handshake, and Socket.IO will queue outbound emits.
+	if m.wsClient != nil {
+		if err := m.wsClient.EmitEphemeral(wire.PermissionRequestEphemeralPayload{
+			Type:      "permission-request",
+			ID:        m.sessionID,
+			RequestID: requestID,
+			ToolName:  toolName,
+			Input:     string(input),
+		}); err != nil && m.debug {
+			log.Printf("Failed to send permission request: %v", err)
 		}
 	}
 
@@ -230,12 +233,12 @@ func (m *Manager) HandlePermissionResponse(requestID string, allow bool, message
 // broadcastThinking broadcasts thinking state to connected clients.
 func (m *Manager) broadcastThinking(thinking bool) {
 	if m.wsClient != nil && m.wsClient.IsConnected() {
-		m.wsClient.EmitEphemeral(map[string]interface{}{
-			"type":     "activity",
-			"id":       m.sessionID,
-			"active":   true,
-			"thinking": thinking,
-			"activeAt": time.Now().UnixMilli(),
+		m.wsClient.EmitEphemeral(wire.EphemeralActivityPayload{
+			Type:     "activity",
+			ID:       m.sessionID,
+			Active:   true,
+			Thinking: thinking,
+			ActiveAt: time.Now().UnixMilli(),
 		})
 	}
 }
