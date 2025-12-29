@@ -3,29 +3,135 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var model = HarnessViewModel()
     @State private var showScanner = false
+    @State private var selectedTab: Int = 0
+    @State private var activeSheet: ActiveSheet?
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             TerminalsView(model: model)
                 .tabItem {
                     Image(systemName: "terminal")
                     Text("Terminals")
                 }
+                .tag(0)
 
             SettingsView(model: model, showScanner: $showScanner)
                 .tabItem {
                     Image(systemName: "slider.horizontal.3")
                     Text("Settings")
                 }
+                .tag(1)
         }
         .tint(Theme.accent)
         .onAppear {
             model.startup()
         }
-        .sheet(isPresented: $showScanner) {
-            QRScannerView { result in
-                model.terminalURL = result
+        .onChange(of: showScanner) { newValue in
+            if newValue {
+                activeSheet = .scanner
+            } else if activeSheet == .scanner {
+                activeSheet = nil
+            }
+        }
+        .onChange(of: model.showCrashReport) { newValue in
+            if newValue {
                 showScanner = false
+                activeSheet = .crashReport
+            } else if activeSheet == .crashReport {
+                activeSheet = nil
+            }
+        }
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .scanner:
+                QRScannerView { result in
+                    model.terminalURL = result
+                    showScanner = false
+                }
+            case .crashReport:
+                CrashReportSheet(model: model) {
+                    model.showCrashReport = false
+                }
+            }
+        }
+    }
+}
+
+private enum ActiveSheet: Identifiable {
+    case scanner
+    case crashReport
+
+    var id: Int {
+        switch self {
+        case .scanner: return 0
+        case .crashReport: return 1
+        }
+    }
+}
+
+private struct CrashReportSheet: View {
+    @ObservedObject var model: HarnessViewModel
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Theme.background.ignoresSafeArea()
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("The app appears to have crashed during the previous run.")
+                        .font(Theme.body)
+                        .foregroundColor(Theme.messageText)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Crash Log Path")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(Theme.mutedText)
+                        Text(model.crashLogPath)
+                            .font(.system(.footnote, design: .monospaced))
+                            .foregroundColor(Theme.messageText)
+                            .textSelection(.enabled)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Crash Log Tail")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(Theme.mutedText)
+                        ScrollView {
+                            Text(model.crashReportText)
+                                .font(.system(.footnote, design: .monospaced))
+                                .foregroundColor(Theme.messageText)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                                .padding(8)
+                        }
+                        .frame(maxHeight: 320)
+                        .background(Color.white.opacity(0.6))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+
+                    HStack(spacing: 12) {
+                        ActionButton(title: "Copy Tail", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = model.crashReportText
+                        }
+                        ActionButton(title: "Copy Path", systemImage: "link") {
+                            UIPasteboard.general.string = model.crashLogPath
+                        }
+                    }
+
+                    Text("You can also open Settings → Debug → Logs to inspect the full logs and start the log server.")
+                        .font(Theme.caption)
+                        .foregroundColor(Theme.mutedText)
+
+                    Spacer()
+                }
+                .padding()
+            }
+            .navigationTitle("Crash Report")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done", action: onDismiss)
+                }
             }
         }
     }

@@ -14,20 +14,14 @@ enum CrashLogger {
 
     static func setup() {
         let defaults = UserDefaults.standard
-        if defaults.bool(forKey: runningFlagKey) {
+        let wasRunning = defaults.bool(forKey: runningFlagKey)
+        if wasRunning {
             defaults.set(true, forKey: crashFlagKey)
         }
         defaults.set(true, forKey: runningFlagKey)
         defaults.synchronize()
         NotificationCenter.default.addObserver(
             forName: UIApplication.willTerminateNotification,
-            object: nil,
-            queue: .main
-        ) { _ in
-            clearRunningFlag()
-        }
-        NotificationCenter.default.addObserver(
-            forName: UIApplication.didEnterBackgroundNotification,
             object: nil,
             queue: .main
         ) { _ in
@@ -44,6 +38,7 @@ enum CrashLogger {
         dup2(handle.fileDescriptor, STDOUT_FILENO)
         setvbuf(stderr, nil, _IONBF, 0)
         setvbuf(stdout, nil, _IONBF, 0)
+        writeToStderr("CrashLogger setup (wasRunning=\(wasRunning))\n")
         NSSetUncaughtExceptionHandler(CrashLoggerHandleException)
     }
 
@@ -64,6 +59,7 @@ enum CrashLogger {
         let crashed = defaults.bool(forKey: crashFlagKey)
         if crashed {
             defaults.set(false, forKey: crashFlagKey)
+            defaults.synchronize()
         }
         return crashed
     }
@@ -71,6 +67,7 @@ enum CrashLogger {
     private static func clearRunningFlag() {
         let defaults = UserDefaults.standard
         defaults.set(false, forKey: runningFlagKey)
+        defaults.synchronize()
     }
 }
 

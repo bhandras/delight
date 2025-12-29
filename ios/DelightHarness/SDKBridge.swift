@@ -222,6 +222,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var machines: [MachineInfo] = []
     @Published var logServerURL: String = ""
     @Published var logServerRunning: Bool = false
+    @Published var showCrashReport: Bool = false
+    @Published var crashReportText: String = ""
 
     private let client: SdkClient
     private static let settingsKeyPrefix = "delight.harness."
@@ -254,6 +256,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     func startup() {
         if CrashLogger.consumeCrashFlag() {
+            crashReportText = crashLogTail()
+            showCrashReport = true
             resetAfterCrash()
         }
         if !masterKey.isEmpty && (!token.isEmpty || (!publicKey.isEmpty && !privateKey.isEmpty)) {
@@ -263,6 +267,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func resetAfterCrash() {
+        client.disconnect()
         sessionID = ""
         selectedMetadata = nil
         messages = []
@@ -270,6 +275,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         machines = []
         logLines = []
         needsSessionRefresh = true
+        status = "disconnected"
         log("Crash detected; cleared cached session state")
     }
 
@@ -477,6 +483,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     @objc func onConnected() {
         updateStatus("connected")
+        clearThinkingState()
         if needsSessionRefresh {
             listSessions()
             needsSessionRefresh = false
@@ -485,6 +492,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     @objc func onDisconnected(_ reason: String?) {
         updateStatus("disconnected: \(reason ?? "unknown")")
+        clearThinkingState()
     }
 
     @objc func onUpdate(_ sessionID: String?, updateJSON: String?) {
@@ -492,8 +500,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         if let updateJSON {
             handleActivityUpdate(updateJSON)
             if let updateSessionID = extractUpdateSessionID(from: updateJSON) {
-                if updateSessionID == self.sessionID {
-                    updateThinkingFromUpdate(updateJSON)
+                guard updateSessionID == self.sessionID else { return }
+                if shouldFetchMessages(fromUpdateJSON: updateJSON) {
                     fetchMessages()
                 }
                 return
@@ -503,6 +511,40 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         if sessionID == self.sessionID {
             fetchMessages()
         }
+    }
+
+    private func shouldFetchMessages(fromUpdateJSON json: String) -> Bool {
+        guard let data = json.data(using: .utf8),
+              let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return true
+        }
+        guard let body = decoded["body"] as? [String: Any],
+              let type = body["t"] as? String, type == "new-message",
+              let message = body["message"] as? [String: Any] else {
+            return true
+        }
+        let content = normalizeContent(firstNonNull(message["content"], message["data"]))
+        if isNullMessage(content) || isFileHistorySnapshot(content) || isToolResultMessage(content) {
+            return false
+        }
+        if containsThinkingBlock(content) && extractBlocks(from: content, sessionID: sessionID).isEmpty {
+            return false
+        }
+        if extractBlocks(from: content, sessionID: sessionID).isEmpty, extractText(from: content) == nil {
+            return false
+        }
+        return true
+    }
+
+    private func clearThinkingState() {
+        let targetID = sessionID
+        if targetID.isEmpty {
+            DispatchQueue.main.async {
+                self.sessions = self.sessions.map { $0.updatingActivity(active: nil, activeAt: nil, thinking: false) }
+            }
+            return
+        }
+        updateSessionThinking(false)
     }
 
     @objc func onError(_ message: String?) {
@@ -805,7 +847,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             itemsArray = []
         }
 
-        var lastThinkingOnly = false
+        var sawThinkingOnly = false
         var messages: [MessageItem] = []
         var seenKeys = Set<String>()
         var richFallbackKeys = Set<String>()
@@ -855,14 +897,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             }
             if blocks.isEmpty {
                 if hasThinking {
-                    lastThinkingOnly = true
+                    sawThinkingOnly = true
                     continue
                 }
                 self.logUnsupportedMessage(id: id, content: content)
                 continue
-            }
-            if role == .assistant {
-                lastThinkingOnly = false
             }
             let primaryKey = messagePrimaryKey(
                 id: id,
@@ -884,7 +923,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         DispatchQueue.main.async {
             self.messages = messages
         }
-        updateSessionThinking(lastThinkingOnly)
+        // Treat thinking events as ephemeral. We only show "vibing" while we have
+        // a fresh activity update; message history often contains "thinking" blocks
+        // that should not keep the UI stuck in thinking mode after a restart.
+        updateSessionThinking(false)
+        if sawThinkingOnly && messages.isEmpty {
+            log("Only thinking blocks found (no renderable messages).")
+        }
     }
 
     private func normalizeContent(_ content: Any?) -> Any? {
