@@ -12,7 +12,7 @@ This plan is designed to deliver incremental value with minimal disruption. Each
 
 - [x] Session socket updates (`update`, `session-update`) queued in `session.Manager`
 - [x] Session RPC handlers (`switch`, `abort`, `permission`) routed through the same serialized queue
-- [ ] Machine RPC handlers (`spawn-happy-session`, `stop-session`, `stop-daemon`) routed through the same serialized queue
+- [x] Machine RPC handlers (`spawn-happy-session`, `stop-session`, `stop-daemon`) routed through the same serialized queue
   - Rationale: machine RPC may be invoked concurrently with session events and mode switching.
   - Implementation idea:
     - create `runInboundRPCMachine(fn)` or reuse `runInboundRPC` but ensure it works for machine RPC too
@@ -20,13 +20,14 @@ This plan is designed to deliver incremental value with minimal disruption. Each
 
 ### 0.2 Route agent callbacks through the queue
 
-- [ ] Ensure Codex event handler callback enqueues rather than mutating state directly
-- [ ] Ensure RemoteBridge callbacks enqueue rather than mutating state directly
-- [ ] Ensure Claude scanner forwarding loop does not touch shared fields directly
+- [x] Ensure Codex event handler callback enqueues rather than mutating state directly
+- [x] Ensure RemoteBridge message callbacks enqueue rather than mutating state directly
+- [x] Ensure Claude scanner forwarding loop does not touch shared fields directly
+- [x] Keep permission request handlers *off* the inbound queue (avoid deadlock: permission requests block, but responses arrive via queued RPC handlers)
 
 ### 0.3 Verify
 
-- [ ] Add a test that calls queued handlers concurrently (where possible) and verifies order and no deadlock.
+- [x] Add a test that calls queued handlers concurrently (where possible) and verifies order and no deadlock.
 
 ## Phase 1 — SDK-level serialization (done)
 
@@ -95,4 +96,3 @@ Goal: replace ad-hoc state mutation and locks with a formal state machine.
   - switch mode mid-request
   - permission request lifecycle
   - spawn/stop session lifecycle
-

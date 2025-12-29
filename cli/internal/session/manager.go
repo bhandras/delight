@@ -103,6 +103,19 @@ type Manager struct {
 	shutdownOnce sync.Once
 
 	lastMachineKeepAliveSkipAt time.Time
+
+	// recentRemoteInputs tracks user text that originated from the remote/mobile bridge.
+	// Those inputs are injected into the local agent/Claude process, then also show up in
+	// Claude's session transcript file. Our session scanner forwards transcript entries
+	// back to the server — without suppression that causes remote user messages to be
+	// persisted (and displayed) twice.
+	recentRemoteInputsMu sync.Mutex
+	recentRemoteInputs   []remoteInputRecord
+}
+
+type remoteInputRecord struct {
+	text string
+	at   time.Time
 }
 
 type codexMessage struct {
@@ -147,6 +160,125 @@ func NewManager(cfg *config.Config, token string, debug bool) (*Manager, error) 
 			ControlledByUser: true,
 		},
 	}, nil
+}
+
+func normalizeRemoteInputText(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.TrimSpace(text)
+	return text
+}
+
+func (m *Manager) rememberRemoteInput(text string) {
+	text = normalizeRemoteInputText(text)
+	if text == "" {
+		return
+	}
+
+	now := time.Now()
+
+	m.recentRemoteInputsMu.Lock()
+	defer m.recentRemoteInputsMu.Unlock()
+
+	// Keep a small, time-bounded list; most sessions only need a handful of recent inputs.
+	const maxItems = 64
+	const ttl = 20 * time.Second
+
+	// Drop expired entries.
+	cutoff := now.Add(-ttl)
+	dst := m.recentRemoteInputs[:0]
+	for _, rec := range m.recentRemoteInputs {
+		if rec.at.After(cutoff) {
+			dst = append(dst, rec)
+		}
+	}
+	m.recentRemoteInputs = dst
+
+	m.recentRemoteInputs = append(m.recentRemoteInputs, remoteInputRecord{text: text, at: now})
+	if len(m.recentRemoteInputs) > maxItems {
+		m.recentRemoteInputs = m.recentRemoteInputs[len(m.recentRemoteInputs)-maxItems:]
+	}
+}
+
+func (m *Manager) isRecentlyInjectedRemoteInput(text string) bool {
+	text = normalizeRemoteInputText(text)
+	if text == "" {
+		return false
+	}
+
+	now := time.Now()
+	const ttl = 20 * time.Second
+	cutoff := now.Add(-ttl)
+
+	m.recentRemoteInputsMu.Lock()
+	defer m.recentRemoteInputsMu.Unlock()
+
+	// Iterate newest-first.
+	for i := len(m.recentRemoteInputs) - 1; i >= 0; i-- {
+		rec := m.recentRemoteInputs[i]
+		if rec.at.Before(cutoff) {
+			break
+		}
+		if rec.text == text {
+			return true
+		}
+	}
+	return false
+}
+
+func extractClaudeUserText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+
+	var walk func(any) string
+	walk = func(v any) string {
+		switch t := v.(type) {
+		case string:
+			return t
+		case map[string]any:
+			// Common shapes we have seen:
+			// - {"content":"..."}
+			// - {"content":[{"type":"text","text":"..."}]}
+			// - {"text":"..."}
+			if content, ok := t["content"]; ok {
+				if s := walk(content); s != "" {
+					return s
+				}
+			}
+			if text, ok := t["text"]; ok {
+				if s := walk(text); s != "" {
+					return s
+				}
+			}
+			if message, ok := t["message"]; ok {
+				if s := walk(message); s != "" {
+					return s
+				}
+			}
+			if data, ok := t["data"]; ok {
+				if s := walk(data); s != "" {
+					return s
+				}
+			}
+			return ""
+		case []any:
+			for _, part := range t {
+				if s := walk(part); s != "" {
+					return s
+				}
+			}
+			return ""
+		default:
+			return ""
+		}
+	}
+
+	return normalizeRemoteInputText(walk(value))
 }
 
 func (m *Manager) startInboundLoop() {
@@ -564,28 +696,69 @@ func (m *Manager) forwardSessionMessages() {
 				return
 			}
 
-			if m.debug {
-				log.Printf("Forwarding session message: type=%s uuid=%s", msg.Type, msg.UUID)
-			}
-
-			// Encrypt message content
-			encrypted, err := m.encryptMessage(msg)
+			// Detach from the scanner's internal buffers/slices so the inbound queue
+			// processes an immutable snapshot.
+			payload, err := json.Marshal(msg)
 			if err != nil {
 				if m.debug {
-					log.Printf("Failed to encrypt message: %v", err)
+					log.Printf("Failed to marshal scanner message: %v", err)
+				}
+				continue
+			}
+			var copyMsg claude.SessionMessage
+			if err := json.Unmarshal(payload, &copyMsg); err != nil {
+				if m.debug {
+					log.Printf("Failed to unmarshal scanner message: %v", err)
 				}
 				continue
 			}
 
-			// Send to server via WebSocket
-			if m.wsClient != nil && m.wsClient.IsConnected() {
-				m.wsClient.EmitMessage(map[string]interface{}{
-					"sid":     m.sessionID,
-					"localId": msg.UUID,
-					"message": encrypted,
-				})
+			if !m.enqueueInbound(func() { m.forwardSessionMessageInbound(&copyMsg) }) {
+				if m.debug {
+					log.Printf("Inbound queue full; dropping scanner message uuid=%s type=%s", copyMsg.UUID, copyMsg.Type)
+				}
 			}
 		}
+	}
+}
+
+func (m *Manager) forwardSessionMessageInbound(msg *claude.SessionMessage) {
+	if msg == nil {
+		return
+	}
+
+	if m.debug {
+		log.Printf("Forwarding session message: type=%s uuid=%s", msg.Type, msg.UUID)
+	}
+
+	// Suppress forwarding "user" messages that came from the remote bridge.
+	// The remote/mobile bridge already sent that user text to the server; Claude's
+	// session file will contain a copy which we would otherwise forward back and
+	// cause duplicates in the UI.
+	if msg.Type == "user" {
+		userText := extractClaudeUserText(msg.Message)
+		if m.isRecentlyInjectedRemoteInput(userText) {
+			if m.debug {
+				log.Printf("Skipping echoed remote user input from scanner: %q", userText)
+			}
+			return
+		}
+	}
+
+	encrypted, err := m.encryptMessage(msg)
+	if err != nil {
+		if m.debug {
+			log.Printf("Failed to encrypt message: %v", err)
+		}
+		return
+	}
+
+	if m.wsClient != nil && m.wsClient.IsConnected() {
+		m.wsClient.EmitMessage(map[string]interface{}{
+			"sid":     m.sessionID,
+			"localId": msg.UUID,
+			"message": encrypted,
+		})
 	}
 }
 
@@ -887,6 +1060,7 @@ func (m *Manager) handleMessage(data map[string]interface{}) {
 		return
 	}
 	messageContent = strings.TrimRight(messageContent, "\r\n")
+	m.rememberRemoteInput(messageContent)
 
 	if m.claudeProcess == nil {
 		if m.debug {
@@ -1278,31 +1452,36 @@ func (m *Manager) handleCodexEventInbound(event map[string]interface{}) {
 }
 
 func (m *Manager) handleCodexPermission(requestID string, toolName string, input map[string]interface{}) (*codex.PermissionDecision, error) {
-	return m.runInboundPermissionDecision(func() (*codex.PermissionDecision, error) {
-		payload, err := json.Marshal(input)
-		if err != nil {
-			return nil, err
-		}
-		response, err := m.handlePermissionRequest(requestID, toolName, payload)
-		if err != nil {
-			return &codex.PermissionDecision{
-				Decision: "denied",
-				Message:  err.Error(),
-			}, nil
-		}
-		decision := "denied"
-		if response != nil && response.Behavior == "allow" {
-			decision = "approved"
-		}
-		message := ""
-		if response != nil {
-			message = response.Message
-		}
+	// IMPORTANT: do not run this on the inbound queue.
+	//
+	// Permission requests block waiting for a mobile response. If we block the inbound
+	// queue, we can deadlock because permission responses are delivered via queued
+	// inbound RPC handlers.
+	payload, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := m.handlePermissionRequest(requestID, toolName, payload)
+	if err != nil {
 		return &codex.PermissionDecision{
-			Decision: decision,
-			Message:  message,
+			Decision: "denied",
+			Message:  err.Error(),
 		}, nil
-	})
+	}
+
+	decision := "denied"
+	if response != nil && response.Behavior == "allow" {
+		decision = "approved"
+	}
+	message := ""
+	if response != nil {
+		message = response.Message
+	}
+	return &codex.PermissionDecision{
+		Decision: decision,
+		Message:  message,
+	}, nil
 }
 
 func (m *Manager) sendCodexRecord(data map[string]interface{}) {
@@ -1817,7 +1996,7 @@ func (m *Manager) SwitchToRemote() error {
 	bridge.SetMessageHandler(m.handleRemoteMessage)
 
 	// Set up permission handler
-	bridge.SetPermissionHandler(m.handlePermissionRequest)
+	bridge.SetPermissionHandler(m.handleRemotePermission)
 
 	if err := bridge.Start(); err != nil {
 		m.modeMu.Lock()
@@ -1834,6 +2013,21 @@ func (m *Manager) SwitchToRemote() error {
 
 	log.Println("Remote mode active")
 	return nil
+}
+
+func (m *Manager) handleRemotePermission(requestID string, toolName string, input json.RawMessage) (*claude.PermissionResponse, error) {
+	// IMPORTANT: do not run this on the inbound queue.
+	//
+	// Permission requests block waiting for a mobile response. If we block the inbound
+	// queue, we can deadlock because permission responses are delivered via queued
+	// inbound RPC handlers.
+	if input == nil {
+		input = json.RawMessage("null")
+	} else {
+		// Detach from caller-owned bytes to avoid concurrent mutation.
+		input = append(json.RawMessage(nil), input...)
+	}
+	return m.handlePermissionRequest(requestID, toolName, input)
 }
 
 // SwitchToLocal switches to local mode (terminal control)
