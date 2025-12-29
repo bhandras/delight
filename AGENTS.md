@@ -38,3 +38,9 @@ Sign commits with GPG when possible:
 
 `git commit -S -m "message"`
 
+## Go Documentation Requirements
+
+For Go code:
+- All exported functions, variables, constants, types, structs,
+  interfaces, and fields must have GoDoc comments.
+- GoDoc comments should be formatted to not overflow 80 columns.
