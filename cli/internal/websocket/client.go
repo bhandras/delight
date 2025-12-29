@@ -1,15 +1,44 @@
 package websocket
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	"github.com/bhandras/delight/cli/internal/protocol/wire"
 	socket "github.com/zishang520/socket.io/clients/socket/v3"
 	"github.com/zishang520/socket.io/v3/pkg/types"
 )
+
+func normalizePayload(data any) any {
+	if data == nil {
+		return nil
+	}
+
+	switch data.(type) {
+	case map[string]interface{}:
+		return data
+	case []any:
+		return data
+	case string, bool, int, int64, float64:
+		return data
+	}
+
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return data
+	}
+
+	var decoded any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return data
+	}
+
+	return decoded
+}
 
 // EventType represents different types of Socket.IO events
 type EventType string
@@ -274,7 +303,7 @@ func (c *Client) WaitForConnect(timeout time.Duration) bool {
 }
 
 // Emit sends an event to the server
-func (c *Client) Emit(eventType EventType, data map[string]interface{}) error {
+func (c *Client) Emit(eventType EventType, data any) error {
 	c.mu.Lock()
 	sock := c.socket
 	debug := c.debug
@@ -285,13 +314,13 @@ func (c *Client) Emit(eventType EventType, data map[string]interface{}) error {
 	if debug {
 		log.Printf("Sending event: %s", eventType)
 	}
-	sock.Emit(string(eventType), data)
+	sock.Emit(string(eventType), normalizePayload(data))
 	c.mu.Unlock()
 	return nil
 }
 
 // EmitRaw sends an arbitrary event name to the server.
-func (c *Client) EmitRaw(event string, data map[string]interface{}) error {
+func (c *Client) EmitRaw(event string, data any) error {
 	c.mu.Lock()
 	sock := c.socket
 	debug := c.debug
@@ -302,13 +331,13 @@ func (c *Client) EmitRaw(event string, data map[string]interface{}) error {
 	if debug {
 		log.Printf("Sending raw event: %s", event)
 	}
-	sock.Emit(event, data)
+	sock.Emit(event, normalizePayload(data))
 	c.mu.Unlock()
 	return nil
 }
 
 // EmitWithAck sends an event and waits for an ACK response.
-func (c *Client) EmitWithAck(event string, data map[string]interface{}, timeout time.Duration) (map[string]interface{}, error) {
+func (c *Client) EmitWithAck(event string, data any, timeout time.Duration) (map[string]interface{}, error) {
 	c.mu.Lock()
 	sock := c.socket
 	debug := c.debug
@@ -323,7 +352,7 @@ func (c *Client) EmitWithAck(event string, data map[string]interface{}, timeout 
 	resultCh := make(chan map[string]interface{}, 1)
 	errCh := make(chan error, 1)
 
-	sock.Emit(event, data, func(args []any, err error) {
+	sock.Emit(event, normalizePayload(data), func(args []any, err error) {
 		if err != nil {
 			errCh <- err
 			return
@@ -364,23 +393,25 @@ func (c *Client) SendMessage(sessionID, message string) error {
 
 // SendMessageWithLocalID sends a message for a session with an idempotency key.
 func (c *Client) SendMessageWithLocalID(sessionID, message, localID string) error {
-	payload := map[string]interface{}{
-		"sid":     sessionID,
-		"message": message,
-	}
-	if localID != "" {
-		payload["localId"] = localID
+	payload := wire.OutboundMessagePayload{
+		SID:     sessionID,
+		LocalID: localID,
+		Message: message,
 	}
 	return c.Emit(EventMessage, payload)
 }
 
 // UpdateMetadata sends a metadata update for a session
 func (c *Client) UpdateMetadata(sessionID string, metadata string, version int64) (int64, error) {
-	resp, err := c.EmitWithAck(string(EventUpdateMeta), map[string]interface{}{
-		"sid":             sessionID,
-		"metadata":        metadata,
-		"expectedVersion": version,
-	}, 5*time.Second)
+	resp, err := c.EmitWithAck(
+		string(EventUpdateMeta),
+		wire.UpdateMetadataPayload{
+			SID:             sessionID,
+			Metadata:        metadata,
+			ExpectedVersion: version,
+		},
+		5*time.Second,
+	)
 	if err != nil {
 		return version, err
 	}
@@ -401,11 +432,15 @@ func (c *Client) UpdateMetadata(sessionID string, metadata string, version int64
 
 // UpdateState sends a state update for a session
 func (c *Client) UpdateState(sessionID string, agentState string, version int64) (int64, error) {
-	resp, err := c.EmitWithAck(string(EventUpdateState), map[string]interface{}{
-		"sid":             sessionID,
-		"agentState":      agentState,
-		"expectedVersion": version,
-	}, 5*time.Second)
+	resp, err := c.EmitWithAck(
+		string(EventUpdateState),
+		wire.UpdateStatePayload{
+			SID:             sessionID,
+			AgentState:      agentState,
+			ExpectedVersion: version,
+		},
+		5*time.Second,
+	)
 	if err != nil {
 		return version, err
 	}
@@ -441,22 +476,22 @@ func getInt64(value interface{}) int64 {
 
 // KeepSessionAlive sends a keep-alive ping for a session
 func (c *Client) KeepSessionAlive(sessionID string, thinking bool) error {
-	return c.Emit(EventSessionAlive, map[string]interface{}{
-		"sid":      sessionID,
-		"time":     time.Now().UnixMilli(),
-		"thinking": thinking,
+	return c.Emit(EventSessionAlive, wire.SessionAlivePayload{
+		SID:      sessionID,
+		Time:     time.Now().UnixMilli(),
+		Thinking: thinking,
 	})
 }
 
 // EmitEphemeral sends an ephemeral event (activity/thinking state)
 // These events are not persisted, just broadcast to connected clients
-func (c *Client) EmitEphemeral(data map[string]interface{}) error {
+func (c *Client) EmitEphemeral(data any) error {
 	return c.Emit(EventEphemeral, data)
 }
 
 // EmitMessage sends a session message to the server
 // Messages contain encrypted Claude conversation content
-func (c *Client) EmitMessage(data map[string]interface{}) error {
+func (c *Client) EmitMessage(data any) error {
 	return c.Emit(EventMessage, data)
 }
 

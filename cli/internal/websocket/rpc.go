@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bhandras/delight/cli/internal/protocol/wire"
 	"github.com/zishang520/socket.io/v3/pkg/types"
 )
 
@@ -57,9 +58,7 @@ func (m *RPCManager) RegisterHandler(method string, handler RPCHandler) {
 		log.Printf("Registered RPC handler: %s", method)
 	}
 	if m.client != nil && m.client.IsConnected() {
-		_ = m.client.EmitRaw("rpc-register", map[string]interface{}{
-			"method": method,
-		})
+		_ = m.client.EmitRaw("rpc-register", wire.RPCRegisterPayload{Method: method})
 	}
 }
 
@@ -75,9 +74,7 @@ func (m *RPCManager) RegisterAll() {
 		if m.debug || shouldDebugRPC() {
 			log.Printf("Re-registering RPC handler: %s", method)
 		}
-		_ = m.client.EmitRaw("rpc-register", map[string]interface{}{
-			"method": method,
-		})
+		_ = m.client.EmitRaw("rpc-register", wire.RPCRegisterPayload{Method: method})
 	}
 }
 
@@ -106,9 +103,7 @@ func (m *RPCManager) SetupSocketHandlers(sock interface{}) {
 			return
 		}
 		for method := range m.handlers {
-			_ = m.client.EmitRaw("rpc-register", map[string]interface{}{
-				"method": method,
-			})
+			_ = m.client.EmitRaw("rpc-register", wire.RPCRegisterPayload{Method: method})
 		}
 	})
 
