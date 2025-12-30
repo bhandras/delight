@@ -112,11 +112,11 @@ func TestListSessionsDecryptsMetadata(t *testing.T) {
 		resp := map[string]interface{}{
 			"sessions": []map[string]interface{}{
 				{
-					"id":               "s1",
-					"updatedAt":        1,
-					"active":           true,
-					"activeAt":         1,
-					"metadata":         encoded,
+					"id":                "s1",
+					"updatedAt":         1,
+					"active":            true,
+					"activeAt":          1,
+					"metadata":          encoded,
 					"dataEncryptionKey": dataKey,
 				},
 			},
@@ -164,10 +164,10 @@ func TestListMachinesDecryptsMetadataAndDaemonState(t *testing.T) {
 		}
 		resp := []map[string]interface{}{
 			{
-				"id":              "m1",
-				"active":          true,
-				"metadata":        base64.StdEncoding.EncodeToString(metadataEnc),
-				"daemonState":     base64.StdEncoding.EncodeToString(daemonEnc),
+				"id":                 "m1",
+				"active":             true,
+				"metadata":           base64.StdEncoding.EncodeToString(metadataEnc),
+				"daemonState":        base64.StdEncoding.EncodeToString(daemonEnc),
 				"daemonStateVersion": 4,
 			},
 		}
@@ -430,7 +430,14 @@ func TestEncryptPayloadPaths(t *testing.T) {
 	require.NoError(t, err)
 	raw, err = base64.StdEncoding.DecodeString(encoded)
 	require.NoError(t, err)
-	require.NotEqual(t, byte(0), raw[0])
+	// Legacy secretbox payloads start with a random nonce, so the first byte can
+	// occasionally be 0. Validate by ensuring the payload isn't decryptable as
+	// AES-GCM, and is decryptable by the SDK.
+	var aesOut json.RawMessage
+	require.Error(t, crypto.DecryptWithDataKey(raw, master, &aesOut))
+	decrypted, err := client.decryptPayload("s2", encoded)
+	require.NoError(t, err)
+	require.Contains(t, string(decrypted), "\"ok\":true")
 }
 
 func TestHandleUpdateNewSessionStoresDataKey(t *testing.T) {

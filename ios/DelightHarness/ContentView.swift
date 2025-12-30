@@ -1814,9 +1814,9 @@ private func statusInfo(for session: SessionSummary) -> SessionStatusInfo {
     }
     if session.thinking {
         return SessionStatusInfo(
-            text: vibingMessage(for: session.id),
+            text: "online",
             dotColor: Theme.accent,
-            textColor: Theme.accent,
+            textColor: Theme.success,
             isPulsing: true
         )
     }

@@ -874,7 +874,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let outgoingText = messageText
         messageText = ""
         let localID = UUID().uuidString
-        let shouldSwitchToRemote = sessions.first(where: { $0.id == sessionID })?.agentState?.controlledByUser != false
+        let shouldSwitchToRemote = sessions.first(where: { $0.id == sessionID })?.agentState?.controlledByUser == true
 
         updateSessionThinking(true)
 
@@ -910,10 +910,14 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     // If the session is currently in "local" mode (controlled by the desktop),
                     // switch to remote mode so permission prompts can be handled by the app.
                     if shouldSwitchToRemote {
-                        let paramsData = try JSONSerialization.data(withJSONObject: ["mode": "remote"], options: [])
-                        let paramsJSON = String(data: paramsData, encoding: .utf8) ?? "{\"mode\":\"remote\"}"
-                        _ = try self.sdkCallSync {
-                            try self.client.callRPCBuffer(self.sessionID + ":switch", paramsJSON: paramsJSON)
+                        do {
+                            let paramsData = try JSONSerialization.data(withJSONObject: ["mode": "remote"], options: [])
+                            let paramsJSON = String(data: paramsData, encoding: .utf8) ?? "{\"mode\":\"remote\"}"
+                            _ = try self.sdkCallSync {
+                                try self.client.callRPCBuffer(self.sessionID + ":switch", paramsJSON: paramsJSON)
+                            }
+                        } catch {
+                            self.log("Switch-to-remote error (continuing): \(error)")
                         }
                     }
 
