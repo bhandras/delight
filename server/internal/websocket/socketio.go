@@ -283,28 +283,34 @@ func (s *SocketIOServer) setupHandlers() {
 				return
 			}
 
-			updatePayload := map[string]any{
-				"id":        updateID,
-				"seq":       userSeq,
-				"createdAt": time.Now().UnixMilli(),
-				"body": map[string]any{
-					"t":   "new-message",
-					"sid": targetSessionID,
-					"message": map[string]any{
-						"id":        createdMsg.ID,
-						"seq":       seq,
-						"localId":   nil,
-						"content":   map[string]any{"t": "encrypted", "c": content},
-						"createdAt": createdMsg.CreatedAt.UnixMilli(),
-						"updatedAt": createdMsg.UpdatedAt.UnixMilli(),
+			var localIDValue *string
+			if localID.Valid {
+				v := localID.String
+				localIDValue = &v
+			}
+
+			updatePayload := protocolwire.UpdateEvent{
+				ID:        updateID,
+				Seq:       userSeq,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyNewMessage{
+					T:   "new-message",
+					SID: targetSessionID,
+					Message: protocolwire.UpdateNewMessage{
+						ID:      createdMsg.ID,
+						Seq:     seq,
+						LocalID: localIDValue,
+						Content: protocolwire.EncryptedEnvelope{
+							T: "encrypted",
+							C: content,
+						},
+						CreatedAt: createdMsg.CreatedAt.UnixMilli(),
+						UpdatedAt: createdMsg.UpdatedAt.UnixMilli(),
 					},
 				},
 			}
-			if localID.Valid {
-				updatePayload["body"].(map[string]any)["message"].(map[string]any)["localId"] = localID.String
-			}
 
-			log.Printf("Broadcasting new-message update to session: %s content=%v rawContent=%s", targetSessionID, updatePayload["body"].(map[string]any)["message"].(map[string]any)["content"], content)
+			log.Printf("Broadcasting new-message update to session: %s content=%s", targetSessionID, content)
 
 			s.emitUpdateToSession(sd.UserID, targetSessionID, updatePayload, string(client.Id()))
 		})
@@ -1176,20 +1182,19 @@ func (s *SocketIOServer) setupHandlers() {
 				return
 			}
 
-			updatePayload := map[string]any{
-				"id":        pkgtypes.NewCUID(),
-				"seq":       userSeq,
-				"createdAt": time.Now().UnixMilli(),
-				"body": map[string]any{
-					"t":  "update-session",
-					"id": sid,
-					"metadata": map[string]any{
-						"value":   metadata,
-						"version": expected + 1,
+			s.emitUpdateToSession(sd.UserID, sid, protocolwire.UpdateEvent{
+				ID:        pkgtypes.NewCUID(),
+				Seq:       userSeq,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyUpdateSession{
+					T:  "update-session",
+					ID: sid,
+					Metadata: &protocolwire.VersionedString{
+						Value:   metadata,
+						Version: expected + 1,
 					},
 				},
-			}
-			s.emitUpdateToSession(sd.UserID, sid, updatePayload, string(client.Id()))
+			}, string(client.Id()))
 		})
 
 		// Update state event
@@ -1261,22 +1266,23 @@ func (s *SocketIOServer) setupHandlers() {
 				return
 			}
 
-			updatePayload := map[string]any{
-				"id":        pkgtypes.NewCUID(),
-				"seq":       userSeq,
-				"createdAt": time.Now().UnixMilli(),
-				"body": map[string]any{
-					"t":  "update-session",
-					"id": sid,
-				},
-			}
+			var agentStateBody *protocolwire.VersionedString
 			if agentState != nil {
-				updatePayload["body"].(map[string]any)["agentState"] = map[string]any{
-					"value":   *agentState,
-					"version": expected + 1,
+				agentStateBody = &protocolwire.VersionedString{
+					Value:   *agentState,
+					Version: expected + 1,
 				}
 			}
-			s.emitUpdateToSession(sd.UserID, sid, updatePayload, string(client.Id()))
+			s.emitUpdateToSession(sd.UserID, sid, protocolwire.UpdateEvent{
+				ID:        pkgtypes.NewCUID(),
+				Seq:       userSeq,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyUpdateSession{
+					T:          "update-session",
+					ID:         sid,
+					AgentState: agentStateBody,
+				},
+			}, string(client.Id()))
 		})
 
 		// RPC register
@@ -1421,7 +1427,7 @@ func decodeAny(input any, out any) error {
 	return json.Unmarshal(raw, out)
 }
 
-func (s *SocketIOServer) emitUpdateToSession(userID, sessionID string, payload map[string]any, skipSocketID string) {
+func (s *SocketIOServer) emitUpdateToSession(userID, sessionID string, payload any, skipSocketID string) {
 	s.socketData.Range(func(key, value any) bool {
 		targetSD, ok := value.(*SocketData)
 		if !ok {
@@ -1450,15 +1456,15 @@ func (s *SocketIOServer) emitUpdateToSession(userID, sessionID string, payload m
 	})
 }
 
-func (s *SocketIOServer) emitEphemeralToUser(userID string, payload map[string]any, skipSocketID string) {
+func (s *SocketIOServer) emitEphemeralToUser(userID string, payload any, skipSocketID string) {
 	s.emitEphemeralToUserWithFilter(userID, payload, skipSocketID, false)
 }
 
-func (s *SocketIOServer) emitEphemeralToUserScoped(userID string, payload map[string]any, skipSocketID string) {
+func (s *SocketIOServer) emitEphemeralToUserScoped(userID string, payload any, skipSocketID string) {
 	s.emitEphemeralToUserWithFilter(userID, payload, skipSocketID, true)
 }
 
-func (s *SocketIOServer) emitEphemeralToUserWithFilter(userID string, payload map[string]any, skipSocketID string, userScopedOnly bool) {
+func (s *SocketIOServer) emitEphemeralToUserWithFilter(userID string, payload any, skipSocketID string, userScopedOnly bool) {
 	s.socketData.Range(func(key, value any) bool {
 		targetSD, ok := value.(*SocketData)
 		if !ok {
@@ -1478,7 +1484,7 @@ func (s *SocketIOServer) emitEphemeralToUserWithFilter(userID string, payload ma
 	})
 }
 
-func (s *SocketIOServer) emitUpdateToUser(userID string, payload map[string]any, skipSocketID string) {
+func (s *SocketIOServer) emitUpdateToUser(userID string, payload any, skipSocketID string) {
 	s.socketData.Range(func(key, value any) bool {
 		targetSD, ok := value.(*SocketData)
 		if !ok {
@@ -1496,12 +1502,12 @@ func (s *SocketIOServer) emitUpdateToUser(userID string, payload map[string]any,
 }
 
 // EmitUpdateToUser exposes update emission for HTTP handlers.
-func (s *SocketIOServer) EmitUpdateToUser(userID string, payload map[string]any) {
+func (s *SocketIOServer) EmitUpdateToUser(userID string, payload any) {
 	s.emitUpdateToUser(userID, payload, "")
 }
 
 // EmitEphemeralToUser exposes ephemeral emission for HTTP handlers.
-func (s *SocketIOServer) EmitEphemeralToUser(userID string, payload map[string]any) {
+func (s *SocketIOServer) EmitEphemeralToUser(userID string, payload any) {
 	s.emitEphemeralToUser(userID, payload, "")
 }
 
