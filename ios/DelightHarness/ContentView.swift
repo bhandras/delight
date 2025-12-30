@@ -66,6 +66,14 @@ struct ContentView: View {
                 activeSheet = nil
             }
         }
+        .onChange(of: model.showPermissionPrompt) { newValue in
+            if newValue {
+                showScanner = false
+                activeSheet = .permissionPrompt
+            } else if activeSheet == .permissionPrompt {
+                activeSheet = nil
+            }
+        }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .scanner:
@@ -90,6 +98,10 @@ struct ContentView: View {
                 LogoutConfirmSheet(model: model) {
                     model.showLogoutConfirm = false
                 }
+            case .permissionPrompt:
+                PermissionPromptSheet(model: model) {
+                    model.dismissPermissionPrompt()
+                }
             }
         }
     }
@@ -101,6 +113,7 @@ private enum ActiveSheet: Identifiable {
     case accountCreatedReceipt
     case terminalPairingReceipt
     case logoutConfirm
+    case permissionPrompt
 
     var id: Int {
         switch self {
@@ -109,6 +122,7 @@ private enum ActiveSheet: Identifiable {
         case .accountCreatedReceipt: return 2
         case .terminalPairingReceipt: return 3
         case .logoutConfirm: return 4
+        case .permissionPrompt: return 5
         }
     }
 }
@@ -334,6 +348,142 @@ private struct LogoutConfirmSheet: View {
                         .disabled(model.isLoggingOut)
                 }
             }
+        }
+    }
+}
+
+private struct PermissionPromptSheet: View {
+    @ObservedObject var model: HarnessViewModel
+    let onDismiss: () -> Void
+
+    @State private var message: String = ""
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Theme.background.ignoresSafeArea()
+
+                VStack(alignment: .leading, spacing: 16) {
+                    if let req = model.activePermissionRequest {
+                        Text("A paired terminal is asking permission to use a tool.")
+                            .font(Theme.body)
+                            .foregroundColor(Theme.messageText)
+
+                        FeatureListCard {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Text("Tool")
+                                    Spacer()
+                                    Text(req.toolName)
+                                        .foregroundColor(Theme.mutedText)
+                                }
+                                if let title = model.sessionTitle(for: req.sessionID) {
+                                    HStack {
+                                        Text("Terminal")
+                                        Spacer()
+                                        Text(title)
+                                            .foregroundColor(Theme.mutedText)
+                                    }
+                                }
+                            }
+                        }
+
+                        if let pretty = model.prettyPrintedJSON(fromJSONString: req.input) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Request")
+                                    .font(Theme.caption)
+                                    .foregroundColor(Theme.mutedText)
+                                ScrollView {
+                                    Text(pretty)
+                                        .font(Theme.codeFont)
+                                        .foregroundColor(Theme.codeText)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(12)
+                                }
+                                .frame(maxHeight: 240)
+                                .background(Theme.codeBackground)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .stroke(Theme.codeBorder, lineWidth: 1)
+                                )
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Optional message")
+                                .font(Theme.caption)
+                                .foregroundColor(Theme.mutedText)
+                            TextField("Add a note…", text: $message, axis: .vertical)
+                                .textInputAutocapitalization(.sentences)
+                                .disableAutocorrection(false)
+                                .lineLimit(2, reservesSpace: true)
+                                .font(Theme.body)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                                .background(Color(uiColor: .secondarySystemBackground))
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
+
+                        Spacer(minLength: 8)
+
+                        VStack(spacing: 12) {
+                            Button {
+                                model.submitPermissionDecision(allow: true, message: message)
+                            } label: {
+                                ZStack {
+                                    Text(model.isRespondingToPermission ? "Allowing…" : "Allow")
+                                        .frame(maxWidth: .infinity)
+                                    if model.isRespondingToPermission {
+                                        HStack {
+                                            Spacer()
+                                            ProgressView()
+                                                .progressViewStyle(.circular)
+                                        }
+                                    }
+                                }
+                            }
+                            .buttonStyle(PillButtonStyle(fill: Theme.accent))
+                            .disabled(model.isRespondingToPermission)
+
+                            Button {
+                                model.submitPermissionDecision(allow: false, message: message)
+                            } label: {
+                                Text("Reject")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(GhostButtonStyle(tint: Theme.messageText))
+                            .disabled(model.isRespondingToPermission)
+                        }
+                    } else {
+                        Spacer()
+                        Text("No pending permission request.")
+                            .font(Theme.body)
+                            .foregroundColor(Theme.mutedText)
+                        Spacer()
+                    }
+                }
+                .padding(16)
+            }
+            .navigationTitle("Permission")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Close") {
+                        // Conservative default: deny on explicit dismissal.
+                        model.submitPermissionDecision(
+                            allow: false,
+                            message: message.isEmpty ? "Dismissed from the mobile app." : message
+                        )
+                        onDismiss()
+                    }
+                    .disabled(model.isRespondingToPermission)
+                }
+            }
+        }
+        .interactiveDismissDisabled(true)
+        .onAppear {
+            message = ""
         }
     }
 }
@@ -704,7 +854,7 @@ private struct TerminalDetailView: View {
             Theme.background.ignoresSafeArea()
             VStack(spacing: 0) {
                 if session.agentState?.controlledByUser == true {
-                    ControlStatusBanner()
+                    ControlStatusBanner(model: model)
                 }
                 TerminalMessagesView(
                     messages: model.messages,
@@ -952,12 +1102,20 @@ private struct ToolChipView: View {
 }
 
 private struct ControlStatusBanner: View {
+    @ObservedObject var model: HarnessViewModel
+
     var body: some View {
         HStack(spacing: 8) {
             StatusDot(color: Theme.success, isPulsing: false, size: 7)
-            Text("terminal control - permission prompts are not displayed")
-                .font(Theme.caption)
-                .foregroundColor(Theme.success)
+            Group {
+                if model.permissionQueueCount > 0 {
+                    Text("terminal control - permission request pending")
+                } else {
+                    Text("terminal control enabled")
+                }
+            }
+            .font(Theme.caption)
+            .foregroundColor(Theme.success)
             Spacer()
         }
         .padding(.horizontal, 16)

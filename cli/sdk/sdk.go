@@ -16,6 +16,7 @@ import (
 
 	"github.com/bhandras/delight/cli/internal/crypto"
 	"github.com/bhandras/delight/cli/internal/websocket"
+	"github.com/bhandras/delight/protocol/wire"
 )
 
 // Listener receives SDK events. Methods must be safe to call from any goroutine.
@@ -515,6 +516,71 @@ func (c *Client) SendMessageWithLocalID(sessionID string, localID string, rawRec
 		return nil, c.sendMessageWithLocalID(sessionID, localID, rawRecordJSON)
 	})
 	return err
+}
+
+// CallRPCBuffer issues an RPC call via the user-scoped websocket connection and
+// returns the raw ACK payload as JSON.
+func (c *Client) CallRPCBuffer(method string, paramsJSON string) (*Buffer, error) {
+	resp, err := c.callRPCDispatch(method, paramsJSON)
+	if err != nil {
+		return nil, err
+	}
+	return newBufferFromString(resp), nil
+}
+
+func (c *Client) callRPCDispatch(method string, paramsJSON string) (string, error) {
+	value, err := c.dispatch.call(func() (interface{}, error) {
+		return c.callRPC(method, paramsJSON)
+	})
+	if err != nil {
+		return "", err
+	}
+	if value == nil {
+		return "{}", nil
+	}
+	if s, ok := value.(string); ok {
+		return s, nil
+	}
+	return "{}", nil
+}
+
+func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("CallRPC", r)
+		}
+	}()
+	c.mu.Lock()
+	socket := c.userSocket
+	c.mu.Unlock()
+
+	if socket == nil {
+		return "", fmt.Errorf("not connected")
+	}
+
+	resp, err := socket.EmitWithAck("rpc-call", wire.RPCCallPayload{
+		Method: method,
+		Params: paramsJSON,
+	}, 10*time.Second)
+	if err != nil {
+		return "", err
+	}
+	if resp == nil {
+		return "", fmt.Errorf("missing rpc ack")
+	}
+
+	if ok, _ := resp["ok"].(bool); !ok {
+		if msg, _ := resp["error"].(string); msg != "" {
+			return "", fmt.Errorf("rpc call failed: %s", msg)
+		}
+		return "", fmt.Errorf("rpc call failed")
+	}
+
+	encoded, err := json.Marshal(resp)
+	if err != nil {
+		return "{}", nil
+	}
+	return string(encoded), nil
 }
 
 func (c *Client) sendMessageWithLocalID(sessionID string, localID string, rawRecordJSON string) error {

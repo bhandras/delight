@@ -26,6 +26,16 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
+struct PendingPermissionRequest: Identifiable, Equatable {
+    let sessionID: String
+    let requestID: String
+    let toolName: String
+    let input: String
+    let receivedAt: Int64
+
+    var id: String { requestID }
+}
+
 struct SessionMetadata {
     let path: String?
     let host: String?
@@ -290,6 +300,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var appearanceMode: AppearanceMode = .system {
         didSet { persistSettings() }
     }
+    @Published var permissionQueue: [PendingPermissionRequest] = []
+    @Published var activePermissionRequest: PendingPermissionRequest?
+    @Published var showPermissionPrompt: Bool = false
+    @Published var isRespondingToPermission: Bool = false
     @Published var isCreatingAccount: Bool = false
     @Published var isApprovingTerminal: Bool = false
     @Published var isLoggingOut: Bool = false
@@ -424,6 +438,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         messages = []
         sessions = []
         machines = []
+        permissionQueue = []
+        activePermissionRequest = nil
+        showPermissionPrompt = false
+        isRespondingToPermission = false
         logLines = []
         needsSessionRefresh = true
         oldestLoadedSeq = nil
@@ -534,6 +552,74 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 self.log("Logged out")
             }
         }
+    }
+
+    func dismissPermissionPrompt() {
+        showPermissionPrompt = false
+    }
+
+    func submitPermissionDecision(allow: Bool, message: String) {
+        guard let request = activePermissionRequest else {
+            showPermissionPrompt = false
+            return
+        }
+        guard !isRespondingToPermission else { return }
+
+        isRespondingToPermission = true
+        sdkCallAsync {
+            do {
+                let payload: [String: Any] = [
+                    "requestId": request.requestID,
+                    "allow": allow,
+                    "message": message
+                ]
+                let data = try JSONSerialization.data(withJSONObject: payload, options: [])
+                let paramsJSON = String(data: data, encoding: .utf8) ?? "{}"
+                let method = request.sessionID + ":permission"
+
+                _ = try self.sdkCallSync {
+                    try self.client.callRPCBuffer(method, paramsJSON: paramsJSON)
+                }
+
+                DispatchQueue.main.async {
+                    self.completePermissionRequest(requestID: request.requestID)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.isRespondingToPermission = false
+                    self.logSwiftOnly("Permission response error: \(error)")
+                }
+            }
+        }
+    }
+
+    private func completePermissionRequest(requestID: String) {
+        permissionQueue.removeAll(where: { $0.requestID == requestID })
+        if let next = permissionQueue.first {
+            activePermissionRequest = next
+            showPermissionPrompt = true
+        } else {
+            activePermissionRequest = nil
+            showPermissionPrompt = false
+        }
+        isRespondingToPermission = false
+    }
+
+    func sessionTitle(for id: String) -> String? {
+        if let session = sessions.first(where: { $0.id == id }) {
+            return session.title ?? session.metadata?.host ?? session.id
+        }
+        return nil
+    }
+
+    func prettyPrintedJSON(fromJSONString json: String) -> String? {
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data),
+              let prettyData = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]),
+              let pretty = String(data: prettyData, encoding: .utf8) else {
+            return nil
+        }
+        return pretty
     }
 
     func authWithKeypair() {
@@ -674,6 +760,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             self.status = "disconnected"
         }
     }
+
+    var permissionQueueCount: Int { permissionQueue.count }
 
     func listSessions() {
         do {
@@ -856,6 +944,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         if let updateJSON {
             logSwiftOnly("Update: \(updateJSON)")
             handleActivityUpdate(updateJSON)
+            handlePermissionRequestUpdate(updateJSON)
             if let updateSessionID = extractUpdateSessionID(from: updateJSON) {
                 guard updateSessionID == self.sessionID else { return }
                 if tryAppendMessageFromUpdate(updateJSON, sessionID: updateSessionID) {
@@ -1041,6 +1130,59 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 }
             }
         }
+    }
+
+    private func handlePermissionRequestUpdate(_ json: String) {
+        guard let data = json.data(using: .utf8),
+              let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return
+        }
+        guard let payload = extractPermissionRequestPayload(from: decoded) else {
+            return
+        }
+
+        let request = PendingPermissionRequest(
+            sessionID: payload.sessionID,
+            requestID: payload.requestID,
+            toolName: payload.toolName,
+            input: payload.input,
+            receivedAt: Int64(Date().timeIntervalSince1970 * 1000)
+        )
+
+        DispatchQueue.main.async {
+            if self.permissionQueue.contains(where: { $0.requestID == request.requestID }) {
+                return
+            }
+            self.permissionQueue.append(request)
+            if self.activePermissionRequest == nil {
+                self.activePermissionRequest = request
+                self.showPermissionPrompt = true
+            }
+        }
+    }
+
+    private func extractPermissionRequestPayload(from decoded: [String: Any]) -> (sessionID: String, requestID: String, toolName: String, input: String)? {
+        if let type = decoded["type"] as? String, type == "permission-request" {
+            return readPermissionFields(from: decoded)
+        }
+        if let body = decoded["body"] as? [String: Any],
+           let type = body["type"] as? String, type == "permission-request" {
+            return readPermissionFields(from: body)
+        }
+        if let type = decoded["t"] as? String, type == "permission-request" {
+            return readPermissionFields(from: decoded)
+        }
+        return nil
+    }
+
+    private func readPermissionFields(from payload: [String: Any]) -> (sessionID: String, requestID: String, toolName: String, input: String)? {
+        guard let sessionID = payload["id"] as? String,
+              let requestID = payload["requestId"] as? String,
+              let toolName = payload["toolName"] as? String,
+              let input = payload["input"] as? String else {
+            return nil
+        }
+        return (sessionID: sessionID, requestID: requestID, toolName: toolName, input: input)
     }
 
     private func extractActivityPayload(from decoded: [String: Any]) -> (id: String, active: Bool?, activeAt: Int64?, thinking: Bool?)? {
