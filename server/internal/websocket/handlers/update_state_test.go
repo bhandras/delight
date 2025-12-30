@@ -22,6 +22,7 @@ func (f fakeAccountQueries) UpdateAccountSeq(ctx context.Context, id string) (in
 type fakeSessionQueries struct {
 	getByID          func(ctx context.Context, id string) (models.Session, error)
 	updateAgentState func(ctx context.Context, arg models.UpdateSessionAgentStateParams) (int64, error)
+	updateActivity   func(ctx context.Context, arg models.UpdateSessionActivityParams) error
 	updateMetadata   func(ctx context.Context, arg models.UpdateSessionMetadataParams) (int64, error)
 }
 
@@ -31,6 +32,13 @@ func (f fakeSessionQueries) GetSessionByID(ctx context.Context, id string) (mode
 
 func (f fakeSessionQueries) UpdateSessionAgentState(ctx context.Context, arg models.UpdateSessionAgentStateParams) (int64, error) {
 	return f.updateAgentState(ctx, arg)
+}
+
+func (f fakeSessionQueries) UpdateSessionActivity(ctx context.Context, arg models.UpdateSessionActivityParams) error {
+	if f.updateActivity == nil {
+		return nil
+	}
+	return f.updateActivity(ctx, arg)
 }
 
 func (f fakeSessionQueries) UpdateSessionMetadata(ctx context.Context, arg models.UpdateSessionMetadataParams) (int64, error) {

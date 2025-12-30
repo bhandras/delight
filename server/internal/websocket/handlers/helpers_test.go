@@ -9,6 +9,7 @@ import (
 type fakeMachineQueries struct {
 	getMachine         func(ctx context.Context, arg models.GetMachineParams) (models.Machine, error)
 	updateMachineMeta  func(ctx context.Context, arg models.UpdateMachineMetadataParams) (int64, error)
+	updateActivity     func(ctx context.Context, arg models.UpdateMachineActivityParams) error
 	updateMachineState func(ctx context.Context, arg models.UpdateMachineDaemonStateParams) (int64, error)
 }
 
@@ -18,6 +19,13 @@ func (f fakeMachineQueries) GetMachine(ctx context.Context, arg models.GetMachin
 
 func (f fakeMachineQueries) UpdateMachineMetadata(ctx context.Context, arg models.UpdateMachineMetadataParams) (int64, error) {
 	return f.updateMachineMeta(ctx, arg)
+}
+
+func (f fakeMachineQueries) UpdateMachineActivity(ctx context.Context, arg models.UpdateMachineActivityParams) error {
+	if f.updateActivity == nil {
+		return nil
+	}
+	return f.updateActivity(ctx, arg)
 }
 
 func (f fakeMachineQueries) UpdateMachineDaemonState(ctx context.Context, arg models.UpdateMachineDaemonStateParams) (int64, error) {
