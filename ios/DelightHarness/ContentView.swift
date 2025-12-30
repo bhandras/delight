@@ -23,6 +23,7 @@ struct ContentView: View {
                 .tag(1)
         }
         .tint(Theme.accent)
+        .preferredColorScheme(model.appearanceMode.preferredColorScheme)
         .onAppear {
             model.startup()
         }
@@ -148,7 +149,7 @@ private struct CrashReportSheet: View {
                                 .padding(8)
                         }
                         .frame(maxHeight: 320)
-                        .background(Color.white.opacity(0.6))
+                        .background(Theme.codeBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
 
@@ -247,8 +248,11 @@ private struct TerminalPairingReceiptSheet: View {
                     }
                     if let receipt = model.lastTerminalPairingReceipt {
                         Section("Machine") {
-                            CopyableValueRow(title: "Host", value: receipt.host ?? "—")
-                            CopyableValueRow(title: "Machine ID", value: receipt.machineID ?? "—")
+                            CopyableValueRow(title: "Host", value: receipt.host ?? "Not available yet")
+                            CopyableValueRow(title: "Machine ID", value: receipt.machineID ?? "Not available yet")
+                            Text("Host and Machine ID are only known once the terminal's machine connects and reports its metadata.")
+                                .font(Theme.caption)
+                                .foregroundColor(Theme.mutedText)
                         }
                         Section("Terminal") {
                             CopyableValueRow(title: "Terminal Key", value: receipt.terminalKey)
@@ -367,8 +371,8 @@ private struct TerminalsView: View {
                                         .background(Theme.cardBackground)
                                         .clipShape(Capsule())
                                         .overlay(
-                                            Capsule()
-                                                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                                        Capsule()
+                                            .stroke(Color(uiColor: .separator).opacity(0.6), lineWidth: 1)
                                         )
                                 }
                                 .buttonStyle(.plain)
@@ -439,7 +443,7 @@ private struct SettingsView: View {
                                     }
                                     Divider()
                                     NavigationLink {
-                                        AppearanceDetailView()
+                                        AppearanceDetailView(model: model)
                                     } label: {
                                         SettingMenuRow(
                                             title: "Appearance",
@@ -654,7 +658,7 @@ private struct HeaderCard: View {
             Circle()
                 .fill(status.contains("connected") ? Theme.success : Theme.warning)
                 .frame(width: 14, height: 14)
-                .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                .overlay(Circle().stroke(Color(uiColor: .systemBackground), lineWidth: 2))
         }
         .padding()
         .background(Theme.cardGradient)
@@ -685,7 +689,7 @@ private struct TerminalRow: View {
                 .foregroundColor(Theme.mutedText)
         }
         .padding(12)
-        .background(Color.white.opacity(0.7))
+        .background(Theme.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
@@ -716,9 +720,9 @@ private struct TerminalDetailView: View {
                 }
 
                 ConnectionStatusRow(status: statusInfo(for: session), activityText: session.thinking ? vibingMessage(for: session.id) : nil)
-                    .background(Color.white.opacity(0.9))
+                    .background(Theme.cardBackground)
                 MessageComposer(model: model)
-                    .background(Color.white.opacity(0.9))
+                    .background(Theme.cardBackground)
             }
         }
         .navigationTitle(session.title ?? "Terminal")
@@ -958,7 +962,7 @@ private struct ControlStatusBanner: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .background(Color.white.opacity(0.85))
+        .background(Theme.cardBackground)
     }
 }
 
@@ -1078,7 +1082,7 @@ private struct MessageComposer: View {
                 .font(Theme.body)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
-                .background(Color.white)
+                .background(Color(uiColor: .secondarySystemBackground))
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             Button {
                 model.sendMessage()
@@ -1124,11 +1128,11 @@ private struct ActionButton: View {
                 .font(.system(size: 15, weight: .semibold))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
-                .background(Color.white.opacity(0.92))
+                .background(Color(uiColor: .secondarySystemBackground))
                 .clipShape(Capsule())
                 .overlay(
                     Capsule()
-                        .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                        .stroke(Color(uiColor: .separator).opacity(0.6), lineWidth: 1)
                 )
         }
         .buttonStyle(.plain)
@@ -1171,7 +1175,7 @@ private struct FeatureListCard<Content: View>: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 4)
-        .background(Color.white.opacity(0.95))
+        .background(Theme.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .shadow(color: Theme.shadow, radius: 8, x: 0, y: 4)
     }
@@ -1300,7 +1304,7 @@ private struct DebugView: View {
                             }
                             .frame(height: logHeight)
                             .padding(8)
-                            .background(Color.white.opacity(0.6))
+                            .background(Theme.codeBackground)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                             .onAppear {
                                 DispatchQueue.main.async {
@@ -1376,12 +1380,21 @@ private struct AccountDetailView: View {
 }
 
 private struct AppearanceDetailView: View {
+    @ObservedObject var model: HarnessViewModel
+
     var body: some View {
         ZStack {
             Theme.background.ignoresSafeArea()
             List {
                 Section("Appearance") {
-                    Text("Coming soon.")
+                    Picker("Theme", selection: $model.appearanceMode) {
+                        ForEach(AppearanceMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text("System follows your device appearance setting.")
                         .font(Theme.caption)
                         .foregroundColor(Theme.mutedText)
                 }
@@ -1705,24 +1718,24 @@ private enum Theme {
     static let accent = Color(red: 0.1, green: 0.45, blue: 0.6)
     static let success = Color(red: 0.16, green: 0.65, blue: 0.45)
     static let warning = Color(red: 0.9, green: 0.35, blue: 0.25)
-    static let muted = Color.gray.opacity(0.6)
-    static let mutedText = Color.gray.opacity(0.7)
-    static let shadow = Color.black.opacity(0.08)
+    static let muted = Color.secondary.opacity(0.8)
+    static let mutedText = Color.secondary
+    static let shadow = Color.black.opacity(0.12)
 
     static let background = LinearGradient(
         colors: [
-            Color(red: 0.95, green: 0.95, blue: 0.98),
-            Color(red: 0.88, green: 0.94, blue: 0.97)
+            Color(uiColor: .systemGroupedBackground),
+            Color(uiColor: .secondarySystemGroupedBackground)
         ],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
 
-    static let cardBackground = Color.white.opacity(0.85)
+    static let cardBackground = Color(uiColor: .secondarySystemGroupedBackground)
     static let cardGradient = LinearGradient(
         colors: [
-            Color.white,
-            Color(red: 0.85, green: 0.95, blue: 0.98)
+            Color(uiColor: .secondarySystemGroupedBackground),
+            Color(uiColor: .tertiarySystemGroupedBackground)
         ],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
@@ -1735,13 +1748,13 @@ private enum Theme {
     static let codeFont = Font.system(size: 14, weight: .regular, design: .monospaced)
     static let codeLabel = Font.system(size: 11, weight: .semibold, design: .monospaced)
 
-    static let messageText = Color(red: 0.12, green: 0.12, blue: 0.12)
-    static let userBubble = Color(red: 0.92, green: 0.91, blue: 0.86)
-    static let toolChipBackground = Color(red: 0.94, green: 0.94, blue: 0.94)
-    static let toolChipText = Color(red: 0.15, green: 0.15, blue: 0.15)
-    static let codeBackground = Color(red: 0.95, green: 0.95, blue: 0.95)
-    static let codeBorder = Color(red: 0.9, green: 0.9, blue: 0.9)
-    static let codeText = Color(red: 0.18, green: 0.18, blue: 0.18)
+    static let messageText = Color.primary
+    static let userBubble = Color(uiColor: .tertiarySystemFill)
+    static let toolChipBackground = Color(uiColor: .tertiarySystemGroupedBackground)
+    static let toolChipText = Color.primary
+    static let codeBackground = Color(uiColor: .secondarySystemBackground)
+    static let codeBorder = Color(uiColor: .separator)
+    static let codeText = Color.primary
 }
 
 private let vibingMessages = [

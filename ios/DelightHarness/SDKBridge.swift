@@ -2,6 +2,30 @@ import Foundation
 import SwiftUI
 import DelightSDK
 
+enum AppearanceMode: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    var preferredColorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
 struct SessionMetadata {
     let path: String?
     let host: String?
@@ -263,6 +287,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var logServerRunning: Bool = false
     @Published var showCrashReport: Bool = false
     @Published var crashReportText: String = ""
+    @Published var appearanceMode: AppearanceMode = .system {
+        didSet { persistSettings() }
+    }
     @Published var isCreatingAccount: Bool = false
     @Published var isApprovingTerminal: Bool = false
     @Published var isLoggingOut: Bool = false
@@ -292,6 +319,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let defaults = UserDefaults.standard
         let loadedServerURL = defaults.string(forKey: Self.settingsKeyPrefix + "serverURL") ?? "http://localhost:3005"
         let loadedToken = defaults.string(forKey: Self.settingsKeyPrefix + "token") ?? ""
+        let loadedAppearanceMode =
+            AppearanceMode(rawValue: defaults.string(forKey: Self.settingsKeyPrefix + "appearanceMode") ?? "")
+            ?? .system
         let loadedMasterKey = KeychainStore.string(for: "masterKey") ?? ""
         let loadedPublicKey = KeychainStore.string(for: "publicKey") ?? ""
         let loadedPrivateKey = KeychainStore.string(for: "privateKey") ?? ""
@@ -303,6 +333,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         super.init()
         serverURL = loadedServerURL
         token = loadedToken
+        appearanceMode = loadedAppearanceMode
         masterKey = loadedMasterKey
         publicKey = loadedPublicKey
         privateKey = loadedPrivateKey
@@ -1125,6 +1156,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let defaults = UserDefaults.standard
         defaults.set(serverURL, forKey: Self.settingsKeyPrefix + "serverURL")
         defaults.set(token, forKey: Self.settingsKeyPrefix + "token")
+        defaults.set(appearanceMode.rawValue, forKey: Self.settingsKeyPrefix + "appearanceMode")
     }
 
     private func persistKeys() {
