@@ -200,25 +200,6 @@ CREATE INDEX idx_access_keys_account_id ON access_keys(account_id);
 CREATE INDEX idx_access_keys_session_id ON access_keys(session_id);
 CREATE INDEX idx_access_keys_machine_id ON access_keys(machine_id);
 
--- Social relationships
-CREATE TABLE user_relationships (
-    from_user_id TEXT NOT NULL,
-    to_user_id TEXT NOT NULL,
-    status TEXT NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    accepted_at DATETIME,
-    last_notified_at DATETIME,
-
-    PRIMARY KEY (from_user_id, to_user_id),
-    FOREIGN KEY (from_user_id) REFERENCES accounts(id) ON DELETE CASCADE,
-    FOREIGN KEY (to_user_id) REFERENCES accounts(id) ON DELETE CASCADE
-);
-
-CREATE INDEX idx_relationships_from_user ON user_relationships(from_user_id);
-CREATE INDEX idx_relationships_to_user ON user_relationships(to_user_id);
-CREATE INDEX idx_relationships_to_status ON user_relationships(to_user_id, status);
-
 -- Feed items
 CREATE TABLE user_feed_items (
     id TEXT PRIMARY KEY,

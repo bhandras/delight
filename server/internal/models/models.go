@@ -137,13 +137,3 @@ type UserKvStore struct {
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 }
-
-type UserRelationship struct {
-	FromUserID     string       `json:"from_user_id"`
-	ToUserID       string       `json:"to_user_id"`
-	Status         string       `json:"status"`
-	CreatedAt      time.Time    `json:"created_at"`
-	UpdatedAt      time.Time    `json:"updated_at"`
-	AcceptedAt     sql.NullTime `json:"accepted_at"`
-	LastNotifiedAt sql.NullTime `json:"last_notified_at"`
-}

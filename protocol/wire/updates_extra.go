@@ -106,16 +106,6 @@ type UpdateBodyUpdateAccount struct {
 	Avatar    any           `json:"avatar,omitempty"`
 }
 
-// UpdateBodyRelationshipUpdated is the body for `t == "relationship-updated"`.
-type UpdateBodyRelationshipUpdated struct {
-	T          string `json:"t"`
-	FromUserID string `json:"fromUserId"`
-	ToUserID   string `json:"toUserId"`
-	Status     string `json:"status"`
-	Action     string `json:"action"`
-	Timestamp  int64  `json:"timestamp"`
-}
-
 // UpdateBodyNewFeedPost is the body for `t == "new-feed-post"`.
 type UpdateBodyNewFeedPost struct {
 	T         string `json:"t"`
