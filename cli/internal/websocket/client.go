@@ -219,8 +219,11 @@ func (c *Client) Connect() error {
 		c.logConnectError(args)
 	})
 
-	// Set up event handlers for each event type
-	for _, eventType := range []EventType{EventMessage, EventUpdate, EventSessionAlive, EventUpdateMeta, EventUpdateState, EventSessionUpdate} {
+	// Set up event handlers for each event type.
+	//
+	// Note: EventEphemeral is used for user-scoped signals (e.g. permission
+	// prompts). It must be subscribed so mobile clients receive them.
+	for _, eventType := range []EventType{EventMessage, EventUpdate, EventEphemeral, EventSessionAlive, EventUpdateMeta, EventUpdateState, EventSessionUpdate} {
 		et := eventType // Capture for closure
 		sock.On(types.EventName(et), func(args ...any) {
 			c.mu.Lock()
