@@ -79,9 +79,6 @@ func (m *Manager) registerRPCHandlers() {
 	m.rpcManager.RegisterHandler(prefix+"abort", func(params json.RawMessage) (json.RawMessage, error) {
 		return m.runInboundRPC(func() (json.RawMessage, error) {
 			wire.DumpToTestdata("rpc_session_abort", params)
-			if m.agent == "claude" {
-				return nil, fmt.Errorf("remote abort not supported in Claude TUI mode")
-			}
 			if err := m.AbortRemote(); err != nil {
 				return nil, err
 			}
@@ -93,9 +90,6 @@ func (m *Manager) registerRPCHandlers() {
 	m.rpcManager.RegisterHandler(prefix+"switch", func(params json.RawMessage) (json.RawMessage, error) {
 		return m.runInboundRPC(func() (json.RawMessage, error) {
 			wire.DumpToTestdata("rpc_session_switch", params)
-			if m.agent == "claude" {
-				return nil, fmt.Errorf("mode switching disabled in Claude TUI mode")
-			}
 			var req wire.SwitchModeRequest
 			if err := json.Unmarshal(params, &req); err != nil {
 				return nil, err
