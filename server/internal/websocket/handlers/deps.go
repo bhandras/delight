@@ -16,6 +16,7 @@ type AccountQueries interface {
 type SessionQueries interface {
 	GetSessionByID(ctx context.Context, id string) (models.Session, error)
 	UpdateSessionAgentState(ctx context.Context, arg models.UpdateSessionAgentStateParams) (int64, error)
+	UpdateSessionActivity(ctx context.Context, arg models.UpdateSessionActivityParams) error
 	UpdateSessionMetadata(ctx context.Context, arg models.UpdateSessionMetadataParams) (int64, error)
 }
 
@@ -23,6 +24,7 @@ type SessionQueries interface {
 type MachineQueries interface {
 	GetMachine(ctx context.Context, arg models.GetMachineParams) (models.Machine, error)
 	UpdateMachineMetadata(ctx context.Context, arg models.UpdateMachineMetadataParams) (int64, error)
+	UpdateMachineActivity(ctx context.Context, arg models.UpdateMachineActivityParams) error
 	UpdateMachineDaemonState(ctx context.Context, arg models.UpdateMachineDaemonStateParams) (int64, error)
 }
 

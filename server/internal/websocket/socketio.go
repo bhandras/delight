@@ -197,9 +197,7 @@ func (s *SocketIOServer) setupHandlers() {
 			sd := s.getSocketData(socketID)
 			log.Printf("Message event from user %s (socket %s): %+v", sd.UserID, socketID, data)
 
-			// Get the message data
 			if len(data) == 0 {
-				log.Printf("No message data received")
 				return
 			}
 
@@ -209,124 +207,30 @@ func (s *SocketIOServer) setupHandlers() {
 				return
 			}
 
-			// Get the target session ID from the message
-			targetSessionID := payload.SID
-			if targetSessionID == "" {
-				// If no session ID in message, use the sender's session ID (if session-scoped)
-				targetSessionID = sd.SessionID
-			}
-
-			if targetSessionID == "" {
-				log.Printf("No target session ID for message")
+			instr := handlers.MessageIngest(
+				handlers.NewAuthContext(sd.UserID, sd.ClientType, socketID),
+				sd.SessionID,
+				payload,
+			)
+			if instr == nil {
 				return
 			}
-
-			content := payload.Message
-			if content == "" {
-				log.Printf("❌ No message content provided")
-				return
-			}
-
-			var localIDValue *string
-			if payload.LocalID != "" {
-				v := payload.LocalID
-				localIDValue = &v
-			}
-
-			// Use a fresh background context for DB ops; handshake contexts can be
-			// canceled after upgrade.
-			s.sessions.EnqueueMessage(context.Background(), sd.UserID, targetSessionID, content, localIDValue, socketID)
+			s.sessions.EnqueueMessage(
+				context.Background(),
+				instr.UserID(),
+				instr.SessionID(),
+				instr.Content(),
+				instr.LocalID(),
+				instr.SkipSocketID(),
+			)
 		})
 
-		// Session alive event
-		client.On("session-alive", func(data ...any) {
-			sd := s.getSocketData(socketID)
-			log.Printf("Session alive from user %s (socket %s): %+v", sd.UserID, socketID, data)
+		// Typed events (decode -> handler -> emit updates/ephemerals)
+		onTypedEvent[protocolwire.SessionAlivePayload](s, client, "session-alive", handlerDeps, handlers.SessionAlive)
+		onTypedEvent[protocolwire.MachineAlivePayload](s, client, "machine-alive", handlerDeps, handlers.MachineAlive)
+		onTypedEvent[protocolwire.UsageReportPayload](s, client, "usage-report", handlerDeps, handlers.UsageReport)
 
-			payload, _ := getFirstMap(data)
-			sid := getString(payload, "sid")
-			if sid == "" {
-				return
-			}
-
-			t := getInt64(payload, "time")
-			if t == 0 {
-				t = time.Now().UnixMilli()
-			}
-
-			now := time.Now().UnixMilli()
-			if t > now {
-				t = now
-			}
-			if t < now-10*60*1000 {
-				return
-			}
-
-			if err := queries.UpdateSessionActivity(context.Background(), models.UpdateSessionActivityParams{
-				Active:       1,
-				LastActiveAt: time.UnixMilli(t),
-				ID:           sid,
-			}); err != nil {
-				log.Printf("Failed to update session activity: %v", err)
-			}
-
-			thinking := getBool(payload, "thinking")
-			s.emitEphemeralToUser(sd.UserID, protocolwire.EphemeralActivityPayload{
-				Type:     "activity",
-				ID:       sid,
-				Active:   true,
-				Thinking: thinking,
-				ActiveAt: t,
-			}, "")
-		})
-
-		// Machine alive event
-		client.On("machine-alive", func(data ...any) {
-			sd := s.getSocketData(socketID)
-			payload, _ := getFirstMap(data)
-			machineID := getString(payload, "machineId")
-			if machineID == "" {
-				return
-			}
-			t := getInt64(payload, "time")
-			if t == 0 {
-				t = time.Now().UnixMilli()
-			}
-
-			now := time.Now().UnixMilli()
-			if t > now {
-				t = now
-			}
-			if t < now-10*60*1000 {
-				return
-			}
-
-			machine, err := queries.GetMachine(context.Background(), models.GetMachineParams{
-				AccountID: sd.UserID,
-				ID:        machineID,
-			})
-			if err != nil || machine.AccountID != sd.UserID {
-				return
-			}
-
-			if err := queries.UpdateMachineActivity(context.Background(), models.UpdateMachineActivityParams{
-				Active:       1,
-				LastActiveAt: time.UnixMilli(t),
-				AccountID:    sd.UserID,
-				ID:           machineID,
-			}); err != nil {
-				log.Printf("Failed to update machine activity: %v", err)
-			}
-
-			s.emitEphemeralToUserScoped(sd.UserID, protocolwire.EphemeralMachineActivityPayload{
-				Type:     "machine-activity",
-				ID:       machineID,
-				Active:   true,
-				ActiveAt: t,
-			}, "")
-		})
-
-		// Typed ACK handlers (decode -> handler -> ack -> emit updates)
+		// Typed ACK handlers (decode -> handler -> ack -> emit updates/ephemerals)
 		onTypedAck[protocolwire.MachineUpdateMetadataPayload](s, client, "machine-update-metadata", handlerDeps, handlers.MachineUpdateMetadata)
 		onTypedAck[protocolwire.MachineUpdateStatePayload](s, client, "machine-update-state", handlerDeps, handlers.MachineUpdateState)
 		onTypedAck[protocolwire.AccessKeyGetRequest](s, client, "access-key-get", handlerDeps, handlers.AccessKeyGet)
@@ -337,45 +241,17 @@ func (s *SocketIOServer) setupHandlers() {
 		onTypedAck[protocolwire.UpdateMetadataPayload](s, client, "update-metadata", handlerDeps, handlers.UpdateMetadata)
 		onTypedAck[protocolwire.UpdateStatePayload](s, client, "update-state", handlerDeps, handlers.UpdateState)
 
-		// Usage report event
-		client.On("usage-report", func(data ...any) {
-			sd := s.getSocketData(socketID)
-			payload, _ := getFirstMap(data)
-			sessionID := getString(payload, "sessionId")
-			if sessionID == "" {
-				return
-			}
-
-			session, err := queries.GetSessionByID(context.Background(), sessionID)
-			if err != nil || session.AccountID != sd.UserID {
-				return
-			}
-
-			key := getString(payload, "key")
-			tokens := getMap(payload, "tokens")
-			cost := getMap(payload, "cost")
-			if key == "" || tokens == nil || cost == nil {
-				return
-			}
-
-			s.emitEphemeralToUser(sd.UserID, protocolwire.EphemeralUsagePayload{
-				Type:      "usage",
-				ID:        sessionID,
-				Key:       key,
-				Tokens:    tokens,
-				Cost:      cost,
-				Timestamp: time.Now().UnixMilli(),
-			}, "")
-		})
-
 		// Ephemeral forward (client -> server -> user-scoped)
 		client.On("ephemeral", func(data ...any) {
 			sd := s.getSocketData(socketID)
 			payload, _ := getFirstMap(data)
-			if payload == nil {
-				return
-			}
-			s.emitEphemeralToUserScoped(sd.UserID, payload, "")
+			result := handlers.EphemeralForward(
+				context.Background(),
+				handlerDeps,
+				handlers.NewAuthContext(sd.UserID, sd.ClientType, socketID),
+				payload,
+			)
+			s.emitHandlerUpdates(socketID, result)
 		})
 
 		// RPC register
@@ -484,41 +360,15 @@ func (s *SocketIOServer) setupHandlers() {
 			log.Printf("User disconnected: %s (socket %s, clientType: %s, reason: %s)",
 				sd.UserID, socketID, sd.ClientType, reason)
 
-			if sd.ClientType == "session-scoped" && sd.SessionID != "" {
-				now := time.Now()
-				if err := queries.UpdateSessionActivity(context.Background(), models.UpdateSessionActivityParams{
-					Active:       0,
-					LastActiveAt: now,
-					ID:           sd.SessionID,
-				}); err != nil {
-					log.Printf("Failed to update session activity: %v", err)
-				}
-				s.emitEphemeralToUser(sd.UserID, protocolwire.EphemeralActivityPayload{
-					Type:     "activity",
-					ID:       sd.SessionID,
-					Active:   false,
-					Thinking: false,
-					ActiveAt: now.UnixMilli(),
-				}, "")
-			}
+			result := handlers.DisconnectEffects(
+				context.Background(),
+				handlerDeps,
+				handlers.NewAuthContext(sd.UserID, sd.ClientType, socketID),
+				sd.SessionID,
+				sd.MachineID,
+			)
+			s.emitHandlerUpdates(socketID, result)
 
-			if sd.ClientType == "machine-scoped" && sd.MachineID != "" {
-				now := time.Now()
-				if err := queries.UpdateMachineActivity(context.Background(), models.UpdateMachineActivityParams{
-					Active:       0,
-					LastActiveAt: now,
-					AccountID:    sd.UserID,
-					ID:           sd.MachineID,
-				}); err != nil {
-					log.Printf("Failed to update machine activity: %v", err)
-				}
-				s.emitEphemeralToUserScoped(sd.UserID, protocolwire.EphemeralMachineActivityPayload{
-					Type:     "machine-activity",
-					ID:       sd.MachineID,
-					Active:   false,
-					ActiveAt: now.UnixMilli(),
-				}, "")
-			}
 			// Clean up socket data
 			s.socketData.Delete(socketID)
 			s.rpc.UnregisterAll(sd.UserID, socketID)

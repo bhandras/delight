@@ -20,6 +20,19 @@ func (s *SocketIOServer) emitHandlerUpdates(callerSocketID string, result handle
 			s.emitUpdateToSession(upd.UserID(), upd.SessionID(), upd.Event(), skipSocketID)
 		}
 	}
+
+	for _, eph := range result.Ephemerals() {
+		skipSocketID := ""
+		if eph.SkipSelf() {
+			skipSocketID = callerSocketID
+		}
+		switch {
+		case eph.IsUser():
+			s.emitEphemeralToUser(eph.UserID(), eph.Payload(), skipSocketID)
+		case eph.IsUserScopedOnly():
+			s.emitEphemeralToUserScoped(eph.UserID(), eph.Payload(), skipSocketID)
+		}
+	}
 }
 
 func onTypedAck[Req any](
@@ -42,6 +55,27 @@ func onTypedAck[Req any](
 		if ack != nil {
 			ack(result.Ack())
 		}
+		s.emitHandlerUpdates(string(client.Id()), result)
+	})
+}
+
+func onTypedEvent[Req any](
+	s *SocketIOServer,
+	client *socket.Socket,
+	event string,
+	deps handlers.Deps,
+	handler func(context.Context, handlers.Deps, handlers.AuthContext, Req) handlers.EventResult,
+) {
+	client.On(event, func(data ...any) {
+		sd := s.getSocketData(string(client.Id()))
+		raw, _ := getFirstAnyWithAck(data)
+
+		var req Req
+		_ = decodeAny(raw, &req)
+
+		auth := handlers.NewAuthContext(sd.UserID, sd.ClientType, string(client.Id()))
+		result := handler(context.Background(), deps, auth, req)
+
 		s.emitHandlerUpdates(string(client.Id()), result)
 	})
 }
