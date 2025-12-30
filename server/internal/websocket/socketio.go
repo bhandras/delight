@@ -15,6 +15,7 @@ import (
 	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/crypto"
 	"github.com/bhandras/delight/server/internal/models"
+	sessionruntime "github.com/bhandras/delight/server/internal/session/runtime"
 	pkgtypes "github.com/bhandras/delight/server/pkg/types"
 	"github.com/gin-gonic/gin"
 	socket "github.com/zishang520/socket.io/servers/socket/v3"
@@ -27,6 +28,7 @@ type SocketIOServer struct {
 	jwtManager *crypto.JWTManager
 	server     *socket.Server
 	socketData sync.Map // Maps socket ID to user data
+	sessions   *sessionruntime.Manager
 	rpcMu      sync.Mutex
 	rpcMethods map[string]map[string]*socket.Socket // userID -> method -> socket
 }
@@ -59,6 +61,9 @@ func NewSocketIOServer(db *sql.DB, jwtManager *crypto.JWTManager) *SocketIOServe
 		socketData: sync.Map{},
 		rpcMethods: make(map[string]map[string]*socket.Socket),
 	}
+	s.sessions = sessionruntime.NewManager(&sessionruntime.SQLStore{
+		Queries: models.New(db),
+	}, s)
 
 	// Set up event handlers
 	s.setupHandlers()
@@ -216,103 +221,21 @@ func (s *SocketIOServer) setupHandlers() {
 				return
 			}
 
-			// Validate session ownership
-			// Use a fresh background context for DB ops; handshake contexts can be canceled after upgrade.
-			ctx := context.Background()
-
-			session, err := queries.GetSessionByID(ctx, targetSessionID)
-			if err != nil {
-				log.Printf("❌ Failed to load session %s: %v", targetSessionID, err)
-				return
-			}
-			if session.AccountID != sd.UserID {
-				log.Printf("❌ Session %s does not belong to user %s", targetSessionID, sd.UserID)
-				return
-			}
-
-			// Persist message with new seq
-			seq, err := queries.UpdateSessionSeq(ctx, targetSessionID)
-			if err != nil {
-				log.Printf("❌ Failed to increment session seq: %v", err)
-				return
-			}
-
-			var localID sql.NullString
-			if payload.LocalID != "" {
-				localID = sql.NullString{String: payload.LocalID, Valid: true}
-			}
-
 			content := payload.Message
 			if content == "" {
 				log.Printf("❌ No message content provided")
 				return
 			}
 
-			msgID := pkgtypes.NewCUID()
-			contentJSON, _ := json.Marshal(map[string]any{
-				"t": "encrypted",
-				"c": content,
-			})
-
-			createdMsg, err := queries.CreateMessage(ctx, models.CreateMessageParams{
-				ID:        msgID,
-				SessionID: targetSessionID,
-				LocalID:   localID,
-				Seq:       seq,
-				// Store an encrypted envelope so HTTP consumers (mobile app sync)
-				// get a JSON object instead of a bare string.
-				Content: string(contentJSON),
-			})
-			if err != nil {
-				log.Printf("❌ Failed to persist message: %v", err)
-				return
-			}
-
-			// Mark session active
-			_ = queries.UpdateSessionActivity(ctx, models.UpdateSessionActivityParams{
-				Active:       1,
-				LastActiveAt: time.Now(),
-				ID:           targetSessionID,
-			})
-
-			// Prepare app-compatible update payload
-			updateID := pkgtypes.NewCUID()
-			userSeq, err := queries.UpdateAccountSeq(ctx, sd.UserID)
-			if err != nil {
-				log.Printf("❌ Failed to allocate user seq: %v", err)
-				return
-			}
-
 			var localIDValue *string
-			if localID.Valid {
-				v := localID.String
+			if payload.LocalID != "" {
+				v := payload.LocalID
 				localIDValue = &v
 			}
 
-			updatePayload := protocolwire.UpdateEvent{
-				ID:        updateID,
-				Seq:       userSeq,
-				CreatedAt: time.Now().UnixMilli(),
-				Body: protocolwire.UpdateBodyNewMessage{
-					T:   "new-message",
-					SID: targetSessionID,
-					Message: protocolwire.UpdateNewMessage{
-						ID:      createdMsg.ID,
-						Seq:     seq,
-						LocalID: localIDValue,
-						Content: protocolwire.EncryptedEnvelope{
-							T: "encrypted",
-							C: content,
-						},
-						CreatedAt: createdMsg.CreatedAt.UnixMilli(),
-						UpdatedAt: createdMsg.UpdatedAt.UnixMilli(),
-					},
-				},
-			}
-
-			log.Printf("Broadcasting new-message update to session: %s content=%s", targetSessionID, content)
-
-			s.emitUpdateToSession(sd.UserID, targetSessionID, updatePayload, string(client.Id()))
+			// Use a fresh background context for DB ops; handshake contexts can be
+			// canceled after upgrade.
+			s.sessions.EnqueueMessage(context.Background(), sd.UserID, targetSessionID, content, localIDValue, string(client.Id()))
 		})
 
 		// Session alive event
@@ -1499,6 +1422,12 @@ func (s *SocketIOServer) emitUpdateToUser(userID string, payload any, skipSocket
 		targetSD.Socket.Emit("update", payload)
 		return true
 	})
+}
+
+// EmitUpdateToSession exposes session-scoped update emission for internal
+// runtimes.
+func (s *SocketIOServer) EmitUpdateToSession(userID, sessionID string, payload any, skipSocketID string) {
+	s.emitUpdateToSession(userID, sessionID, payload, skipSocketID)
 }
 
 // EmitUpdateToUser exposes update emission for HTTP handlers.
