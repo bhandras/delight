@@ -87,8 +87,9 @@ func (s *SocketIOServer) setupHandlers() {
 	// Connection handler
 	s.server.On("connection", func(clients ...any) {
 		client := clients[0].(*socket.Socket)
+		socketID := string(client.Id())
 
-		log.Printf("🔌 Socket.IO connection attempt! Socket ID: %s", client.Id())
+		log.Printf("🔌 Socket.IO connection attempt! Socket ID: %s", socketID)
 
 		// Get handshake data
 		handshake := client.Handshake()
@@ -100,7 +101,7 @@ func (s *SocketIOServer) setupHandlers() {
 		// handshake.Auth is map[string]any
 		authMap := handshake.Auth
 		if authMap == nil || len(authMap) == 0 {
-			log.Printf("❌ No auth data provided (socket %s)", client.Id())
+			log.Printf("❌ No auth data provided (socket %s)", socketID)
 			client.Emit("error", map[string]string{"message": "Missing authentication data"})
 			client.Disconnect(true)
 			return
@@ -108,7 +109,7 @@ func (s *SocketIOServer) setupHandlers() {
 
 		var auth protocolwire.SocketAuthPayload
 		if err := decodeAny(authMap, &auth); err != nil {
-			log.Printf("❌ Invalid auth data provided (socket %s): %v", client.Id(), err)
+			log.Printf("❌ Invalid auth data provided (socket %s): %v", socketID, err)
 			client.Emit("error", map[string]string{"message": "Invalid authentication data"})
 			client.Disconnect(true)
 			return
@@ -117,7 +118,7 @@ func (s *SocketIOServer) setupHandlers() {
 		// Extract token
 		token := auth.Token
 		if token == "" {
-			log.Printf("❌ No token provided (socket %s)", client.Id())
+			log.Printf("❌ No token provided (socket %s)", socketID)
 			client.Emit("error", map[string]string{"message": "Missing authentication token"})
 			client.Disconnect(true)
 			return
@@ -133,7 +134,7 @@ func (s *SocketIOServer) setupHandlers() {
 
 		// Validate session-scoped clients have sessionId
 		if clientType == "session-scoped" && sessionID == "" {
-			log.Printf("❌ Session-scoped client missing sessionId (socket %s)", client.Id())
+			log.Printf("❌ Session-scoped client missing sessionId (socket %s)", socketID)
 			client.Emit("error", map[string]string{"message": "Session ID required for session-scoped clients"})
 			client.Disconnect(true)
 			return
@@ -141,7 +142,7 @@ func (s *SocketIOServer) setupHandlers() {
 
 		// Validate machine-scoped clients have machineId
 		if clientType == "machine-scoped" && machineID == "" {
-			log.Printf("❌ Machine-scoped client missing machineId (socket %s)", client.Id())
+			log.Printf("❌ Machine-scoped client missing machineId (socket %s)", socketID)
 			client.Emit("error", map[string]string{"message": "Machine ID required for machine-scoped clients"})
 			client.Disconnect(true)
 			return
@@ -150,7 +151,7 @@ func (s *SocketIOServer) setupHandlers() {
 		// Verify JWT token
 		claims, err := s.jwtManager.VerifyToken(token)
 		if err != nil {
-			log.Printf("❌ Invalid token provided (socket %s): %v", client.Id(), err)
+			log.Printf("❌ Invalid token provided (socket %s): %v", socketID, err)
 			client.Emit("error", map[string]string{"message": "Invalid authentication token"})
 			client.Disconnect(true)
 			return
@@ -158,7 +159,7 @@ func (s *SocketIOServer) setupHandlers() {
 
 		userID := claims.Subject
 		log.Printf("✅ Token verified: userID=%s, clientType=%s, sessionId=%s, machineId=%s, socketId=%s",
-			userID, clientType, sessionID, machineID, client.Id())
+			userID, clientType, sessionID, machineID, socketID)
 
 		// Store connection metadata
 		socketData := &SocketData{
@@ -168,7 +169,7 @@ func (s *SocketIOServer) setupHandlers() {
 			MachineID:  machineID,
 			Socket:     client,
 		}
-		s.socketData.Store(client.Id(), socketData)
+		s.socketData.Store(socketID, socketData)
 
 		log.Printf("✅ Socket.IO client ready (user: %s, clientType: %s)", userID, clientType)
 
@@ -193,8 +194,8 @@ func (s *SocketIOServer) setupHandlers() {
 
 		// Message event - broadcast to session-scoped clients
 		client.On("message", func(data ...any) {
-			sd := s.getSocketData(client.Id())
-			log.Printf("Message event from user %s (socket %s): %+v", sd.UserID, client.Id(), data)
+			sd := s.getSocketData(socketID)
+			log.Printf("Message event from user %s (socket %s): %+v", sd.UserID, socketID, data)
 
 			// Get the message data
 			if len(data) == 0 {
@@ -234,13 +235,13 @@ func (s *SocketIOServer) setupHandlers() {
 
 			// Use a fresh background context for DB ops; handshake contexts can be
 			// canceled after upgrade.
-			s.sessions.EnqueueMessage(context.Background(), sd.UserID, targetSessionID, content, localIDValue, string(client.Id()))
+			s.sessions.EnqueueMessage(context.Background(), sd.UserID, targetSessionID, content, localIDValue, socketID)
 		})
 
 		// Session alive event
 		client.On("session-alive", func(data ...any) {
-			sd := s.getSocketData(client.Id())
-			log.Printf("Session alive from user %s (socket %s): %+v", sd.UserID, client.Id(), data)
+			sd := s.getSocketData(socketID)
+			log.Printf("Session alive from user %s (socket %s): %+v", sd.UserID, socketID, data)
 
 			payload, _ := getFirstMap(data)
 			sid := getString(payload, "sid")
@@ -281,7 +282,7 @@ func (s *SocketIOServer) setupHandlers() {
 
 		// Machine alive event
 		client.On("machine-alive", func(data ...any) {
-			sd := s.getSocketData(client.Id())
+			sd := s.getSocketData(socketID)
 			payload, _ := getFirstMap(data)
 			machineID := getString(payload, "machineId")
 			if machineID == "" {
@@ -338,7 +339,7 @@ func (s *SocketIOServer) setupHandlers() {
 
 		// Usage report event
 		client.On("usage-report", func(data ...any) {
-			sd := s.getSocketData(client.Id())
+			sd := s.getSocketData(socketID)
 			payload, _ := getFirstMap(data)
 			sessionID := getString(payload, "sessionId")
 			if sessionID == "" {
@@ -369,7 +370,7 @@ func (s *SocketIOServer) setupHandlers() {
 
 		// Ephemeral forward (client -> server -> user-scoped)
 		client.On("ephemeral", func(data ...any) {
-			sd := s.getSocketData(client.Id())
+			sd := s.getSocketData(socketID)
 			payload, _ := getFirstMap(data)
 			if payload == nil {
 				return
@@ -379,7 +380,7 @@ func (s *SocketIOServer) setupHandlers() {
 
 		// RPC register
 		client.On("rpc-register", func(data ...any) {
-			sd := s.getSocketData(client.Id())
+			sd := s.getSocketData(socketID)
 			raw, _ := getFirstAnyWithAck(data)
 			var req protocolwire.RPCRegisterPayload
 			if err := decodeAny(raw, &req); err != nil {
@@ -393,13 +394,13 @@ func (s *SocketIOServer) setupHandlers() {
 			if shouldDebugRPC() {
 				log.Printf("RPC register: user=%s client=%s method=%s", sd.UserID, sd.ClientType, method)
 			}
-			s.rpc.Register(sd.UserID, method, string(client.Id()))
+			s.rpc.Register(sd.UserID, method, socketID)
 			client.Emit("rpc-registered", protocolwire.RPCRegisteredPayload{Method: method})
 		})
 
 		// RPC unregister
 		client.On("rpc-unregister", func(data ...any) {
-			sd := s.getSocketData(client.Id())
+			sd := s.getSocketData(socketID)
 			raw, _ := getFirstAnyWithAck(data)
 			var req protocolwire.RPCRegisterPayload
 			if err := decodeAny(raw, &req); err != nil {
@@ -410,13 +411,13 @@ func (s *SocketIOServer) setupHandlers() {
 				client.Emit("rpc-error", protocolwire.RPCErrorPayload{Type: "unregister", Error: "Invalid method name"})
 				return
 			}
-			s.rpc.Unregister(sd.UserID, method, string(client.Id()))
+			s.rpc.Unregister(sd.UserID, method, socketID)
 			client.Emit("rpc-unregistered", protocolwire.RPCUnregisteredPayload{Method: method})
 		})
 
 		// RPC call
 		client.On("rpc-call", func(data ...any) {
-			sd := s.getSocketData(client.Id())
+			sd := s.getSocketData(socketID)
 			raw, ack := getFirstAnyWithAck(data)
 			var req protocolwire.RPCCallPayload
 			if err := decodeAny(raw, &req); err != nil {
@@ -426,7 +427,7 @@ func (s *SocketIOServer) setupHandlers() {
 				return
 			}
 			forward, immediateAck := handlers.RPCCall(
-				handlers.NewAuthContext(sd.UserID, sd.ClientType, string(client.Id())),
+				handlers.NewAuthContext(sd.UserID, sd.ClientType, socketID),
 				s.rpc,
 				req,
 			)
@@ -473,7 +474,7 @@ func (s *SocketIOServer) setupHandlers() {
 
 		// Disconnection handler
 		client.On("disconnect", func(data ...any) {
-			sd := s.getSocketData(client.Id())
+			sd := s.getSocketData(socketID)
 			reason := ""
 			if len(data) > 0 {
 				if r, ok := data[0].(string); ok {
@@ -481,7 +482,7 @@ func (s *SocketIOServer) setupHandlers() {
 				}
 			}
 			log.Printf("User disconnected: %s (socket %s, clientType: %s, reason: %s)",
-				sd.UserID, client.Id(), sd.ClientType, reason)
+				sd.UserID, socketID, sd.ClientType, reason)
 
 			if sd.ClientType == "session-scoped" && sd.SessionID != "" {
 				now := time.Now()
@@ -519,8 +520,8 @@ func (s *SocketIOServer) setupHandlers() {
 				}, "")
 			}
 			// Clean up socket data
-			s.socketData.Delete(client.Id())
-			s.rpc.UnregisterAll(sd.UserID, string(client.Id()))
+			s.socketData.Delete(socketID)
+			s.rpc.UnregisterAll(sd.UserID, socketID)
 		})
 	})
 }
@@ -751,7 +752,7 @@ func getMap(payload map[string]any, key string) map[string]any {
 }
 
 // getSocketData retrieves socket metadata by socket ID
-func (s *SocketIOServer) getSocketData(socketID any) *SocketData {
+func (s *SocketIOServer) getSocketData(socketID string) *SocketData {
 	if data, ok := s.socketData.Load(socketID); ok {
 		if sd, ok := data.(*SocketData); ok {
 			return sd

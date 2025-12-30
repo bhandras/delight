@@ -30,7 +30,7 @@ func onTypedAck[Req any](
 	handler func(context.Context, handlers.Deps, handlers.AuthContext, Req) handlers.EventResult,
 ) {
 	client.On(event, func(data ...any) {
-		sd := s.getSocketData(client.Id())
+		sd := s.getSocketData(string(client.Id()))
 		raw, ack := getFirstAnyWithAck(data)
 
 		var req Req
