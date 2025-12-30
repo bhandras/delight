@@ -874,7 +874,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let outgoingText = messageText
         messageText = ""
         let localID = UUID().uuidString
-        let shouldSwitchToRemote = sessions.first(where: { $0.id == sessionID })?.agentState?.controlledByUser == true
+        let shouldSwitchToRemote = sessions.first(where: { $0.id == sessionID })?.agentState?.controlledByUser != false
 
         updateSessionThinking(true)
 

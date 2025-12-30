@@ -499,6 +499,18 @@ func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 	messageContent = strings.TrimRight(messageContent, "\r\n")
 	m.rememberRemoteInput(messageContent)
 
+	// In remote mode, forward user input to the remote bridge (instead of writing
+	// to the local Claude TUI PTY). This is required for permission prompts to be
+	// routed back to the mobile app.
+	if m.GetMode() == ModeRemote {
+		if err := m.SendUserMessage(messageContent, meta); err != nil {
+			if m.debug {
+				log.Printf("Failed to send remote input: %v", err)
+			}
+		}
+		return
+	}
+
 	if m.agent == "acp" {
 		m.handleACPMessage(messageContent)
 		return
