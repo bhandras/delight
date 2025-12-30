@@ -183,13 +183,12 @@ func (s *SocketIOServer) setupHandlers() {
 				log.Printf("Failed to update machine activity: %v", err)
 			}
 
-			ephemeral := map[string]any{
-				"type":     "machine-activity",
-				"id":       machineID,
-				"active":   true,
-				"activeAt": now.UnixMilli(),
-			}
-			s.emitEphemeralToUserScoped(userID, ephemeral, "")
+			s.emitEphemeralToUserScoped(userID, protocolwire.EphemeralMachineActivityPayload{
+				Type:     "machine-activity",
+				ID:       machineID,
+				Active:   true,
+				ActiveAt: now.UnixMilli(),
+			}, "")
 		}
 
 		// Message event - broadcast to session-scoped clients
@@ -271,14 +270,13 @@ func (s *SocketIOServer) setupHandlers() {
 			}
 
 			thinking := getBool(payload, "thinking")
-			ephemeral := map[string]any{
-				"type":     "activity",
-				"id":       sid,
-				"active":   true,
-				"activeAt": t,
-				"thinking": thinking,
-			}
-			s.emitEphemeralToUser(sd.UserID, ephemeral, "")
+			s.emitEphemeralToUser(sd.UserID, protocolwire.EphemeralActivityPayload{
+				Type:     "activity",
+				ID:       sid,
+				Active:   true,
+				Thinking: thinking,
+				ActiveAt: t,
+			}, "")
 		})
 
 		// Machine alive event
@@ -319,13 +317,12 @@ func (s *SocketIOServer) setupHandlers() {
 				log.Printf("Failed to update machine activity: %v", err)
 			}
 
-			ephemeral := map[string]any{
-				"type":     "machine-activity",
-				"id":       machineID,
-				"active":   true,
-				"activeAt": t,
-			}
-			s.emitEphemeralToUserScoped(sd.UserID, ephemeral, "")
+			s.emitEphemeralToUserScoped(sd.UserID, protocolwire.EphemeralMachineActivityPayload{
+				Type:     "machine-activity",
+				ID:       machineID,
+				Active:   true,
+				ActiveAt: t,
+			}, "")
 		})
 
 		// Machine metadata update
@@ -404,20 +401,19 @@ func (s *SocketIOServer) setupHandlers() {
 				return
 			}
 
-			updatePayload := map[string]any{
-				"id":        pkgtypes.NewCUID(),
-				"seq":       userSeq,
-				"createdAt": time.Now().UnixMilli(),
-				"body": map[string]any{
-					"t":         "update-machine",
-					"machineId": machineID,
-					"metadata": map[string]any{
-						"value":   metadata,
-						"version": expected + 1,
+			s.emitUpdateToUser(sd.UserID, protocolwire.UpdateEvent{
+				ID:        pkgtypes.NewCUID(),
+				Seq:       userSeq,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyUpdateMachine{
+					T:         "update-machine",
+					MachineID: machineID,
+					Metadata: &protocolwire.VersionedString{
+						Value:   metadata,
+						Version: expected + 1,
 					},
 				},
-			}
-			s.emitUpdateToUser(sd.UserID, updatePayload, string(client.Id()))
+			}, string(client.Id()))
 		})
 
 		// Machine daemon state update
@@ -503,20 +499,19 @@ func (s *SocketIOServer) setupHandlers() {
 				return
 			}
 
-			updatePayload := map[string]any{
-				"id":        pkgtypes.NewCUID(),
-				"seq":       userSeq,
-				"createdAt": time.Now().UnixMilli(),
-				"body": map[string]any{
-					"t":         "update-machine",
-					"machineId": machineID,
-					"daemonState": map[string]any{
-						"value":   *daemonState,
-						"version": expected + 1,
+			s.emitUpdateToUser(sd.UserID, protocolwire.UpdateEvent{
+				ID:        pkgtypes.NewCUID(),
+				Seq:       userSeq,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyUpdateMachine{
+					T:         "update-machine",
+					MachineID: machineID,
+					DaemonState: &protocolwire.VersionedString{
+						Value:   *daemonState,
+						Version: expected + 1,
 					},
 				},
-			}
-			s.emitUpdateToUser(sd.UserID, updatePayload, string(client.Id()))
+			}, string(client.Id()))
 		})
 
 		// Usage report event
@@ -540,15 +535,14 @@ func (s *SocketIOServer) setupHandlers() {
 				return
 			}
 
-			ephemeral := map[string]any{
-				"type":      "usage",
-				"id":        sessionID,
-				"key":       key,
-				"tokens":    tokens,
-				"cost":      cost,
-				"timestamp": time.Now().UnixMilli(),
-			}
-			s.emitEphemeralToUser(sd.UserID, ephemeral, "")
+			s.emitEphemeralToUser(sd.UserID, protocolwire.EphemeralUsagePayload{
+				Type:      "usage",
+				ID:        sessionID,
+				Key:       key,
+				Tokens:    tokens,
+				Cost:      cost,
+				Timestamp: time.Now().UnixMilli(),
+			}, "")
 		})
 
 		// Ephemeral forward (client -> server -> user-scoped)
@@ -755,24 +749,23 @@ func (s *SocketIOServer) setupHandlers() {
 
 			userSeq, err := queries.UpdateAccountSeq(context.Background(), sd.UserID)
 			if err == nil {
-				updatePayload := map[string]any{
-					"id":        pkgtypes.NewCUID(),
-					"seq":       userSeq,
-					"createdAt": time.Now().UnixMilli(),
-					"body": map[string]any{
-						"t":                 "new-artifact",
-						"artifactId":        artifact.ID,
-						"seq":               artifact.Seq,
-						"header":            base64.StdEncoding.EncodeToString(artifact.Header),
-						"headerVersion":     artifact.HeaderVersion,
-						"body":              base64.StdEncoding.EncodeToString(artifact.Body),
-						"bodyVersion":       artifact.BodyVersion,
-						"dataEncryptionKey": base64.StdEncoding.EncodeToString(artifact.DataEncryptionKey),
-						"createdAt":         artifact.CreatedAt.UnixMilli(),
-						"updatedAt":         artifact.UpdatedAt.UnixMilli(),
+				s.emitUpdateToUser(sd.UserID, protocolwire.UpdateEvent{
+					ID:        pkgtypes.NewCUID(),
+					Seq:       userSeq,
+					CreatedAt: time.Now().UnixMilli(),
+					Body: protocolwire.UpdateBodyNewArtifact{
+						T:                 "new-artifact",
+						ArtifactID:        artifact.ID,
+						Seq:               artifact.Seq,
+						Header:            base64.StdEncoding.EncodeToString(artifact.Header),
+						HeaderVersion:     artifact.HeaderVersion,
+						Body:              base64.StdEncoding.EncodeToString(artifact.Body),
+						BodyVersion:       artifact.BodyVersion,
+						DataEncryptionKey: base64.StdEncoding.EncodeToString(artifact.DataEncryptionKey),
+						CreatedAt:         artifact.CreatedAt.UnixMilli(),
+						UpdatedAt:         artifact.UpdatedAt.UnixMilli(),
 					},
-				}
-				s.emitUpdateToUser(sd.UserID, updatePayload, "")
+				}, "")
 			}
 
 			if ack != nil {
@@ -945,48 +938,47 @@ func (s *SocketIOServer) setupHandlers() {
 				return
 			}
 
-			var headerUpdate map[string]any
-			var bodyUpdate map[string]any
+			var headerUpdate *protocolwire.VersionedString
+			var bodyUpdate *protocolwire.VersionedString
 			if headerPresent {
-				headerUpdate = map[string]any{
-					"value":   headerData,
-					"version": headerExpected + 1,
+				headerUpdate = &protocolwire.VersionedString{
+					Value:   headerData,
+					Version: headerExpected + 1,
 				}
 			}
 			if bodyPresent {
-				bodyUpdate = map[string]any{
-					"value":   bodyData,
-					"version": bodyExpected + 1,
+				bodyUpdate = &protocolwire.VersionedString{
+					Value:   bodyData,
+					Version: bodyExpected + 1,
 				}
 			}
 
 			userSeq, err := queries.UpdateAccountSeq(context.Background(), sd.UserID)
 			if err == nil {
-				updatePayload := map[string]any{
-					"id":        pkgtypes.NewCUID(),
-					"seq":       userSeq,
-					"createdAt": time.Now().UnixMilli(),
-					"body": map[string]any{
-						"t":          "update-artifact",
-						"artifactId": artifactID,
-						"header":     headerUpdate,
-						"body":       bodyUpdate,
+				s.emitUpdateToUser(sd.UserID, protocolwire.UpdateEvent{
+					ID:        pkgtypes.NewCUID(),
+					Seq:       userSeq,
+					CreatedAt: time.Now().UnixMilli(),
+					Body: protocolwire.UpdateBodyUpdateArtifact{
+						T:          "update-artifact",
+						ArtifactID: artifactID,
+						Header:     headerUpdate,
+						Body:       bodyUpdate,
 					},
-				}
-				s.emitUpdateToUser(sd.UserID, updatePayload, "")
+				}, "")
 			}
 
 			if ack != nil {
 				response := map[string]any{"result": "success"}
 				if headerUpdate != nil {
 					response["header"] = map[string]any{
-						"version": headerUpdate["version"],
+						"version": headerUpdate.Version,
 						"data":    headerData,
 					}
 				}
 				if bodyUpdate != nil {
 					response["body"] = map[string]any{
-						"version": bodyUpdate["version"],
+						"version": bodyUpdate.Version,
 						"data":    bodyData,
 					}
 				}
@@ -1029,16 +1021,15 @@ func (s *SocketIOServer) setupHandlers() {
 
 			userSeq, err := queries.UpdateAccountSeq(context.Background(), sd.UserID)
 			if err == nil {
-				updatePayload := map[string]any{
-					"id":        pkgtypes.NewCUID(),
-					"seq":       userSeq,
-					"createdAt": time.Now().UnixMilli(),
-					"body": map[string]any{
-						"t":          "delete-artifact",
-						"artifactId": artifactID,
+				s.emitUpdateToUser(sd.UserID, protocolwire.UpdateEvent{
+					ID:        pkgtypes.NewCUID(),
+					Seq:       userSeq,
+					CreatedAt: time.Now().UnixMilli(),
+					Body: protocolwire.UpdateBodyDeleteArtifact{
+						T:          "delete-artifact",
+						ArtifactID: artifactID,
 					},
-				}
-				s.emitUpdateToUser(sd.UserID, updatePayload, "")
+				}, "")
 			}
 
 			if ack != nil {
@@ -1307,14 +1298,13 @@ func (s *SocketIOServer) setupHandlers() {
 				}); err != nil {
 					log.Printf("Failed to update session activity: %v", err)
 				}
-				ephemeral := map[string]any{
-					"type":     "activity",
-					"id":       sd.SessionID,
-					"active":   false,
-					"activeAt": now.UnixMilli(),
-					"thinking": false,
-				}
-				s.emitEphemeralToUser(sd.UserID, ephemeral, "")
+				s.emitEphemeralToUser(sd.UserID, protocolwire.EphemeralActivityPayload{
+					Type:     "activity",
+					ID:       sd.SessionID,
+					Active:   false,
+					Thinking: false,
+					ActiveAt: now.UnixMilli(),
+				}, "")
 			}
 
 			if sd.ClientType == "machine-scoped" && sd.MachineID != "" {
@@ -1327,13 +1317,12 @@ func (s *SocketIOServer) setupHandlers() {
 				}); err != nil {
 					log.Printf("Failed to update machine activity: %v", err)
 				}
-				ephemeral := map[string]any{
-					"type":     "machine-activity",
-					"id":       sd.MachineID,
-					"active":   false,
-					"activeAt": now.UnixMilli(),
-				}
-				s.emitEphemeralToUserScoped(sd.UserID, ephemeral, "")
+				s.emitEphemeralToUserScoped(sd.UserID, protocolwire.EphemeralMachineActivityPayload{
+					Type:     "machine-activity",
+					ID:       sd.MachineID,
+					Active:   false,
+					ActiveAt: now.UnixMilli(),
+				}, "")
 			}
 			// Clean up socket data
 			s.socketData.Delete(client.Id())

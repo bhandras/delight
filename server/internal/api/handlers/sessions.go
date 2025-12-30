@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/api/middleware"
 	"github.com/bhandras/delight/server/internal/models"
 	"github.com/bhandras/delight/server/internal/websocket"
@@ -166,34 +167,35 @@ func (h *SessionHandler) CreateSession(c *gin.Context) {
 		if err != nil {
 			log.Printf("Failed to allocate user seq for new-session: %v", err)
 		} else {
-			var agentStateValue any
+			var agentStateValue *string
 			if session.AgentState.Valid {
-				agentStateValue = session.AgentState.String
+				v := session.AgentState.String
+				agentStateValue = &v
 			}
-			var dataKey any
+			var dataKey *string
 			if len(session.DataEncryptionKey) > 0 {
-				dataKey = base64.StdEncoding.EncodeToString(session.DataEncryptionKey)
+				v := base64.StdEncoding.EncodeToString(session.DataEncryptionKey)
+				dataKey = &v
 			}
-			updatePayload := map[string]any{
-				"id":  types.NewCUID(),
-				"seq": userSeq,
-				"body": map[string]any{
-					"t":                 "new-session",
-					"id":                session.ID,
-					"seq":               session.Seq,
-					"metadata":          session.Metadata,
-					"metadataVersion":   session.MetadataVersion,
-					"agentState":        agentStateValue,
-					"agentStateVersion": session.AgentStateVersion,
-					"dataEncryptionKey": dataKey,
-					"active":            session.Active != 0,
-					"activeAt":          session.LastActiveAt.UnixMilli(),
-					"createdAt":         session.CreatedAt.UnixMilli(),
-					"updatedAt":         session.UpdatedAt.UnixMilli(),
+			h.updates.EmitUpdateToUser(userID, protocolwire.UpdateEvent{
+				ID:        types.NewCUID(),
+				Seq:       userSeq,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyNewSession{
+					T:                 "new-session",
+					ID:                session.ID,
+					Seq:               session.Seq,
+					Metadata:          session.Metadata,
+					MetadataVersion:   session.MetadataVersion,
+					AgentState:        agentStateValue,
+					AgentStateVersion: session.AgentStateVersion,
+					DataEncryptionKey: dataKey,
+					Active:            session.Active != 0,
+					ActiveAt:          session.LastActiveAt.UnixMilli(),
+					CreatedAt:         session.CreatedAt.UnixMilli(),
+					UpdatedAt:         session.UpdatedAt.UnixMilli(),
 				},
-				"createdAt": time.Now().UnixMilli(),
-			}
-			h.updates.EmitUpdateToUser(userID, updatePayload)
+			})
 		}
 	}
 
@@ -254,16 +256,15 @@ func (h *SessionHandler) DeleteSession(c *gin.Context) {
 		if err != nil {
 			log.Printf("Failed to allocate user seq for delete-session: %v", err)
 		} else {
-			updatePayload := map[string]any{
-				"id":  types.NewCUID(),
-				"seq": userSeq,
-				"body": map[string]any{
-					"t":   "delete-session",
-					"sid": sessionID,
+			h.updates.EmitUpdateToUser(userID, protocolwire.UpdateEvent{
+				ID:        types.NewCUID(),
+				Seq:       userSeq,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyDeleteSession{
+					T:   "delete-session",
+					SID: sessionID,
 				},
-				"createdAt": time.Now().UnixMilli(),
-			}
-			h.updates.EmitUpdateToUser(userID, updatePayload)
+			})
 		}
 	}
 

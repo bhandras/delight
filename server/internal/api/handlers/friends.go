@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/api/middleware"
 	"github.com/bhandras/delight/server/internal/models"
 	"github.com/bhandras/delight/server/internal/websocket"
@@ -278,20 +279,19 @@ func (h *FriendsHandler) emitRelationshipUpdates(userID, otherID, status, action
 	if err != nil {
 		return
 	}
-	updatePayload := map[string]any{
-		"id":        types.NewCUID(),
-		"seq":       userSeq,
-		"createdAt": time.Now().UnixMilli(),
-		"body": map[string]any{
-			"t":          "relationship-updated",
-			"fromUserId": userID,
-			"toUserId":   otherID,
-			"status":     status,
-			"action":     action,
-			"timestamp":  timestamp,
+	h.updates.EmitUpdateToUser(userID, protocolwire.UpdateEvent{
+		ID:        types.NewCUID(),
+		Seq:       userSeq,
+		CreatedAt: time.Now().UnixMilli(),
+		Body: protocolwire.UpdateBodyRelationshipUpdated{
+			T:          "relationship-updated",
+			FromUserID: userID,
+			ToUserID:   otherID,
+			Status:     status,
+			Action:     action,
+			Timestamp:  timestamp,
 		},
-	}
-	h.updates.EmitUpdateToUser(userID, updatePayload)
+	})
 }
 
 type feedItem struct {
@@ -371,20 +371,19 @@ func (h *FriendsHandler) emitFeedUpdates(events []feedEvent) {
 		if err != nil {
 			continue
 		}
-		updatePayload := map[string]any{
-			"id":        types.NewCUID(),
-			"seq":       userSeq,
-			"createdAt": time.Now().UnixMilli(),
-			"body": map[string]any{
-				"t":         "new-feed-post",
-				"id":        event.Item["id"],
-				"body":      event.Item["body"],
-				"cursor":    event.Item["cursor"],
-				"createdAt": event.Item["createdAt"],
-				"repeatKey": event.Item["repeatKey"],
+		h.updates.EmitUpdateToUser(event.UserID, protocolwire.UpdateEvent{
+			ID:        types.NewCUID(),
+			Seq:       userSeq,
+			CreatedAt: time.Now().UnixMilli(),
+			Body: protocolwire.UpdateBodyNewFeedPost{
+				T:         "new-feed-post",
+				ID:        event.Item["id"],
+				Body:      event.Item["body"],
+				Cursor:    event.Item["cursor"],
+				CreatedAt: event.Item["createdAt"],
+				RepeatKey: event.Item["repeatKey"],
 			},
-		}
-		h.updates.EmitUpdateToUser(event.UserID, updatePayload)
+		})
 	}
 }
 

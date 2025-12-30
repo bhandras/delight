@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/api/middleware"
 	"github.com/bhandras/delight/server/internal/models"
 	"github.com/bhandras/delight/server/internal/websocket"
@@ -192,24 +193,23 @@ func (h *ArtifactHandler) CreateArtifact(c *gin.Context) {
 	if h.updates != nil {
 		userSeq, err := h.queries.UpdateAccountSeq(c.Request.Context(), userID)
 		if err == nil {
-			updatePayload := map[string]any{
-				"id":        types.NewCUID(),
-				"seq":       userSeq,
-				"createdAt": time.Now().UnixMilli(),
-				"body": map[string]any{
-					"t":                 "new-artifact",
-					"artifactId":        artifact.ID,
-					"seq":               artifact.Seq,
-					"header":            base64.StdEncoding.EncodeToString(artifact.Header),
-					"headerVersion":     artifact.HeaderVersion,
-					"body":              base64.StdEncoding.EncodeToString(artifact.Body),
-					"bodyVersion":       artifact.BodyVersion,
-					"dataEncryptionKey": base64.StdEncoding.EncodeToString(artifact.DataEncryptionKey),
-					"createdAt":         artifact.CreatedAt.UnixMilli(),
-					"updatedAt":         artifact.UpdatedAt.UnixMilli(),
+			h.updates.EmitUpdateToUser(userID, protocolwire.UpdateEvent{
+				ID:        types.NewCUID(),
+				Seq:       userSeq,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyNewArtifact{
+					T:                 "new-artifact",
+					ArtifactID:        artifact.ID,
+					Seq:               artifact.Seq,
+					Header:            base64.StdEncoding.EncodeToString(artifact.Header),
+					HeaderVersion:     artifact.HeaderVersion,
+					Body:              base64.StdEncoding.EncodeToString(artifact.Body),
+					BodyVersion:       artifact.BodyVersion,
+					DataEncryptionKey: base64.StdEncoding.EncodeToString(artifact.DataEncryptionKey),
+					CreatedAt:         artifact.CreatedAt.UnixMilli(),
+					UpdatedAt:         artifact.UpdatedAt.UnixMilli(),
 				},
-			}
-			h.updates.EmitUpdateToUser(userID, updatePayload)
+			})
 		}
 	}
 
@@ -350,45 +350,44 @@ func (h *ArtifactHandler) UpdateArtifact(c *gin.Context) {
 		return
 	}
 
-	var headerUpdate map[string]any
-	var bodyUpdate map[string]any
+	var headerUpdate *protocolwire.VersionedString
+	var bodyUpdate *protocolwire.VersionedString
 	if headerPresent {
-		headerUpdate = map[string]any{
-			"value":   *req.Header,
-			"version": expectedHeaderVersion + 1,
+		headerUpdate = &protocolwire.VersionedString{
+			Value:   *req.Header,
+			Version: expectedHeaderVersion + 1,
 		}
 	}
 	if bodyPresent {
-		bodyUpdate = map[string]any{
-			"value":   *req.Body,
-			"version": expectedBodyVersion + 1,
+		bodyUpdate = &protocolwire.VersionedString{
+			Value:   *req.Body,
+			Version: expectedBodyVersion + 1,
 		}
 	}
 
 	if h.updates != nil {
 		userSeq, err := h.queries.UpdateAccountSeq(c.Request.Context(), userID)
 		if err == nil {
-			updatePayload := map[string]any{
-				"id":        types.NewCUID(),
-				"seq":       userSeq,
-				"createdAt": time.Now().UnixMilli(),
-				"body": map[string]any{
-					"t":          "update-artifact",
-					"artifactId": artifactID,
-					"header":     headerUpdate,
-					"body":       bodyUpdate,
+			h.updates.EmitUpdateToUser(userID, protocolwire.UpdateEvent{
+				ID:        types.NewCUID(),
+				Seq:       userSeq,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyUpdateArtifact{
+					T:          "update-artifact",
+					ArtifactID: artifactID,
+					Header:     headerUpdate,
+					Body:       bodyUpdate,
 				},
-			}
-			h.updates.EmitUpdateToUser(userID, updatePayload)
+			})
 		}
 	}
 
 	resp := gin.H{"success": true}
 	if headerUpdate != nil {
-		resp["headerVersion"] = headerUpdate["version"]
+		resp["headerVersion"] = headerUpdate.Version
 	}
 	if bodyUpdate != nil {
-		resp["bodyVersion"] = bodyUpdate["version"]
+		resp["bodyVersion"] = bodyUpdate.Version
 	}
 	c.JSON(http.StatusOK, resp)
 }
@@ -421,16 +420,15 @@ func (h *ArtifactHandler) DeleteArtifact(c *gin.Context) {
 	if h.updates != nil {
 		userSeq, err := h.queries.UpdateAccountSeq(c.Request.Context(), userID)
 		if err == nil {
-			updatePayload := map[string]any{
-				"id":        types.NewCUID(),
-				"seq":       userSeq,
-				"createdAt": time.Now().UnixMilli(),
-				"body": map[string]any{
-					"t":          "delete-artifact",
-					"artifactId": artifactID,
+			h.updates.EmitUpdateToUser(userID, protocolwire.UpdateEvent{
+				ID:        types.NewCUID(),
+				Seq:       userSeq,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyDeleteArtifact{
+					T:          "delete-artifact",
+					ArtifactID: artifactID,
 				},
-			}
-			h.updates.EmitUpdateToUser(userID, updatePayload)
+			})
 		}
 	}
 

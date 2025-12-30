@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/api/middleware"
 	"github.com/bhandras/delight/server/internal/models"
 	"github.com/bhandras/delight/server/internal/websocket"
@@ -186,54 +187,54 @@ func (h *MachineHandler) CreateMachine(c *gin.Context) {
 		if err != nil {
 			log.Printf("Failed to allocate user seq for new-machine: %v", err)
 		} else {
-			var daemonStateValue any
+			var daemonStateValue *string
 			if machine.DaemonState.Valid {
-				daemonStateValue = machine.DaemonState.String
+				v := machine.DaemonState.String
+				daemonStateValue = &v
 			}
-			var dataKey any
+			var dataKey *string
 			if len(machine.DataEncryptionKey) > 0 {
-				dataKey = base64.StdEncoding.EncodeToString(machine.DataEncryptionKey)
+				v := base64.StdEncoding.EncodeToString(machine.DataEncryptionKey)
+				dataKey = &v
 			}
-			newPayload := map[string]any{
-				"id":  types.NewCUID(),
-				"seq": userSeq1,
-				"body": map[string]any{
-					"t":                  "new-machine",
-					"machineId":          machine.ID,
-					"seq":                machine.Seq,
-					"metadata":           machine.Metadata,
-					"metadataVersion":    machine.MetadataVersion,
-					"daemonState":        daemonStateValue,
-					"daemonStateVersion": machine.DaemonStateVersion,
-					"dataEncryptionKey":  dataKey,
-					"active":             machine.Active != 0,
-					"activeAt":           machine.LastActiveAt.UnixMilli(),
-					"createdAt":          machine.CreatedAt.UnixMilli(),
-					"updatedAt":          machine.UpdatedAt.UnixMilli(),
+			h.updates.EmitUpdateToUser(userID, protocolwire.UpdateEvent{
+				ID:        types.NewCUID(),
+				Seq:       userSeq1,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyNewMachine{
+					T:                  "new-machine",
+					MachineID:          machine.ID,
+					Seq:                machine.Seq,
+					Metadata:           machine.Metadata,
+					MetadataVersion:    machine.MetadataVersion,
+					DaemonState:        daemonStateValue,
+					DaemonStateVersion: machine.DaemonStateVersion,
+					DataEncryptionKey:  dataKey,
+					Active:             machine.Active != 0,
+					ActiveAt:           machine.LastActiveAt.UnixMilli(),
+					CreatedAt:          machine.CreatedAt.UnixMilli(),
+					UpdatedAt:          machine.UpdatedAt.UnixMilli(),
 				},
-				"createdAt": time.Now().UnixMilli(),
-			}
-			h.updates.EmitUpdateToUser(userID, newPayload)
+			})
 		}
 
 		userSeq2, err := h.queries.UpdateAccountSeq(c.Request.Context(), userID)
 		if err != nil {
 			log.Printf("Failed to allocate user seq for update-machine: %v", err)
 		} else {
-			updatePayload := map[string]any{
-				"id":  types.NewCUID(),
-				"seq": userSeq2,
-				"body": map[string]any{
-					"t":         "update-machine",
-					"machineId": machine.ID,
-					"metadata": map[string]any{
-						"value":   machine.Metadata,
-						"version": machine.MetadataVersion,
+			h.updates.EmitUpdateToUser(userID, protocolwire.UpdateEvent{
+				ID:        types.NewCUID(),
+				Seq:       userSeq2,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyUpdateMachine{
+					T:         "update-machine",
+					MachineID: machine.ID,
+					Metadata: &protocolwire.VersionedString{
+						Value:   machine.Metadata,
+						Version: machine.MetadataVersion,
 					},
 				},
-				"createdAt": time.Now().UnixMilli(),
-			}
-			h.updates.EmitUpdateToUser(userID, updatePayload)
+			})
 		}
 	}
 
@@ -325,13 +326,12 @@ func (h *MachineHandler) KeepAlive(c *gin.Context) {
 	}
 
 	if h.updates != nil {
-		ephemeral := map[string]any{
-			"type":     "machine-activity",
-			"id":       machineID,
-			"active":   req.Active,
-			"activeAt": req.Time,
-		}
-		h.updates.EmitEphemeralToUser(userID, ephemeral)
+		h.updates.EmitEphemeralToUser(userID, protocolwire.EphemeralMachineActivityPayload{
+			Type:     "machine-activity",
+			ID:       machineID,
+			Active:   req.Active,
+			ActiveAt: req.Time,
+		})
 	}
 
 	c.JSON(http.StatusOK, types.SuccessResponse{Success: true})

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/api/middleware"
 	"github.com/bhandras/delight/server/internal/models"
 	"github.com/bhandras/delight/server/internal/websocket"
@@ -147,7 +148,7 @@ func (h *KVHandler) MutateKV(c *gin.Context) {
 	txQueries := h.queries.WithTx(tx)
 	results := []MutationResult{}
 	errors := []MutationError{}
-	changes := []map[string]any{}
+	changes := []protocolwire.KVChange{}
 
 	for _, mutation := range req.Mutations {
 		// Check current version
@@ -227,10 +228,10 @@ func (h *KVHandler) MutateKV(c *gin.Context) {
 		if mutation.Value != nil {
 			changeValue = *mutation.Value
 		}
-		changes = append(changes, map[string]any{
-			"key":     mutation.Key,
-			"value":   changeValue,
-			"version": newVersion,
+		changes = append(changes, protocolwire.KVChange{
+			Key:     mutation.Key,
+			Value:   changeValue,
+			Version: newVersion,
 		})
 	}
 
@@ -251,16 +252,15 @@ func (h *KVHandler) MutateKV(c *gin.Context) {
 	if h.updates != nil && len(changes) > 0 {
 		userSeq, err := h.queries.UpdateAccountSeq(c.Request.Context(), userID)
 		if err == nil {
-			updatePayload := map[string]any{
-				"id":  types.NewCUID(),
-				"seq": userSeq,
-				"body": map[string]any{
-					"t":       "kv-batch-update",
-					"changes": changes,
+			h.updates.EmitUpdateToUser(userID, protocolwire.UpdateEvent{
+				ID:        types.NewCUID(),
+				Seq:       userSeq,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyKVBatchUpdate{
+					T:       "kv-batch-update",
+					Changes: changes,
 				},
-				"createdAt": time.Now().UnixMilli(),
-			}
-			h.updates.EmitUpdateToUser(userID, updatePayload)
+			})
 		}
 	}
 

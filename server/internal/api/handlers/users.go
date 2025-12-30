@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/api/middleware"
 	"github.com/bhandras/delight/server/internal/models"
 	"github.com/bhandras/delight/server/internal/websocket"
@@ -155,20 +156,19 @@ func (h *UserHandler) UpdateSettings(c *gin.Context) {
 			if req.Settings != nil {
 				settingsValue = *req.Settings
 			}
-			updatePayload := map[string]any{
-				"id":  types.NewCUID(),
-				"seq": userSeq,
-				"body": map[string]any{
-					"t":  "update-account",
-					"id": userID,
-					"settings": map[string]any{
-						"value":   settingsValue,
-						"version": req.ExpectedVersion + 1,
+			h.updates.EmitUpdateToUser(userID, protocolwire.UpdateEvent{
+				ID:        types.NewCUID(),
+				Seq:       userSeq,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyUpdateAccount{
+					T:  "update-account",
+					ID: userID,
+					Settings: &protocolwire.VersionedAny{
+						Value:   settingsValue,
+						Version: req.ExpectedVersion + 1,
 					},
 				},
-				"createdAt": time.Now().UnixMilli(),
-			}
-			h.updates.EmitUpdateToUser(userID, updatePayload)
+			})
 		}
 	}
 
@@ -221,26 +221,18 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 	if h.updates != nil {
 		userSeq, err := h.queries.UpdateAccountSeq(c.Request.Context(), userID)
 		if err == nil {
-			body := map[string]any{
-				"t":  "update-account",
-				"id": userID,
-			}
-			if req.FirstName != nil {
-				body["firstName"] = *req.FirstName
-			}
-			if req.LastName != nil {
-				body["lastName"] = *req.LastName
-			}
-			if req.Username != nil {
-				body["username"] = *req.Username
-			}
-			updatePayload := map[string]any{
-				"id":        types.NewCUID(),
-				"seq":       userSeq,
-				"body":      body,
-				"createdAt": time.Now().UnixMilli(),
-			}
-			h.updates.EmitUpdateToUser(userID, updatePayload)
+			h.updates.EmitUpdateToUser(userID, protocolwire.UpdateEvent{
+				ID:        types.NewCUID(),
+				Seq:       userSeq,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyUpdateAccount{
+					T:         "update-account",
+					ID:        userID,
+					FirstName: req.FirstName,
+					LastName:  req.LastName,
+					Username:  req.Username,
+				},
+			})
 		}
 	}
 
@@ -260,17 +252,16 @@ func (h *UserHandler) DeleteAvatar(c *gin.Context) {
 	if h.updates != nil {
 		userSeq, err := h.queries.UpdateAccountSeq(c.Request.Context(), userID)
 		if err == nil {
-			updatePayload := map[string]any{
-				"id":  types.NewCUID(),
-				"seq": userSeq,
-				"body": map[string]any{
-					"t":      "update-account",
-					"id":     userID,
-					"avatar": nil,
+			h.updates.EmitUpdateToUser(userID, protocolwire.UpdateEvent{
+				ID:        types.NewCUID(),
+				Seq:       userSeq,
+				CreatedAt: time.Now().UnixMilli(),
+				Body: protocolwire.UpdateBodyUpdateAccount{
+					T:      "update-account",
+					ID:     userID,
+					Avatar: protocolwire.Null{},
 				},
-				"createdAt": time.Now().UnixMilli(),
-			}
-			h.updates.EmitUpdateToUser(userID, updatePayload)
+			})
 		}
 	}
 
