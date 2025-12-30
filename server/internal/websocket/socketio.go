@@ -328,70 +328,68 @@ func (s *SocketIOServer) setupHandlers() {
 		// Machine metadata update
 		client.On("machine-update-metadata", func(data ...any) {
 			sd := s.getSocketData(client.Id())
-			payload, ack := getFirstMapWithAck(data)
-			machineID := getString(payload, "machineId")
-			metadata := getString(payload, "metadata")
-			expected := getInt64(payload, "expectedVersion")
-			if machineID == "" || metadata == "" {
+			raw, ack := getFirstAnyWithAck(data)
+			var req protocolwire.MachineUpdateMetadataPayload
+			if err := decodeAny(raw, &req); err != nil || req.MachineID == "" || req.Metadata == "" {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Invalid parameters"})
+					ack(protocolwire.ResultAck{Result: "error", Message: "Invalid parameters"})
 				}
 				return
 			}
 
 			machine, err := queries.GetMachine(context.Background(), models.GetMachineParams{
 				AccountID: sd.UserID,
-				ID:        machineID,
+				ID:        req.MachineID,
 			})
 			if err != nil || machine.AccountID != sd.UserID {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Machine not found"})
+					ack(protocolwire.ResultAck{Result: "error", Message: "Machine not found"})
 				}
 				return
 			}
 
-			if machine.MetadataVersion != expected {
+			if machine.MetadataVersion != req.ExpectedVersion {
 				if ack != nil {
-					ack(map[string]any{
-						"result":   "version-mismatch",
-						"version":  machine.MetadataVersion,
-						"metadata": machine.Metadata,
+					ack(protocolwire.VersionedAck{
+						Result:   "version-mismatch",
+						Version:  machine.MetadataVersion,
+						Metadata: machine.Metadata,
 					})
 				}
 				return
 			}
 
 			rows, err := queries.UpdateMachineMetadata(context.Background(), models.UpdateMachineMetadataParams{
-				Metadata:          metadata,
-				MetadataVersion:   expected + 1,
+				Metadata:          req.Metadata,
+				MetadataVersion:   req.ExpectedVersion + 1,
 				AccountID:         sd.UserID,
-				ID:                machineID,
-				MetadataVersion_2: expected,
+				ID:                req.MachineID,
+				MetadataVersion_2: req.ExpectedVersion,
 			})
 			if err != nil || rows == 0 {
 				current, err := queries.GetMachine(context.Background(), models.GetMachineParams{
 					AccountID: sd.UserID,
-					ID:        machineID,
+					ID:        req.MachineID,
 				})
 				if ack != nil {
 					if err == nil {
-						ack(map[string]any{
-							"result":   "version-mismatch",
-							"version":  current.MetadataVersion,
-							"metadata": current.Metadata,
+						ack(protocolwire.VersionedAck{
+							Result:   "version-mismatch",
+							Version:  current.MetadataVersion,
+							Metadata: current.Metadata,
 						})
 					} else {
-						ack(map[string]any{"result": "error"})
+						ack(protocolwire.ResultAck{Result: "error"})
 					}
 				}
 				return
 			}
 
 			if ack != nil {
-				ack(map[string]any{
-					"result":   "success",
-					"version":  expected + 1,
-					"metadata": metadata,
+				ack(protocolwire.VersionedAck{
+					Result:   "success",
+					Version:  req.ExpectedVersion + 1,
+					Metadata: req.Metadata,
 				})
 			}
 
@@ -407,10 +405,10 @@ func (s *SocketIOServer) setupHandlers() {
 				CreatedAt: time.Now().UnixMilli(),
 				Body: protocolwire.UpdateBodyUpdateMachine{
 					T:         "update-machine",
-					MachineID: machineID,
+					MachineID: req.MachineID,
 					Metadata: &protocolwire.VersionedString{
-						Value:   metadata,
-						Version: expected + 1,
+						Value:   req.Metadata,
+						Version: req.ExpectedVersion + 1,
 					},
 				},
 			}, string(client.Id()))
@@ -419,77 +417,81 @@ func (s *SocketIOServer) setupHandlers() {
 		// Machine daemon state update
 		client.On("machine-update-state", func(data ...any) {
 			sd := s.getSocketData(client.Id())
-			payload, ack := getFirstMapWithAck(data)
-			machineID := getString(payload, "machineId")
-			daemonState := getOptionalString(payload, "daemonState")
-			expected := getInt64(payload, "expectedVersion")
-			if machineID == "" || daemonState == nil {
+			raw, ack := getFirstAnyWithAck(data)
+			var req protocolwire.MachineUpdateStatePayload
+			if err := decodeAny(raw, &req); err != nil || req.MachineID == "" {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Invalid parameters"})
+					ack(protocolwire.ResultAck{Result: "error", Message: "Invalid parameters"})
+				}
+				return
+			}
+			if req.DaemonState == "" {
+				if ack != nil {
+					ack(protocolwire.ResultAck{Result: "error", Message: "Invalid parameters"})
 				}
 				return
 			}
 
 			machine, err := queries.GetMachine(context.Background(), models.GetMachineParams{
 				AccountID: sd.UserID,
-				ID:        machineID,
+				ID:        req.MachineID,
 			})
 			if err != nil || machine.AccountID != sd.UserID {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Machine not found"})
+					ack(protocolwire.ResultAck{Result: "error", Message: "Machine not found"})
 				}
 				return
 			}
 
-			if machine.DaemonStateVersion != expected {
+			if machine.DaemonStateVersion != req.ExpectedVersion {
 				if ack != nil {
-					resp := map[string]any{
-						"result":  "version-mismatch",
-						"version": machine.DaemonStateVersion,
+					resp := protocolwire.VersionedAck{
+						Result:  "version-mismatch",
+						Version: machine.DaemonStateVersion,
 					}
 					if machine.DaemonState.Valid {
-						resp["daemonState"] = machine.DaemonState.String
+						resp.DaemonState = machine.DaemonState.String
 					}
 					ack(resp)
 				}
 				return
 			}
 
-			stateVal := sql.NullString{Valid: true, String: *daemonState}
+			stateVal := sql.NullString{Valid: true, String: req.DaemonState}
 			rows, err := queries.UpdateMachineDaemonState(context.Background(), models.UpdateMachineDaemonStateParams{
 				DaemonState:          stateVal,
-				DaemonStateVersion:   expected + 1,
+				DaemonStateVersion:   req.ExpectedVersion + 1,
 				AccountID:            sd.UserID,
-				ID:                   machineID,
-				DaemonStateVersion_2: expected,
+				ID:                   req.MachineID,
+				DaemonStateVersion_2: req.ExpectedVersion,
 			})
 			if err != nil || rows == 0 {
 				current, err := queries.GetMachine(context.Background(), models.GetMachineParams{
 					AccountID: sd.UserID,
-					ID:        machineID,
+					ID:        req.MachineID,
 				})
 				if ack != nil {
 					if err == nil {
-						resp := map[string]any{
-							"result":  "version-mismatch",
-							"version": current.DaemonStateVersion,
+						resp := protocolwire.VersionedAck{
+							Result:  "version-mismatch",
+							Version: current.DaemonStateVersion,
 						}
 						if current.DaemonState.Valid {
-							resp["daemonState"] = current.DaemonState.String
+							resp.DaemonState = current.DaemonState.String
 						}
 						ack(resp)
 					} else {
-						ack(map[string]any{"result": "error"})
+						ack(protocolwire.ResultAck{Result: "error"})
 					}
 				}
 				return
 			}
 
 			if ack != nil {
-				ack(map[string]any{
-					"result":      "success",
-					"version":     expected + 1,
-					"daemonState": *daemonState,
+				ack(protocolwire.VersionedAck{
+					Result:      "success",
+					Version:     req.ExpectedVersion + 1,
+					DaemonState: req.DaemonState,
 				})
 			}
 
@@ -505,10 +507,10 @@ func (s *SocketIOServer) setupHandlers() {
 				CreatedAt: time.Now().UnixMilli(),
 				Body: protocolwire.UpdateBodyUpdateMachine{
 					T:         "update-machine",
-					MachineID: machineID,
+					MachineID: req.MachineID,
 					DaemonState: &protocolwire.VersionedString{
-						Value:   *daemonState,
-						Version: expected + 1,
+						Value:   req.DaemonState,
+						Version: req.ExpectedVersion + 1,
 					},
 				},
 			}, string(client.Id()))
@@ -558,55 +560,57 @@ func (s *SocketIOServer) setupHandlers() {
 		// Access key get
 		client.On("access-key-get", func(data ...any) {
 			sd := s.getSocketData(client.Id())
-			payload, ack := getFirstMapWithAck(data)
-			sessionID := getString(payload, "sessionId")
-			machineID := getString(payload, "machineId")
-			if sessionID == "" || machineID == "" {
+			raw, ack := getFirstAnyWithAck(data)
+			var req protocolwire.AccessKeyGetRequest
+			if err := decodeAny(raw, &req); err != nil || req.SessionID == "" || req.MachineID == "" {
 				if ack != nil {
-					ack(map[string]any{"ok": false, "error": "Invalid parameters: sessionId and machineId are required"})
+					ack(protocolwire.AccessKeyLookupAck{
+						OK:    false,
+						Error: "Invalid parameters: sessionId and machineId are required",
+					})
 				}
 				return
 			}
 
-			session, err := queries.GetSessionByID(context.Background(), sessionID)
+			session, err := queries.GetSessionByID(context.Background(), req.SessionID)
 			if err != nil || session.AccountID != sd.UserID {
 				if ack != nil {
-					ack(map[string]any{"ok": false, "error": "Session or machine not found"})
+					ack(protocolwire.AccessKeyLookupAck{OK: false, Error: "Session or machine not found", AccessKey: nil})
 				}
 				return
 			}
 			machine, err := queries.GetMachine(context.Background(), models.GetMachineParams{
 				AccountID: sd.UserID,
-				ID:        machineID,
+				ID:        req.MachineID,
 			})
 			if err != nil || machine.AccountID != sd.UserID {
 				if ack != nil {
-					ack(map[string]any{"ok": false, "error": "Session or machine not found"})
+					ack(protocolwire.AccessKeyLookupAck{OK: false, Error: "Session or machine not found", AccessKey: nil})
 				}
 				return
 			}
 
 			accessKey, err := queries.GetAccessKey(context.Background(), models.GetAccessKeyParams{
 				AccountID: sd.UserID,
-				MachineID: machineID,
-				SessionID: sessionID,
+				MachineID: req.MachineID,
+				SessionID: req.SessionID,
 			})
 			if ack != nil {
 				if err == sql.ErrNoRows {
-					ack(map[string]any{"ok": true, "accessKey": nil})
+					ack(protocolwire.AccessKeyLookupAck{OK: true, AccessKey: nil})
 					return
 				}
 				if err != nil {
-					ack(map[string]any{"ok": false, "error": "Internal error"})
+					ack(protocolwire.AccessKeyLookupAck{OK: false, Error: "Internal error", AccessKey: nil})
 					return
 				}
-				ack(map[string]any{
-					"ok": true,
-					"accessKey": map[string]any{
-						"data":        accessKey.Data,
-						"dataVersion": accessKey.DataVersion,
-						"createdAt":   accessKey.CreatedAt.UnixMilli(),
-						"updatedAt":   accessKey.UpdatedAt.UnixMilli(),
+				ack(protocolwire.AccessKeyLookupAck{
+					OK: true,
+					AccessKey: &protocolwire.AccessKeyInfo{
+						Data:        accessKey.Data,
+						DataVersion: accessKey.DataVersion,
+						CreatedAt:   accessKey.CreatedAt.UnixMilli(),
+						UpdatedAt:   accessKey.UpdatedAt.UnixMilli(),
 					},
 				})
 			}
@@ -615,38 +619,38 @@ func (s *SocketIOServer) setupHandlers() {
 		// Artifact read
 		client.On("artifact-read", func(data ...any) {
 			sd := s.getSocketData(client.Id())
-			payload, ack := getFirstMapWithAck(data)
-			artifactID := getString(payload, "artifactId")
-			if artifactID == "" {
+			raw, ack := getFirstAnyWithAck(data)
+			var req protocolwire.ArtifactReadRequest
+			if err := decodeAny(raw, &req); err != nil || req.ArtifactID == "" {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Invalid parameters"})
+					ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid parameters"})
 				}
 				return
 			}
 
 			artifact, err := queries.GetArtifactByIDAndAccount(context.Background(), models.GetArtifactByIDAndAccountParams{
-				ID:        artifactID,
+				ID:        req.ArtifactID,
 				AccountID: sd.UserID,
 			})
 			if err != nil {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Artifact not found"})
+					ack(protocolwire.ArtifactAck{Result: "error", Message: "Artifact not found"})
 				}
 				return
 			}
 
 			if ack != nil {
-				ack(map[string]any{
-					"result": "success",
-					"artifact": map[string]any{
-						"id":            artifact.ID,
-						"header":        base64.StdEncoding.EncodeToString(artifact.Header),
-						"headerVersion": artifact.HeaderVersion,
-						"body":          base64.StdEncoding.EncodeToString(artifact.Body),
-						"bodyVersion":   artifact.BodyVersion,
-						"seq":           artifact.Seq,
-						"createdAt":     artifact.CreatedAt.UnixMilli(),
-						"updatedAt":     artifact.UpdatedAt.UnixMilli(),
+				ack(protocolwire.ArtifactAck{
+					Result: "success",
+					Artifact: &protocolwire.ArtifactInfo{
+						ID:            artifact.ID,
+						Header:        base64.StdEncoding.EncodeToString(artifact.Header),
+						HeaderVersion: artifact.HeaderVersion,
+						Body:          base64.StdEncoding.EncodeToString(artifact.Body),
+						BodyVersion:   artifact.BodyVersion,
+						Seq:           artifact.Seq,
+						CreatedAt:     artifact.CreatedAt.UnixMilli(),
+						UpdatedAt:     artifact.UpdatedAt.UnixMilli(),
 					},
 				})
 			}
@@ -655,73 +659,70 @@ func (s *SocketIOServer) setupHandlers() {
 		// Artifact create
 		client.On("artifact-create", func(data ...any) {
 			sd := s.getSocketData(client.Id())
-			payload, ack := getFirstMapWithAck(data)
-			artifactID, idOk := payload["id"].(string)
-			header, headerOk := payload["header"].(string)
-			body, bodyOk := payload["body"].(string)
-			dataKey, keyOk := payload["dataEncryptionKey"].(string)
-			if !idOk || !headerOk || !bodyOk || !keyOk || artifactID == "" {
+			raw, ack := getFirstAnyWithAck(data)
+			var req protocolwire.ArtifactCreateRequest
+			if err := decodeAny(raw, &req); err != nil || req.ID == "" || req.Header == "" || req.Body == "" || req.DataEncryptionKey == "" {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Invalid parameters"})
+					ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid parameters"})
 				}
 				return
 			}
 
-			existing, err := queries.GetArtifactByID(context.Background(), artifactID)
+			existing, err := queries.GetArtifactByID(context.Background(), req.ID)
 			if err == nil {
 				if existing.AccountID != sd.UserID {
 					if ack != nil {
-						ack(map[string]any{"result": "error", "message": "Artifact with this ID already exists for another account"})
+						ack(protocolwire.ArtifactAck{Result: "error", Message: "Artifact with this ID already exists for another account"})
 					}
 					return
 				}
 				if ack != nil {
-					ack(map[string]any{
-						"result": "success",
-						"artifact": map[string]any{
-							"id":            existing.ID,
-							"header":        base64.StdEncoding.EncodeToString(existing.Header),
-							"headerVersion": existing.HeaderVersion,
-							"body":          base64.StdEncoding.EncodeToString(existing.Body),
-							"bodyVersion":   existing.BodyVersion,
-							"seq":           existing.Seq,
-							"createdAt":     existing.CreatedAt.UnixMilli(),
-							"updatedAt":     existing.UpdatedAt.UnixMilli(),
+					ack(protocolwire.ArtifactAck{
+						Result: "success",
+						Artifact: &protocolwire.ArtifactInfo{
+							ID:            existing.ID,
+							Header:        base64.StdEncoding.EncodeToString(existing.Header),
+							HeaderVersion: existing.HeaderVersion,
+							Body:          base64.StdEncoding.EncodeToString(existing.Body),
+							BodyVersion:   existing.BodyVersion,
+							Seq:           existing.Seq,
+							CreatedAt:     existing.CreatedAt.UnixMilli(),
+							UpdatedAt:     existing.UpdatedAt.UnixMilli(),
 						},
 					})
 				}
 				return
 			} else if err != sql.ErrNoRows {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Internal error"})
+					ack(protocolwire.ArtifactAck{Result: "error", Message: "Internal error"})
 				}
 				return
 			}
 
-			headerBytes, err := base64.StdEncoding.DecodeString(header)
+			headerBytes, err := base64.StdEncoding.DecodeString(req.Header)
 			if err != nil {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Invalid header encoding"})
+					ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid header encoding"})
 				}
 				return
 			}
-			bodyBytes, err := base64.StdEncoding.DecodeString(body)
+			bodyBytes, err := base64.StdEncoding.DecodeString(req.Body)
 			if err != nil {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Invalid body encoding"})
+					ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid body encoding"})
 				}
 				return
 			}
-			dataKeyBytes, err := base64.StdEncoding.DecodeString(dataKey)
+			dataKeyBytes, err := base64.StdEncoding.DecodeString(req.DataEncryptionKey)
 			if err != nil {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Invalid dataEncryptionKey encoding"})
+					ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid dataEncryptionKey encoding"})
 				}
 				return
 			}
 
 			if err := queries.CreateArtifact(context.Background(), models.CreateArtifactParams{
-				ID:                artifactID,
+				ID:                req.ID,
 				AccountID:         sd.UserID,
 				Header:            headerBytes,
 				HeaderVersion:     1,
@@ -731,18 +732,18 @@ func (s *SocketIOServer) setupHandlers() {
 				Seq:               0,
 			}); err != nil {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Internal error"})
+					ack(protocolwire.ArtifactAck{Result: "error", Message: "Internal error"})
 				}
 				return
 			}
 
 			artifact, err := queries.GetArtifactByIDAndAccount(context.Background(), models.GetArtifactByIDAndAccountParams{
-				ID:        artifactID,
+				ID:        req.ID,
 				AccountID: sd.UserID,
 			})
 			if err != nil {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Internal error"})
+					ack(protocolwire.ArtifactAck{Result: "error", Message: "Internal error"})
 				}
 				return
 			}
@@ -769,17 +770,17 @@ func (s *SocketIOServer) setupHandlers() {
 			}
 
 			if ack != nil {
-				ack(map[string]any{
-					"result": "success",
-					"artifact": map[string]any{
-						"id":            artifact.ID,
-						"header":        base64.StdEncoding.EncodeToString(artifact.Header),
-						"headerVersion": artifact.HeaderVersion,
-						"body":          base64.StdEncoding.EncodeToString(artifact.Body),
-						"bodyVersion":   artifact.BodyVersion,
-						"seq":           artifact.Seq,
-						"createdAt":     artifact.CreatedAt.UnixMilli(),
-						"updatedAt":     artifact.UpdatedAt.UnixMilli(),
+				ack(protocolwire.ArtifactAck{
+					Result: "success",
+					Artifact: &protocolwire.ArtifactInfo{
+						ID:            artifact.ID,
+						Header:        base64.StdEncoding.EncodeToString(artifact.Header),
+						HeaderVersion: artifact.HeaderVersion,
+						Body:          base64.StdEncoding.EncodeToString(artifact.Body),
+						BodyVersion:   artifact.BodyVersion,
+						Seq:           artifact.Seq,
+						CreatedAt:     artifact.CreatedAt.UnixMilli(),
+						UpdatedAt:     artifact.UpdatedAt.UnixMilli(),
 					},
 				})
 			}
@@ -788,48 +789,42 @@ func (s *SocketIOServer) setupHandlers() {
 		// Artifact update
 		client.On("artifact-update", func(data ...any) {
 			sd := s.getSocketData(client.Id())
-			payload, ack := getFirstMapWithAck(data)
-			artifactID := getString(payload, "artifactId")
-			if artifactID == "" {
+			raw, ack := getFirstAnyWithAck(data)
+			var req protocolwire.ArtifactUpdateRequest
+			if err := decodeAny(raw, &req); err != nil || req.ArtifactID == "" {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Invalid parameters"})
+					ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid parameters"})
 				}
 				return
 			}
 
-			headerPayload := getMap(payload, "header")
-			bodyPayload := getMap(payload, "body")
-			headerPresent := headerPayload != nil
-			bodyPresent := bodyPayload != nil
-			headerData := getString(headerPayload, "data")
-			bodyData := getString(bodyPayload, "data")
-			headerExpected := getInt64(headerPayload, "expectedVersion")
-			bodyExpected := getInt64(bodyPayload, "expectedVersion")
+			headerPresent := req.Header != nil
+			bodyPresent := req.Body != nil
+			headerData := ""
+			bodyData := ""
+			headerExpected := int64(0)
+			bodyExpected := int64(0)
+			if req.Header != nil {
+				headerData = req.Header.Data
+				headerExpected = req.Header.ExpectedVersion
+			}
+			if req.Body != nil {
+				bodyData = req.Body.Data
+				bodyExpected = req.Body.ExpectedVersion
+			}
 
 			if headerPresent {
-				if _, ok := headerPayload["data"].(string); !ok {
+				if headerData == "" {
 					if ack != nil {
-						ack(map[string]any{"result": "error", "message": "Invalid header parameters"})
-					}
-					return
-				}
-				if _, ok := headerPayload["expectedVersion"]; !ok {
-					if ack != nil {
-						ack(map[string]any{"result": "error", "message": "Invalid header parameters"})
+						ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid header parameters"})
 					}
 					return
 				}
 			}
 			if bodyPresent {
-				if _, ok := bodyPayload["data"].(string); !ok {
+				if bodyData == "" {
 					if ack != nil {
-						ack(map[string]any{"result": "error", "message": "Invalid body parameters"})
-					}
-					return
-				}
-				if _, ok := bodyPayload["expectedVersion"]; !ok {
-					if ack != nil {
-						ack(map[string]any{"result": "error", "message": "Invalid body parameters"})
+						ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid body parameters"})
 					}
 					return
 				}
@@ -837,18 +832,18 @@ func (s *SocketIOServer) setupHandlers() {
 
 			if !headerPresent && !bodyPresent {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "No updates provided"})
+					ack(protocolwire.ArtifactAck{Result: "error", Message: "No updates provided"})
 				}
 				return
 			}
 
 			current, err := queries.GetArtifactByIDAndAccount(context.Background(), models.GetArtifactByIDAndAccountParams{
-				ID:        artifactID,
+				ID:        req.ArtifactID,
 				AccountID: sd.UserID,
 			})
 			if err != nil {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Artifact not found"})
+					ack(protocolwire.ArtifactAck{Result: "error", Message: "Artifact not found"})
 				}
 				return
 			}
@@ -856,21 +851,21 @@ func (s *SocketIOServer) setupHandlers() {
 			headerMismatch := headerPresent && current.HeaderVersion != headerExpected
 			bodyMismatch := bodyPresent && current.BodyVersion != bodyExpected
 			if headerMismatch || bodyMismatch {
-				response := map[string]any{"result": "version-mismatch"}
-				if headerMismatch {
-					response["header"] = map[string]any{
-						"currentVersion": current.HeaderVersion,
-						"currentData":    base64.StdEncoding.EncodeToString(current.Header),
-					}
-				}
-				if bodyMismatch {
-					response["body"] = map[string]any{
-						"currentVersion": current.BodyVersion,
-						"currentData":    base64.StdEncoding.EncodeToString(current.Body),
-					}
-				}
 				if ack != nil {
-					ack(response)
+					resp := protocolwire.ArtifactUpdateMismatchAck{Result: "version-mismatch"}
+					if headerMismatch {
+						resp.Header = &protocolwire.ArtifactPartMismatch{
+							CurrentVersion: current.HeaderVersion,
+							CurrentData:    base64.StdEncoding.EncodeToString(current.Header),
+						}
+					}
+					if bodyMismatch {
+						resp.Body = &protocolwire.ArtifactPartMismatch{
+							CurrentVersion: current.BodyVersion,
+							CurrentData:    base64.StdEncoding.EncodeToString(current.Body),
+						}
+					}
+					ack(resp)
 				}
 				return
 			}
@@ -881,7 +876,7 @@ func (s *SocketIOServer) setupHandlers() {
 				headerBytes, err = base64.StdEncoding.DecodeString(headerData)
 				if err != nil {
 					if ack != nil {
-						ack(map[string]any{"result": "error", "message": "Invalid header encoding"})
+						ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid header encoding"})
 					}
 					return
 				}
@@ -890,7 +885,7 @@ func (s *SocketIOServer) setupHandlers() {
 				bodyBytes, err = base64.StdEncoding.DecodeString(bodyData)
 				if err != nil {
 					if ack != nil {
-						ack(map[string]any{"result": "error", "message": "Invalid body encoding"})
+						ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid body encoding"})
 					}
 					return
 				}
@@ -903,7 +898,7 @@ func (s *SocketIOServer) setupHandlers() {
 				Body:            bodyBytes,
 				Column5:         boolToInt64(bodyPresent),
 				BodyVersion:     bodyExpected + 1,
-				ID:              artifactID,
+				ID:              req.ArtifactID,
 				AccountID:       sd.UserID,
 				Column9:         boolToInt64(headerPresent),
 				HeaderVersion_2: headerExpected,
@@ -912,27 +907,27 @@ func (s *SocketIOServer) setupHandlers() {
 			})
 			if err != nil || rows == 0 {
 				current, err := queries.GetArtifactByIDAndAccount(context.Background(), models.GetArtifactByIDAndAccountParams{
-					ID:        artifactID,
+					ID:        req.ArtifactID,
 					AccountID: sd.UserID,
 				})
 				if ack != nil {
 					if err == nil {
-						response := map[string]any{"result": "version-mismatch"}
+						resp := protocolwire.ArtifactUpdateMismatchAck{Result: "version-mismatch"}
 						if headerPresent {
-							response["header"] = map[string]any{
-								"currentVersion": current.HeaderVersion,
-								"currentData":    base64.StdEncoding.EncodeToString(current.Header),
+							resp.Header = &protocolwire.ArtifactPartMismatch{
+								CurrentVersion: current.HeaderVersion,
+								CurrentData:    base64.StdEncoding.EncodeToString(current.Header),
 							}
 						}
 						if bodyPresent {
-							response["body"] = map[string]any{
-								"currentVersion": current.BodyVersion,
-								"currentData":    base64.StdEncoding.EncodeToString(current.Body),
+							resp.Body = &protocolwire.ArtifactPartMismatch{
+								CurrentVersion: current.BodyVersion,
+								CurrentData:    base64.StdEncoding.EncodeToString(current.Body),
 							}
 						}
-						ack(response)
+						ack(resp)
 					} else {
-						ack(map[string]any{"result": "error", "message": "Internal error"})
+						ack(protocolwire.ArtifactAck{Result: "error", Message: "Internal error"})
 					}
 				}
 				return
@@ -961,7 +956,7 @@ func (s *SocketIOServer) setupHandlers() {
 					CreatedAt: time.Now().UnixMilli(),
 					Body: protocolwire.UpdateBodyUpdateArtifact{
 						T:          "update-artifact",
-						ArtifactID: artifactID,
+						ArtifactID: req.ArtifactID,
 						Header:     headerUpdate,
 						Body:       bodyUpdate,
 					},
@@ -969,52 +964,46 @@ func (s *SocketIOServer) setupHandlers() {
 			}
 
 			if ack != nil {
-				response := map[string]any{"result": "success"}
+				resp := protocolwire.ArtifactUpdateSuccessAck{Result: "success"}
 				if headerUpdate != nil {
-					response["header"] = map[string]any{
-						"version": headerUpdate.Version,
-						"data":    headerData,
-					}
+					resp.Header = &protocolwire.ArtifactUpdateSuccessPart{Version: headerUpdate.Version, Data: headerData}
 				}
 				if bodyUpdate != nil {
-					response["body"] = map[string]any{
-						"version": bodyUpdate.Version,
-						"data":    bodyData,
-					}
+					resp.Body = &protocolwire.ArtifactUpdateSuccessPart{Version: bodyUpdate.Version, Data: bodyData}
 				}
-				ack(response)
+				ack(resp)
 			}
 		})
 
 		// Artifact delete
 		client.On("artifact-delete", func(data ...any) {
 			sd := s.getSocketData(client.Id())
-			payload, ack := getFirstMapWithAck(data)
-			artifactID := getString(payload, "artifactId")
-			if artifactID == "" {
+			raw, ack := getFirstAnyWithAck(data)
+			var req protocolwire.ArtifactDeleteRequest
+			if err := decodeAny(raw, &req); err != nil || req.ArtifactID == "" {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Invalid parameters"})
+					ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid parameters"})
 				}
 				return
 			}
 
 			_, err := queries.GetArtifactByIDAndAccount(context.Background(), models.GetArtifactByIDAndAccountParams{
-				ID:        artifactID,
+				ID:        req.ArtifactID,
 				AccountID: sd.UserID,
 			})
 			if err != nil {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Artifact not found"})
+					ack(protocolwire.ArtifactAck{Result: "error", Message: "Artifact not found"})
 				}
 				return
 			}
 
 			if err := queries.DeleteArtifact(context.Background(), models.DeleteArtifactParams{
-				ID:        artifactID,
+				ID:        req.ArtifactID,
 				AccountID: sd.UserID,
 			}); err != nil {
 				if ack != nil {
-					ack(map[string]any{"result": "error", "message": "Internal error"})
+					ack(protocolwire.ArtifactAck{Result: "error", Message: "Internal error"})
 				}
 				return
 			}
@@ -1027,13 +1016,13 @@ func (s *SocketIOServer) setupHandlers() {
 					CreatedAt: time.Now().UnixMilli(),
 					Body: protocolwire.UpdateBodyDeleteArtifact{
 						T:          "delete-artifact",
-						ArtifactID: artifactID,
+						ArtifactID: req.ArtifactID,
 					},
 				}, "")
 			}
 
 			if ack != nil {
-				ack(map[string]any{"result": "success"})
+				ack(protocolwire.ResultAck{Result: "success"})
 			}
 		})
 		// Update metadata event
@@ -1041,52 +1030,50 @@ func (s *SocketIOServer) setupHandlers() {
 			sd := s.getSocketData(client.Id())
 			log.Printf("Update metadata from user %s (socket %s): %+v", sd.UserID, client.Id(), data)
 
-			payload, ack := getFirstMapWithAck(data)
-			sid := getString(payload, "sid")
-			metadata := getString(payload, "metadata")
-			expected := getInt64(payload, "expectedVersion")
-			if sid == "" || metadata == "" {
+			raw, ack := getFirstAnyWithAck(data)
+			var req protocolwire.UpdateMetadataPayload
+			if err := decodeAny(raw, &req); err != nil || req.SID == "" || req.Metadata == "" {
 				if ack != nil {
-					ack(map[string]any{"result": "error"})
+					ack(protocolwire.ResultAck{Result: "error"})
 				}
 				return
 			}
 
-			session, err := queries.GetSessionByID(context.Background(), sid)
+			session, err := queries.GetSessionByID(context.Background(), req.SID)
 			if err != nil || session.AccountID != sd.UserID {
 				if ack != nil {
-					ack(map[string]any{"result": "error"})
+					ack(protocolwire.ResultAck{Result: "error"})
 				}
 				return
 			}
 
 			rows, err := queries.UpdateSessionMetadata(context.Background(), models.UpdateSessionMetadataParams{
-				Metadata:          metadata,
-				MetadataVersion:   expected + 1,
-				ID:                sid,
-				MetadataVersion_2: expected,
+				Metadata:          req.Metadata,
+				MetadataVersion:   req.ExpectedVersion + 1,
+				ID:                req.SID,
+				MetadataVersion_2: req.ExpectedVersion,
 			})
 			if err != nil || rows == 0 {
-				current, err := queries.GetSessionByID(context.Background(), sid)
+				current, err := queries.GetSessionByID(context.Background(), req.SID)
 				if ack != nil {
 					if err == nil {
-						ack(map[string]any{
-							"result":   "version-mismatch",
-							"version":  current.MetadataVersion,
-							"metadata": current.Metadata,
+						ack(protocolwire.VersionedAck{
+							Result:   "version-mismatch",
+							Version:  current.MetadataVersion,
+							Metadata: current.Metadata,
 						})
 					} else {
-						ack(map[string]any{"result": "error"})
+						ack(protocolwire.ResultAck{Result: "error"})
 					}
 				}
 				return
 			}
 
 			if ack != nil {
-				ack(map[string]any{
-					"result":   "success",
-					"version":  expected + 1,
-					"metadata": metadata,
+				ack(protocolwire.VersionedAck{
+					Result:   "success",
+					Version:  req.ExpectedVersion + 1,
+					Metadata: req.Metadata,
 				})
 			}
 
@@ -1096,16 +1083,16 @@ func (s *SocketIOServer) setupHandlers() {
 				return
 			}
 
-			s.emitUpdateToSession(sd.UserID, sid, protocolwire.UpdateEvent{
+			s.emitUpdateToSession(sd.UserID, req.SID, protocolwire.UpdateEvent{
 				ID:        pkgtypes.NewCUID(),
 				Seq:       userSeq,
 				CreatedAt: time.Now().UnixMilli(),
 				Body: protocolwire.UpdateBodyUpdateSession{
 					T:  "update-session",
-					ID: sid,
+					ID: req.SID,
 					Metadata: &protocolwire.VersionedString{
-						Value:   metadata,
-						Version: expected + 1,
+						Value:   req.Metadata,
+						Version: req.ExpectedVersion + 1,
 					},
 				},
 			}, string(client.Id()))
@@ -1116,60 +1103,61 @@ func (s *SocketIOServer) setupHandlers() {
 			sd := s.getSocketData(client.Id())
 			log.Printf("Update state from user %s (socket %s): %+v", sd.UserID, client.Id(), data)
 
-			payload, ack := getFirstMapWithAck(data)
-			sid := getString(payload, "sid")
-			expected := getInt64(payload, "expectedVersion")
-			agentState := getOptionalString(payload, "agentState")
-			if sid == "" {
+			raw, ack := getFirstAnyWithAck(data)
+			var req protocolwire.UpdateStatePayload
+			if err := decodeAny(raw, &req); err != nil || req.SID == "" {
 				if ack != nil {
-					ack(map[string]any{"result": "error"})
+					ack(protocolwire.ResultAck{Result: "error"})
 				}
 				return
 			}
 
-			session, err := queries.GetSessionByID(context.Background(), sid)
+			session, err := queries.GetSessionByID(context.Background(), req.SID)
 			if err != nil || session.AccountID != sd.UserID {
 				if ack != nil {
-					ack(map[string]any{"result": "error"})
+					ack(protocolwire.ResultAck{Result: "error"})
 				}
 				return
 			}
 
 			stateVal := sql.NullString{}
-			if agentState != nil {
+			if req.AgentState != nil {
 				stateVal.Valid = true
-				stateVal.String = *agentState
+				stateVal.String = *req.AgentState
 			}
 
 			rows, err := queries.UpdateSessionAgentState(context.Background(), models.UpdateSessionAgentStateParams{
 				AgentState:          stateVal,
-				AgentStateVersion:   expected + 1,
-				ID:                  sid,
-				AgentStateVersion_2: expected,
+				AgentStateVersion:   req.ExpectedVersion + 1,
+				ID:                  req.SID,
+				AgentStateVersion_2: req.ExpectedVersion,
 			})
 			if err != nil || rows == 0 {
-				current, err := queries.GetSessionByID(context.Background(), sid)
+				current, err := queries.GetSessionByID(context.Background(), req.SID)
 				if ack != nil {
 					if err == nil {
-						ack(map[string]any{
-							"result":     "version-mismatch",
-							"version":    current.AgentStateVersion,
-							"agentState": current.AgentState.String,
-						})
+						resp := protocolwire.VersionedAck{
+							Result:  "version-mismatch",
+							Version: current.AgentStateVersion,
+						}
+						if current.AgentState.Valid {
+							resp.AgentState = current.AgentState.String
+						}
+						ack(resp)
 					} else {
-						ack(map[string]any{"result": "error"})
+						ack(protocolwire.ResultAck{Result: "error"})
 					}
 				}
 				return
 			}
 
 			if ack != nil {
-				resp := map[string]any{
-					"result":  "success",
-					"version": expected + 1,
+				resp := protocolwire.VersionedAck{
+					Result:  "success",
+					Version: req.ExpectedVersion + 1,
 				}
-				if agentState != nil {
-					resp["agentState"] = *agentState
+				if req.AgentState != nil {
+					resp.AgentState = *req.AgentState
 				}
 				ack(resp)
 			}
@@ -1181,19 +1169,19 @@ func (s *SocketIOServer) setupHandlers() {
 			}
 
 			var agentStateBody *protocolwire.VersionedString
-			if agentState != nil {
+			if req.AgentState != nil {
 				agentStateBody = &protocolwire.VersionedString{
-					Value:   *agentState,
-					Version: expected + 1,
+					Value:   *req.AgentState,
+					Version: req.ExpectedVersion + 1,
 				}
 			}
-			s.emitUpdateToSession(sd.UserID, sid, protocolwire.UpdateEvent{
+			s.emitUpdateToSession(sd.UserID, req.SID, protocolwire.UpdateEvent{
 				ID:        pkgtypes.NewCUID(),
 				Seq:       userSeq,
 				CreatedAt: time.Now().UnixMilli(),
 				Body: protocolwire.UpdateBodyUpdateSession{
 					T:          "update-session",
-					ID:         sid,
+					ID:         req.SID,
 					AgentState: agentStateBody,
 				},
 			}, string(client.Id()))
@@ -1202,41 +1190,56 @@ func (s *SocketIOServer) setupHandlers() {
 		// RPC register
 		client.On("rpc-register", func(data ...any) {
 			sd := s.getSocketData(client.Id())
-			payload, _ := getFirstMap(data)
-			method := getString(payload, "method")
+			raw, _ := getFirstAnyWithAck(data)
+			var req protocolwire.RPCRegisterPayload
+			if err := decodeAny(raw, &req); err != nil {
+				req.Method = ""
+			}
+			method := req.Method
 			if method == "" {
-				client.Emit("rpc-error", map[string]string{"type": "register", "error": "Invalid method name"})
+				client.Emit("rpc-error", protocolwire.RPCErrorPayload{Type: "register", Error: "Invalid method name"})
 				return
 			}
 			if shouldDebugRPC() {
 				log.Printf("RPC register: user=%s client=%s method=%s", sd.UserID, sd.ClientType, method)
 			}
 			s.registerRPCMethod(sd.UserID, method, client)
-			client.Emit("rpc-registered", map[string]string{"method": method})
+			client.Emit("rpc-registered", protocolwire.RPCRegisteredPayload{Method: method})
 		})
 
 		// RPC unregister
 		client.On("rpc-unregister", func(data ...any) {
 			sd := s.getSocketData(client.Id())
-			payload, _ := getFirstMap(data)
-			method := getString(payload, "method")
+			raw, _ := getFirstAnyWithAck(data)
+			var req protocolwire.RPCRegisterPayload
+			if err := decodeAny(raw, &req); err != nil {
+				req.Method = ""
+			}
+			method := req.Method
 			if method == "" {
-				client.Emit("rpc-error", map[string]string{"type": "unregister", "error": "Invalid method name"})
+				client.Emit("rpc-error", protocolwire.RPCErrorPayload{Type: "unregister", Error: "Invalid method name"})
 				return
 			}
 			s.unregisterRPCMethod(sd.UserID, method, client)
-			client.Emit("rpc-unregistered", map[string]string{"method": method})
+			client.Emit("rpc-unregistered", protocolwire.RPCUnregisteredPayload{Method: method})
 		})
 
 		// RPC call
 		client.On("rpc-call", func(data ...any) {
 			sd := s.getSocketData(client.Id())
-			payload, ack := getFirstMapWithAck(data)
-			method := getString(payload, "method")
-			params := getString(payload, "params")
+			raw, ack := getFirstAnyWithAck(data)
+			var req protocolwire.RPCCallPayload
+			if err := decodeAny(raw, &req); err != nil {
+				if ack != nil {
+					ack(protocolwire.RPCAck{OK: false, Error: "Invalid parameters"})
+				}
+				return
+			}
+			method := req.Method
+			params := req.Params
 			if method == "" {
 				if ack != nil {
-					ack(map[string]any{"ok": false, "error": "Invalid parameters: method is required"})
+					ack(protocolwire.RPCAck{OK: false, Error: "Invalid parameters: method is required"})
 				}
 				return
 			}
@@ -1244,7 +1247,7 @@ func (s *SocketIOServer) setupHandlers() {
 			target := s.getRPCMethodSocket(sd.UserID, method)
 			if target == nil {
 				if ack != nil {
-					ack(map[string]any{"ok": false, "error": "RPC method not available"})
+					ack(protocolwire.RPCAck{OK: false, Error: "RPC method not available"})
 				}
 				return
 			}
@@ -1253,27 +1256,27 @@ func (s *SocketIOServer) setupHandlers() {
 			}
 			if target.Id() == client.Id() {
 				if ack != nil {
-					ack(map[string]any{"ok": false, "error": "Cannot call RPC on the same socket"})
+					ack(protocolwire.RPCAck{OK: false, Error: "Cannot call RPC on the same socket"})
 				}
 				return
 			}
 
-			target.Timeout(30*time.Second).EmitWithAck("rpc-request", map[string]any{
-				"method": method,
-				"params": params,
+			target.Timeout(30*time.Second).EmitWithAck("rpc-request", protocolwire.RPCRequestPayload{
+				Method: method,
+				Params: params,
 			})(func(args []any, err error) {
 				if ack == nil {
 					return
 				}
 				if err != nil {
-					ack(map[string]any{"ok": false, "error": err.Error()})
+					ack(protocolwire.RPCAck{OK: false, Error: err.Error()})
 					return
 				}
 				var result any
 				if len(args) > 0 {
 					result = args[0]
 				}
-				ack(map[string]any{"ok": true, "result": result})
+				ack(protocolwire.RPCAck{OK: true, Result: result})
 			})
 		})
 
@@ -1506,6 +1509,26 @@ func getFirstMapWithAck(data []any) (map[string]any, func(...any)) {
 	}
 	payload, _ := getFirstMap(data)
 	return payload, ack
+}
+
+func getFirstAnyWithAck(data []any) (any, func(...any)) {
+	var ack func(...any)
+	if len(data) == 0 {
+		return nil, nil
+	}
+	if cb, ok := data[len(data)-1].(func(...any)); ok {
+		ack = cb
+		data = data[:len(data)-1]
+	} else if cb, ok := data[len(data)-1].(socket.Ack); ok {
+		ack = func(args ...any) {
+			cb(args, nil)
+		}
+		data = data[:len(data)-1]
+	}
+	if len(data) == 0 {
+		return nil, ack
+	}
+	return data[0], ack
 }
 
 func shouldDebugRPC() bool {

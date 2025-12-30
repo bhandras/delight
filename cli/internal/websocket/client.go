@@ -423,11 +423,12 @@ func (c *Client) UpdateMetadata(sessionID string, metadata string, version int64
 
 // UpdateState sends a state update for a session
 func (c *Client) UpdateState(sessionID string, agentState string, version int64) (int64, error) {
+	stateVal := agentState
 	resp, err := c.EmitWithAck(
 		string(EventUpdateState),
 		wire.UpdateStatePayload{
 			SID:             sessionID,
-			AgentState:      agentState,
+			AgentState:      &stateVal,
 			ExpectedVersion: version,
 		},
 		5*time.Second,

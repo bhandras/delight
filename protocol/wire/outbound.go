@@ -159,7 +159,7 @@ type UpdateStatePayload struct {
 	// SID is the session id to update.
 	SID string `json:"sid"`
 	// AgentState is the encrypted agent state payload.
-	AgentState string `json:"agentState"`
+	AgentState *string `json:"agentState"`
 	// ExpectedVersion is the optimistic concurrency version.
 	ExpectedVersion int64 `json:"expectedVersion"`
 }

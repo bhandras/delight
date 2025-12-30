@@ -69,12 +69,14 @@ type AccessKeyLookupAck struct {
 
 // AccessKeyInfo is the access key object returned by access-key lookups.
 type AccessKeyInfo struct {
-	// ID is the access key id.
-	ID string `json:"id"`
-	// Secret is the access key secret.
-	Secret string `json:"secret"`
+	// Data is the encrypted access key payload.
+	Data string `json:"data"`
+	// DataVersion is the version for optimistic concurrency.
+	DataVersion int64 `json:"dataVersion"`
 	// CreatedAt is a wall-clock timestamp in milliseconds since epoch.
 	CreatedAt int64 `json:"createdAt"`
+	// UpdatedAt is a wall-clock timestamp in milliseconds since epoch.
+	UpdatedAt int64 `json:"updatedAt"`
 }
 
 // ArtifactAck is the ACK response shape for artifact get/create/delete.
