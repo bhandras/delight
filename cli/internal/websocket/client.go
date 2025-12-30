@@ -53,19 +53,6 @@ const (
 	EventUpdate        EventType = "update"
 )
 
-// Event represents a Socket.IO event
-type Event struct {
-	Type EventType              `json:"type"`
-	Data map[string]interface{} `json:"data"`
-}
-
-// MessageEvent represents a message event payload
-type MessageEvent struct {
-	SessionID string `json:"sessionId"`
-	Message   string `json:"message"`
-	Seq       int64  `json:"seq,omitempty"`
-}
-
 // Client represents a Socket.IO client connection
 type Client struct {
 	serverURL  string

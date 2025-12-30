@@ -5,6 +5,70 @@ import (
 	"fmt"
 )
 
+// DecodeContentBlocks decodes a `message.content` value into []ContentBlock.
+//
+// The CLI receives content blocks in a few shapes depending on the agent SDK:
+// - already decoded as `[]ContentBlock`
+// - decoded as `[]any` / `[]map[string]any`
+// - raw JSON bytes (`json.RawMessage` / `[]byte`)
+//
+// This helper normalizes all shapes into `[]ContentBlock` without discarding
+// unknown per-block fields.
+func DecodeContentBlocks(v any) ([]ContentBlock, error) {
+	switch t := v.(type) {
+	case nil:
+		return nil, nil
+	case []ContentBlock:
+		return t, nil
+	case json.RawMessage:
+		var out []ContentBlock
+		if err := json.Unmarshal(t, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+	case []byte:
+		var out []ContentBlock
+		if err := json.Unmarshal(t, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+	default:
+		raw, err := json.Marshal(t)
+		if err != nil {
+			return nil, err
+		}
+		var out []ContentBlock
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+}
+
+// TryParseAgentOutputRecord parses a raw record JSON blob as an AgentOutputRecord.
+//
+// ok is false when the JSON does not look like an output record; in that case
+// err is nil and callers should ignore the payload.
+func TryParseAgentOutputRecord(data []byte) (_ *AgentOutputRecord, ok bool, _ error) {
+	if len(data) == 0 {
+		return nil, false, nil
+	}
+
+	var rec AgentOutputRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return nil, false, err
+	}
+	if rec.Role != "agent" || rec.Content.Type != "output" {
+		return nil, false, nil
+	}
+	return &rec, true, nil
+}
+
+// ValidateContentBlocks ensures each block has a non-empty type.
+func ValidateContentBlocks(blocks []ContentBlock) error {
+	return validateContentBlocks(blocks)
+}
+
 // ContentBlock is a single structured content block within a message.
 //
 // The protocol permits many block types (text/tool-use/tool-result/etc).

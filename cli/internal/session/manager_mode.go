@@ -353,11 +353,7 @@ func (m *Manager) renderRemoteMessage(msg *claude.RemoteMessage) {
 		if len(msg.Message) == 0 {
 			return
 		}
-		var record map[string]interface{}
-		if err := json.Unmarshal(msg.Message, &record); err != nil {
-			return
-		}
-		printRawRecord(record)
+		printRawRecord(msg.Message)
 	case "error":
 		if msg.Error != "" {
 			fmt.Fprintf(os.Stdout, "claude error: %s\n", msg.Error)
@@ -365,29 +361,13 @@ func (m *Manager) renderRemoteMessage(msg *claude.RemoteMessage) {
 	}
 }
 
-func printRawRecord(record map[string]interface{}) {
-	role, _ := record["role"].(string)
-	if role != "agent" {
+func printRawRecord(raw json.RawMessage) {
+	rec, ok, err := wire.TryParseAgentOutputRecord([]byte(raw))
+	if err != nil || !ok || rec == nil {
 		return
 	}
-	content, _ := record["content"].(map[string]interface{})
-	if content == nil {
-		return
-	}
-	contentType, _ := content["type"].(string)
-	if contentType != "output" {
-		return
-	}
-	data, _ := content["data"].(map[string]interface{})
-	if data == nil {
-		return
-	}
-	message, _ := data["message"].(map[string]interface{})
-	if message == nil {
-		return
-	}
-	msgRole, _ := message["role"].(string)
-	blocks := extractRemoteContentBlocks(message["content"])
+	msgRole := rec.Content.Data.Message.Role
+	blocks := rec.Content.Data.Message.Content
 	if msgRole == "" || len(blocks) == 0 {
 		return
 	}
@@ -426,11 +406,11 @@ func printRawRecord(record map[string]interface{}) {
 	}
 }
 
-func formatToolInput(input interface{}) string {
+func formatToolInput(input any) string {
 	if input == nil {
 		return ""
 	}
-	if inputMap, ok := input.(map[string]interface{}); ok {
+	if inputMap, ok := input.(map[string]any); ok {
 		if cmd, _ := inputMap["command"].(string); cmd != "" {
 			return cmd
 		}
@@ -452,18 +432,18 @@ func formatToolInput(input interface{}) string {
 	return s
 }
 
-func formatToolResult(content interface{}) string {
+func formatToolResult(content any) string {
 	switch v := content.(type) {
 	case string:
 		if len(v) > 160 {
 			return v[:160] + "..."
 		}
 		return v
-	case []interface{}:
+	case []any:
 		if len(v) == 0 {
 			return ""
 		}
-		if text, ok := v[0].(map[string]interface{}); ok {
+		if text, ok := v[0].(map[string]any); ok {
 			if t, _ := text["type"].(string); t == "text" {
 				if val, _ := text["text"].(string); val != "" {
 					if len(val) > 160 {
@@ -553,7 +533,10 @@ func (m *Manager) buildRawRecordFromRemote(msg *claude.RemoteMessage) any {
 	switch msg.Type {
 	case "message":
 		role := msg.Role
-		contentBlocks := extractRemoteContentBlocks(msg.Content)
+		contentBlocks, err := wire.DecodeContentBlocks(msg.Content)
+		if err != nil {
+			return nil
+		}
 		if role == "" || len(contentBlocks) == 0 {
 			return nil
 		}
@@ -624,7 +607,21 @@ func (m *Manager) buildRawRecordFromRemote(msg *claude.RemoteMessage) any {
 		// Build minimal assistant message with a single text chunk
 		uuid := types.NewCUID()
 
-		text := extractRemoteContentText(msg.Content)
+		text := ""
+		switch v := msg.Content.(type) {
+		case string:
+			text = v
+		default:
+			blocks, err := wire.DecodeContentBlocks(v)
+			if err == nil {
+				for _, block := range blocks {
+					if block.Type == "text" && block.Text != "" {
+						text = block.Text
+						break
+					}
+				}
+			}
+		}
 		if text == "" {
 			if msg.Result != "" {
 				text = msg.Result
@@ -694,71 +691,6 @@ func (m *Manager) buildRawRecordFromRemote(msg *claude.RemoteMessage) any {
 		// Ignore unsupported types (system, control, etc.)
 		return nil
 	}
-}
-
-func extractRemoteContentBlocks(content interface{}) []wire.ContentBlock {
-	switch v := content.(type) {
-	case []wire.ContentBlock:
-		return v
-	case []map[string]interface{}:
-		blocks := make([]wire.ContentBlock, 0, len(v))
-		for _, item := range v {
-			raw, err := json.Marshal(item)
-			if err != nil {
-				continue
-			}
-			var block wire.ContentBlock
-			if err := json.Unmarshal(raw, &block); err != nil {
-				continue
-			}
-			blocks = append(blocks, block)
-		}
-		return blocks
-	case []interface{}:
-		blocks := make([]wire.ContentBlock, 0, len(v))
-		for _, item := range v {
-			raw, err := json.Marshal(item)
-			if err != nil {
-				continue
-			}
-			var block wire.ContentBlock
-			if err := json.Unmarshal(raw, &block); err != nil {
-				continue
-			}
-			blocks = append(blocks, block)
-		}
-		return blocks
-	default:
-		return nil
-	}
-}
-
-func extractRemoteContentText(content interface{}) string {
-	switch v := content.(type) {
-	case string:
-		return v
-	case []interface{}:
-		for _, item := range v {
-			raw, err := json.Marshal(item)
-			if err != nil {
-				continue
-			}
-			var block wire.ContentBlock
-			if err := json.Unmarshal(raw, &block); err != nil {
-				continue
-			}
-			if block.Type == "text" && block.Text != "" {
-				return block.Text
-			}
-		}
-	case []wire.ContentBlock:
-		for _, block := range v {
-			if block.Type == "text" && block.Text != "" {
-				return block.Text
-			}
-		}
-	}
-	return ""
 }
 
 func (m *Manager) sendFakeAgentResponse(userText string) {
