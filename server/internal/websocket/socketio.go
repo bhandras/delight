@@ -16,6 +16,7 @@ import (
 	"github.com/bhandras/delight/server/internal/crypto"
 	"github.com/bhandras/delight/server/internal/models"
 	sessionruntime "github.com/bhandras/delight/server/internal/session/runtime"
+	"github.com/bhandras/delight/server/internal/websocket/handlers"
 	pkgtypes "github.com/bhandras/delight/server/pkg/types"
 	"github.com/gin-gonic/gin"
 	socket "github.com/zishang520/socket.io/servers/socket/v3"
@@ -83,6 +84,7 @@ type SocketData struct {
 // setupHandlers configures Socket.IO event handlers
 func (s *SocketIOServer) setupHandlers() {
 	queries := models.New(s.db)
+	handlerDeps := handlers.NewDeps(queries, queries, queries, queries, queries, time.Now, pkgtypes.NewCUID)
 
 	// Connection handler
 	s.server.On("connection", func(clients ...any) {
@@ -797,181 +799,17 @@ func (s *SocketIOServer) setupHandlers() {
 				}
 				return
 			}
-
-			headerPresent := req.Header != nil
-			bodyPresent := req.Body != nil
-			headerData := ""
-			bodyData := ""
-			headerExpected := int64(0)
-			bodyExpected := int64(0)
-			if req.Header != nil {
-				headerData = req.Header.Data
-				headerExpected = req.Header.ExpectedVersion
-			}
-			if req.Body != nil {
-				bodyData = req.Body.Data
-				bodyExpected = req.Body.ExpectedVersion
-			}
-
-			if headerPresent {
-				if headerData == "" {
-					if ack != nil {
-						ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid header parameters"})
-					}
-					return
-				}
-			}
-			if bodyPresent {
-				if bodyData == "" {
-					if ack != nil {
-						ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid body parameters"})
-					}
-					return
-				}
-			}
-
-			if !headerPresent && !bodyPresent {
-				if ack != nil {
-					ack(protocolwire.ArtifactAck{Result: "error", Message: "No updates provided"})
-				}
-				return
-			}
-
-			current, err := queries.GetArtifactByIDAndAccount(context.Background(), models.GetArtifactByIDAndAccountParams{
-				ID:        req.ArtifactID,
-				AccountID: sd.UserID,
-			})
-			if err != nil {
-				if ack != nil {
-					ack(protocolwire.ArtifactAck{Result: "error", Message: "Artifact not found"})
-				}
-				return
-			}
-
-			headerMismatch := headerPresent && current.HeaderVersion != headerExpected
-			bodyMismatch := bodyPresent && current.BodyVersion != bodyExpected
-			if headerMismatch || bodyMismatch {
-				if ack != nil {
-					resp := protocolwire.ArtifactUpdateMismatchAck{Result: "version-mismatch"}
-					if headerMismatch {
-						resp.Header = &protocolwire.ArtifactPartMismatch{
-							CurrentVersion: current.HeaderVersion,
-							CurrentData:    base64.StdEncoding.EncodeToString(current.Header),
-						}
-					}
-					if bodyMismatch {
-						resp.Body = &protocolwire.ArtifactPartMismatch{
-							CurrentVersion: current.BodyVersion,
-							CurrentData:    base64.StdEncoding.EncodeToString(current.Body),
-						}
-					}
-					ack(resp)
-				}
-				return
-			}
-
-			var headerBytes []byte
-			var bodyBytes []byte
-			if headerPresent {
-				headerBytes, err = base64.StdEncoding.DecodeString(headerData)
-				if err != nil {
-					if ack != nil {
-						ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid header encoding"})
-					}
-					return
-				}
-			}
-			if bodyPresent {
-				bodyBytes, err = base64.StdEncoding.DecodeString(bodyData)
-				if err != nil {
-					if ack != nil {
-						ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid body encoding"})
-					}
-					return
-				}
-			}
-
-			rows, err := queries.UpdateArtifact(context.Background(), models.UpdateArtifactParams{
-				Header:          headerBytes,
-				Column2:         boolToInt64(headerPresent),
-				HeaderVersion:   headerExpected + 1,
-				Body:            bodyBytes,
-				Column5:         boolToInt64(bodyPresent),
-				BodyVersion:     bodyExpected + 1,
-				ID:              req.ArtifactID,
-				AccountID:       sd.UserID,
-				Column9:         boolToInt64(headerPresent),
-				HeaderVersion_2: headerExpected,
-				Column11:        boolToInt64(bodyPresent),
-				BodyVersion_2:   bodyExpected,
-			})
-			if err != nil || rows == 0 {
-				current, err := queries.GetArtifactByIDAndAccount(context.Background(), models.GetArtifactByIDAndAccountParams{
-					ID:        req.ArtifactID,
-					AccountID: sd.UserID,
-				})
-				if ack != nil {
-					if err == nil {
-						resp := protocolwire.ArtifactUpdateMismatchAck{Result: "version-mismatch"}
-						if headerPresent {
-							resp.Header = &protocolwire.ArtifactPartMismatch{
-								CurrentVersion: current.HeaderVersion,
-								CurrentData:    base64.StdEncoding.EncodeToString(current.Header),
-							}
-						}
-						if bodyPresent {
-							resp.Body = &protocolwire.ArtifactPartMismatch{
-								CurrentVersion: current.BodyVersion,
-								CurrentData:    base64.StdEncoding.EncodeToString(current.Body),
-							}
-						}
-						ack(resp)
-					} else {
-						ack(protocolwire.ArtifactAck{Result: "error", Message: "Internal error"})
-					}
-				}
-				return
-			}
-
-			var headerUpdate *protocolwire.VersionedString
-			var bodyUpdate *protocolwire.VersionedString
-			if headerPresent {
-				headerUpdate = &protocolwire.VersionedString{
-					Value:   headerData,
-					Version: headerExpected + 1,
-				}
-			}
-			if bodyPresent {
-				bodyUpdate = &protocolwire.VersionedString{
-					Value:   bodyData,
-					Version: bodyExpected + 1,
-				}
-			}
-
-			userSeq, err := queries.UpdateAccountSeq(context.Background(), sd.UserID)
-			if err == nil {
-				s.emitUpdateToUser(sd.UserID, protocolwire.UpdateEvent{
-					ID:        pkgtypes.NewCUID(),
-					Seq:       userSeq,
-					CreatedAt: time.Now().UnixMilli(),
-					Body: protocolwire.UpdateBodyUpdateArtifact{
-						T:          "update-artifact",
-						ArtifactID: req.ArtifactID,
-						Header:     headerUpdate,
-						Body:       bodyUpdate,
-					},
-				}, "")
-			}
-
+			result := handlers.ArtifactUpdate(context.Background(), handlerDeps, handlers.NewAuthContext(sd.UserID, sd.ClientType, string(client.Id())), req)
 			if ack != nil {
-				resp := protocolwire.ArtifactUpdateSuccessAck{Result: "success"}
-				if headerUpdate != nil {
-					resp.Header = &protocolwire.ArtifactUpdateSuccessPart{Version: headerUpdate.Version, Data: headerData}
+				ack(result.Ack())
+			}
+			for _, upd := range result.Updates() {
+				switch {
+				case upd.IsUser():
+					s.emitUpdateToUser(upd.UserID(), upd.Event(), string(client.Id()))
+				case upd.IsSession():
+					s.emitUpdateToSession(upd.UserID(), upd.SessionID(), upd.Event(), string(client.Id()))
 				}
-				if bodyUpdate != nil {
-					resp.Body = &protocolwire.ArtifactUpdateSuccessPart{Version: bodyUpdate.Version, Data: bodyData}
-				}
-				ack(resp)
 			}
 		})
 
@@ -1111,80 +949,18 @@ func (s *SocketIOServer) setupHandlers() {
 				}
 				return
 			}
-
-			session, err := queries.GetSessionByID(context.Background(), req.SID)
-			if err != nil || session.AccountID != sd.UserID {
-				if ack != nil {
-					ack(protocolwire.ResultAck{Result: "error"})
-				}
-				return
-			}
-
-			stateVal := sql.NullString{}
-			if req.AgentState != nil {
-				stateVal.Valid = true
-				stateVal.String = *req.AgentState
-			}
-
-			rows, err := queries.UpdateSessionAgentState(context.Background(), models.UpdateSessionAgentStateParams{
-				AgentState:          stateVal,
-				AgentStateVersion:   req.ExpectedVersion + 1,
-				ID:                  req.SID,
-				AgentStateVersion_2: req.ExpectedVersion,
-			})
-			if err != nil || rows == 0 {
-				current, err := queries.GetSessionByID(context.Background(), req.SID)
-				if ack != nil {
-					if err == nil {
-						resp := protocolwire.VersionedAck{
-							Result:  "version-mismatch",
-							Version: current.AgentStateVersion,
-						}
-						if current.AgentState.Valid {
-							resp.AgentState = current.AgentState.String
-						}
-						ack(resp)
-					} else {
-						ack(protocolwire.ResultAck{Result: "error"})
-					}
-				}
-				return
-			}
-
+			result := handlers.UpdateState(context.Background(), handlerDeps, handlers.NewAuthContext(sd.UserID, sd.ClientType, string(client.Id())), req)
 			if ack != nil {
-				resp := protocolwire.VersionedAck{
-					Result:  "success",
-					Version: req.ExpectedVersion + 1,
-				}
-				if req.AgentState != nil {
-					resp.AgentState = *req.AgentState
-				}
-				ack(resp)
+				ack(result.Ack())
 			}
-
-			userSeq, err := queries.UpdateAccountSeq(context.Background(), sd.UserID)
-			if err != nil {
-				log.Printf("Failed to allocate user seq: %v", err)
-				return
-			}
-
-			var agentStateBody *protocolwire.VersionedString
-			if req.AgentState != nil {
-				agentStateBody = &protocolwire.VersionedString{
-					Value:   *req.AgentState,
-					Version: req.ExpectedVersion + 1,
+			for _, upd := range result.Updates() {
+				switch {
+				case upd.IsUser():
+					s.emitUpdateToUser(upd.UserID(), upd.Event(), string(client.Id()))
+				case upd.IsSession():
+					s.emitUpdateToSession(upd.UserID(), upd.SessionID(), upd.Event(), string(client.Id()))
 				}
 			}
-			s.emitUpdateToSession(sd.UserID, req.SID, protocolwire.UpdateEvent{
-				ID:        pkgtypes.NewCUID(),
-				Seq:       userSeq,
-				CreatedAt: time.Now().UnixMilli(),
-				Body: protocolwire.UpdateBodyUpdateSession{
-					T:          "update-session",
-					ID:         req.SID,
-					AgentState: agentStateBody,
-				},
-			}, string(client.Id()))
 		})
 
 		// RPC register
