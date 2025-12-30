@@ -209,12 +209,34 @@ struct ScrollRequest: Identifiable, Hashable {
     let target: Target
 }
 
+struct AccountCreatedReceipt: Identifiable {
+    let id = UUID()
+    let serverURL: String
+    let masterKey: String
+    let publicKey: String
+    let privateKey: String
+    let token: String
+}
+
+struct TerminalPairingReceipt: Identifiable {
+    let id = UUID()
+    let serverURL: String
+    let host: String?
+    let machineID: String?
+    let terminalKey: String
+}
+
 final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var serverURL: String = "http://localhost:3005" {
         didSet { persistSettings() }
     }
     @Published var token: String = "" {
-        didSet { persistSettings() }
+        didSet {
+            persistSettings()
+            if !oldValue.isEmpty && token.isEmpty {
+                clearSessionState(reason: "token cleared")
+            }
+        }
     }
     @Published var masterKey: String = "" {
         didSet { persistKeys() }
@@ -241,6 +263,15 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var logServerRunning: Bool = false
     @Published var showCrashReport: Bool = false
     @Published var crashReportText: String = ""
+    @Published var isCreatingAccount: Bool = false
+    @Published var isApprovingTerminal: Bool = false
+    @Published var isLoggingOut: Bool = false
+    @Published var showAccountCreatedReceipt: Bool = false
+    @Published var showTerminalPairingReceipt: Bool = false
+    @Published var showLogoutConfirm: Bool = false
+
+    @Published var lastAccountCreatedReceipt: AccountCreatedReceipt?
+    @Published var lastTerminalPairingReceipt: TerminalPairingReceipt?
 
     private let client: SdkClient
     private static let settingsKeyPrefix = "delight.harness."
@@ -353,6 +384,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         sdkCallAsync {
             self.client.disconnect()
         }
+        clearSessionState(reason: "crash detected")
+    }
+
+    private func clearSessionState(reason: String) {
         sessionID = ""
         selectedMetadata = nil
         messages = []
@@ -360,8 +395,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         machines = []
         logLines = []
         needsSessionRefresh = true
-        status = "disconnected"
-        log("Crash detected; cleared cached session state")
+        oldestLoadedSeq = nil
+        scrollRequest = nil
+        log("Cleared cached session state (\(reason))")
     }
 
     func generateKeys() {
@@ -412,20 +448,60 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func createAccount() {
-        if publicKey.isEmpty || privateKey.isEmpty {
+        guard !isCreatingAccount else { return }
+
+        if publicKey.isEmpty || privateKey.isEmpty || masterKey.isEmpty {
             generateKeys()
         }
-        authWithKeypair()
+
+        isCreatingAccount = true
+        sdkCallAsync {
+            do {
+                let tokenBuf = try self.sdkCallSync {
+                    try self.client.auth(withKeyPairBuffer: self.publicKey, privateKeyB64: self.privateKey)
+                }
+                guard let tokenValue = self.stringFromBuffer(tokenBuf) else {
+                    DispatchQueue.main.async {
+                        self.isCreatingAccount = false
+                        self.log("Auth error: unable to decode token")
+                    }
+                    return
+                }
+                DispatchQueue.main.async {
+                    self.token = tokenValue
+                    self.lastAccountCreatedReceipt = AccountCreatedReceipt(
+                        serverURL: self.serverURL,
+                        masterKey: self.masterKey,
+                        publicKey: self.publicKey,
+                        privateKey: self.privateKey,
+                        token: tokenValue
+                    )
+                    self.showAccountCreatedReceipt = true
+                    self.isCreatingAccount = false
+                    self.connect()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.isCreatingAccount = false
+                    self.log("Auth error: \(error)")
+                }
+            }
+        }
     }
 
     func logout() {
-        token = ""
+        guard !isLoggingOut else { return }
+
+        isLoggingOut = true
         sdkCallAsync {
             self.client.disconnect()
-        }
-        DispatchQueue.main.async {
-            self.status = "disconnected"
-            self.log("Logged out")
+            DispatchQueue.main.async {
+                self.token = ""
+                self.status = "disconnected"
+                self.showLogoutConfirm = false
+                self.isLoggingOut = false
+                self.log("Logged out")
+            }
         }
     }
 
@@ -445,24 +521,69 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
+    private func parseTerminalURLMetadata(_ raw: String) -> (host: String?, machineID: String?) {
+        guard let components = URLComponents(string: raw) else { return (nil, nil) }
+        let host = components.queryItems?.first(where: { $0.name == "host" })?.value
+        let machineID =
+            components.queryItems?.first(where: { $0.name == "machineId" })?.value
+            ?? components.queryItems?.first(where: { $0.name == "machine_id" })?.value
+        return (host, machineID)
+    }
+
     func approveTerminal() {
-        var error: NSError?
-        let terminalKeyBuf = SdkParseTerminalURLBuffer(terminalURL, &error)
-        if let error {
-            log("Approve error: \(error)")
+        guard !isApprovingTerminal else { return }
+        guard !token.isEmpty else {
+            log("Approve error: must be logged in to approve a terminal")
             return
         }
-        guard let terminalKey = stringFromBuffer(terminalKeyBuf) else {
-            log("Approve error: unable to decode terminal key")
-            return
-        }
-        do {
-            try sdkCallSync {
-                try client.approveTerminalAuth(terminalKey, masterKeyB64: masterKey)
+
+        isApprovingTerminal = true
+        let rawURL = terminalURL
+        let metadata = parseTerminalURLMetadata(rawURL)
+
+        sdkCallAsync {
+            var error: NSError?
+            let terminalKeyBuf = SdkParseTerminalURLBuffer(rawURL, &error)
+            if let error {
+                DispatchQueue.main.async {
+                    self.isApprovingTerminal = false
+                    self.log("Approve error: \(error)")
+                }
+                return
             }
-            log("Approved terminal auth")
-        } catch {
-            log("Approve error: \(error)")
+            guard let terminalKey = self.stringFromBuffer(terminalKeyBuf) else {
+                DispatchQueue.main.async {
+                    self.isApprovingTerminal = false
+                    self.log("Approve error: unable to decode terminal key")
+                }
+                return
+            }
+            do {
+                try self.sdkCallSync {
+                    self.client.setServerURL(self.serverURL)
+                    self.client.setToken(self.token)
+                    try self.client.setMasterKeyBase64(self.masterKey)
+                    try self.client.approveTerminalAuth(terminalKey, masterKeyB64: self.masterKey)
+                }
+                DispatchQueue.main.async {
+                    self.lastTerminalPairingReceipt = TerminalPairingReceipt(
+                        serverURL: self.serverURL,
+                        host: metadata.host,
+                        machineID: metadata.machineID,
+                        terminalKey: terminalKey
+                    )
+                    self.showTerminalPairingReceipt = true
+                    self.isApprovingTerminal = false
+                    self.terminalURL = ""
+                    self.listSessions()
+                    self.log("Approved terminal auth")
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.isApprovingTerminal = false
+                    self.log("Approve error: \(error)")
+                }
+            }
         }
     }
 

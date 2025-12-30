@@ -8,7 +8,7 @@ struct ContentView: View {
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            TerminalsView(model: model)
+            TerminalsView(model: model, showScanner: $showScanner)
                 .tabItem {
                     Image(systemName: "terminal")
                     Text("Terminals")
@@ -41,16 +41,53 @@ struct ContentView: View {
                 activeSheet = nil
             }
         }
+        .onChange(of: model.showAccountCreatedReceipt) { newValue in
+            if newValue {
+                showScanner = false
+                activeSheet = .accountCreatedReceipt
+            } else if activeSheet == .accountCreatedReceipt {
+                activeSheet = nil
+            }
+        }
+        .onChange(of: model.showTerminalPairingReceipt) { newValue in
+            if newValue {
+                showScanner = false
+                activeSheet = .terminalPairingReceipt
+            } else if activeSheet == .terminalPairingReceipt {
+                activeSheet = nil
+            }
+        }
+        .onChange(of: model.showLogoutConfirm) { newValue in
+            if newValue {
+                showScanner = false
+                activeSheet = .logoutConfirm
+            } else if activeSheet == .logoutConfirm {
+                activeSheet = nil
+            }
+        }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .scanner:
                 QRScannerView { result in
                     model.terminalURL = result
                     showScanner = false
+                    model.approveTerminal()
                 }
             case .crashReport:
                 CrashReportSheet(model: model) {
                     model.showCrashReport = false
+                }
+            case .accountCreatedReceipt:
+                AccountCreatedSheet(model: model) {
+                    model.showAccountCreatedReceipt = false
+                }
+            case .terminalPairingReceipt:
+                TerminalPairingReceiptSheet(model: model) {
+                    model.showTerminalPairingReceipt = false
+                }
+            case .logoutConfirm:
+                LogoutConfirmSheet(model: model) {
+                    model.showLogoutConfirm = false
                 }
             }
         }
@@ -60,11 +97,17 @@ struct ContentView: View {
 private enum ActiveSheet: Identifiable {
     case scanner
     case crashReport
+    case accountCreatedReceipt
+    case terminalPairingReceipt
+    case logoutConfirm
 
     var id: Int {
         switch self {
         case .scanner: return 0
         case .crashReport: return 1
+        case .accountCreatedReceipt: return 2
+        case .terminalPairingReceipt: return 3
+        case .logoutConfirm: return 4
         }
     }
 }
@@ -137,52 +180,216 @@ private struct CrashReportSheet: View {
     }
 }
 
-private struct TerminalsView: View {
+private struct AccountCreatedSheet: View {
     @ObservedObject var model: HarnessViewModel
+    let onDismiss: () -> Void
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Theme.background.ignoresSafeArea()
+                List {
+                    Section {
+                        Text("Account successfully created.")
+                            .font(Theme.body)
+                            .foregroundColor(Theme.messageText)
+                    }
+                    if let receipt = model.lastAccountCreatedReceipt {
+                        Section("Server") {
+                            CopyableValueRow(title: "Server URL", value: receipt.serverURL)
+                        }
+                        Section("Keys") {
+                            CopyableValueRow(title: "Master Key", value: receipt.masterKey)
+                            CopyableValueRow(title: "Public Key", value: receipt.publicKey)
+                            CopyableValueRow(title: "Private Key", value: receipt.privateKey)
+                        }
+                        Section("Token") {
+                            CopyableValueRow(title: "Token", value: receipt.token)
+                        }
+                    } else {
+                        Section {
+                            Text("No receipt details available.")
+                                .font(Theme.caption)
+                                .foregroundColor(Theme.mutedText)
+                        }
+                    }
+                }
+                .scrollContentBackground(.hidden)
+                .listStyle(.insetGrouped)
+            }
+            .navigationTitle("Create Account")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Close", action: onDismiss)
+                }
+            }
+        }
+    }
+}
+
+private struct TerminalPairingReceiptSheet: View {
+    @ObservedObject var model: HarnessViewModel
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Theme.background.ignoresSafeArea()
+                List {
+                    Section {
+                        Text("Terminal approved.")
+                            .font(Theme.body)
+                            .foregroundColor(Theme.messageText)
+                        Text("If the terminal is running, it should appear in Terminals shortly.")
+                            .font(Theme.caption)
+                            .foregroundColor(Theme.mutedText)
+                    }
+                    if let receipt = model.lastTerminalPairingReceipt {
+                        Section("Machine") {
+                            CopyableValueRow(title: "Host", value: receipt.host ?? "—")
+                            CopyableValueRow(title: "Machine ID", value: receipt.machineID ?? "—")
+                        }
+                        Section("Terminal") {
+                            CopyableValueRow(title: "Terminal Key", value: receipt.terminalKey)
+                        }
+                        Section("Server") {
+                            CopyableValueRow(title: "Server URL", value: receipt.serverURL)
+                        }
+                    } else {
+                        Section {
+                            Text("No pairing details available.")
+                                .font(Theme.caption)
+                                .foregroundColor(Theme.mutedText)
+                        }
+                    }
+                }
+                .scrollContentBackground(.hidden)
+                .listStyle(.insetGrouped)
+            }
+            .navigationTitle("Pair Terminal")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Close", action: onDismiss)
+                }
+            }
+        }
+    }
+}
+
+private struct LogoutConfirmSheet: View {
+    @ObservedObject var model: HarnessViewModel
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Theme.background.ignoresSafeArea()
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Log out?")
+                        .font(Theme.title)
+                        .foregroundColor(Theme.messageText)
+                    Text("This will remove local session state and hide machines and terminals until you create an account again.")
+                        .font(Theme.body)
+                        .foregroundColor(Theme.mutedText)
+
+                    if model.isLoggingOut {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text("Logging out…")
+                                .font(Theme.body)
+                                .foregroundColor(Theme.messageText)
+                        }
+                        .padding(.vertical, 8)
+                    }
+
+                    Spacer()
+
+                    VStack(spacing: 10) {
+                        Button {
+                            model.logout()
+                        } label: {
+                            Text(model.isLoggingOut ? "Logging Out…" : "Log Out")
+                        }
+                        .buttonStyle(PillButtonStyle(fill: Theme.warning))
+                        .disabled(model.isLoggingOut)
+
+                        Button("Cancel", action: onDismiss)
+                            .buttonStyle(GhostButtonStyle(tint: Theme.accent))
+                            .disabled(model.isLoggingOut)
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Confirm")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Close", action: onDismiss)
+                        .disabled(model.isLoggingOut)
+                }
+            }
+        }
+    }
+}
+
+private struct TerminalsView: View {
+    @ObservedObject var model: HarnessViewModel
+    @Binding var showScanner: Bool
+
+    var body: some View {
+        let isLoggedIn = !model.token.isEmpty
+        NavigationStack {
+            ZStack {
+                Theme.background.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        HStack {
-                            Text("MACHINES")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(Theme.mutedText)
-                            Spacer()
-                            Button {
-                                model.listSessions()
-                            } label: {
-                                Label("Refresh", systemImage: "arrow.clockwise")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Theme.cardBackground)
-                                    .clipShape(Capsule())
-                                    .overlay(
-                                        Capsule()
-                                            .stroke(Color.black.opacity(0.06), lineWidth: 1)
-                                    )
+                        if !isLoggedIn {
+                            LoggedOutTerminalEmptyState(model: model)
+                        } else if model.sessions.isEmpty {
+                            SettingSection(title: "Pair Terminal") {
+                                PairTerminalForm(model: model, showScanner: $showScanner)
                             }
-                            .buttonStyle(.plain)
-                        }
+                        } else {
+                            HStack {
+                                Text("TERMINALS")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(Theme.mutedText)
+                                Spacer()
+                                Button {
+                                    model.listSessions()
+                                } label: {
+                                    Label("Refresh", systemImage: "arrow.clockwise")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(Theme.cardBackground)
+                                        .clipShape(Capsule())
+                                        .overlay(
+                                            Capsule()
+                                                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                            }
 
-                        ForEach(terminalGroups(from: model.sessions), id: \.id) { group in
-                            Text(group.name)
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(Theme.mutedText)
-                                .padding(.horizontal, 4)
-                            FeatureListCard {
-                                ForEach(Array(group.sessions.enumerated()), id: \.element.id) { index, session in
-                                    NavigationLink {
-                                        TerminalDetailView(model: model, session: session)
-                                    } label: {
-                                        TerminalRow(session: session)
-                                    }
-                                    .buttonStyle(.plain)
-                                    if index < group.sessions.count - 1 {
-                                        Divider()
+                            ForEach(terminalGroups(from: model.sessions), id: \.id) { group in
+                                Text(group.name)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(Theme.mutedText)
+                                    .padding(.horizontal, 4)
+                                FeatureListCard {
+                                    ForEach(Array(group.sessions.enumerated()), id: \.element.id) { index, session in
+                                        NavigationLink {
+                                            TerminalDetailView(model: model, session: session)
+                                        } label: {
+                                            TerminalRow(session: session)
+                                        }
+                                        .buttonStyle(.plain)
+                                        if index < group.sessions.count - 1 {
+                                            Divider()
+                                        }
                                     }
                                 }
                             }
@@ -194,7 +401,9 @@ private struct TerminalsView: View {
             .navigationTitle("Terminals")
         }
         .onAppear {
-            model.listSessions()
+            if !model.token.isEmpty {
+                model.listSessions()
+            }
         }
     }
 }
@@ -252,38 +461,44 @@ private struct SettingsView: View {
                                     }
                                 }
                             } else {
-                                ActionButton(title: "Create Account", systemImage: "person.crop.circle.badge.plus") {
+                                ActionButton(
+                                    title: model.isCreatingAccount ? "Creating…" : "Create Account",
+                                    systemImage: model.isCreatingAccount ? "hourglass" : "person.crop.circle.badge.plus"
+                                ) {
                                     model.createAccount()
                                 }
+                                .disabled(model.isCreatingAccount)
                             }
                         }
 
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("MACHINES")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(Theme.mutedText)
-                                .padding(.horizontal, 4)
-                            FeatureListCard {
-                                if machines.isEmpty {
-                                    HStack(spacing: 12) {
-                                        Image(systemName: "desktopcomputer")
-                                            .font(.system(size: 22))
-                                            .foregroundColor(Theme.mutedText)
-                                        Text("No machines connected yet.")
-                                            .font(Theme.caption)
-                                            .foregroundColor(Theme.mutedText)
-                                        Spacer()
-                                    }
-                                    .padding(.vertical, 12)
-                                } else {
-                                    ForEach(Array(machines.enumerated()), id: \.element.id) { index, machine in
-                                        NavigationLink {
-                                            MachineDetailView(model: model, machine: machine)
-                                        } label: {
-                                            MachineRow(machine: machine)
+                        if isLoggedIn {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("MACHINES")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(Theme.mutedText)
+                                    .padding(.horizontal, 4)
+                                FeatureListCard {
+                                    if machines.isEmpty {
+                                        HStack(spacing: 12) {
+                                            Image(systemName: "desktopcomputer")
+                                                .font(.system(size: 22))
+                                                .foregroundColor(Theme.mutedText)
+                                            Text("No machines connected yet.")
+                                                .font(Theme.caption)
+                                                .foregroundColor(Theme.mutedText)
+                                            Spacer()
                                         }
-                                        if index != machines.count - 1 {
-                                            Divider()
+                                        .padding(.vertical, 12)
+                                    } else {
+                                        ForEach(Array(machines.enumerated()), id: \.element.id) { index, machine in
+                                            NavigationLink {
+                                                MachineDetailView(model: model, machine: machine)
+                                            } label: {
+                                                MachineRow(machine: machine)
+                                            }
+                                            if index != machines.count - 1 {
+                                                Divider()
+                                            }
                                         }
                                     }
                                 }
@@ -309,18 +524,9 @@ private struct SettingsView: View {
                                 .foregroundColor(Theme.mutedText)
                         }
 
-                        SettingSection(title: "Pair Terminal") {
-                            TextField("QR URL (delight://terminal?...)", text: $model.terminalURL)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled(true)
-                                .textFieldStyle(.roundedBorder)
-                            HStack(spacing: 12) {
-                                ActionButton(title: "Scan QR", systemImage: "qrcode.viewfinder") {
-                                    showScanner = true
-                                }
-                                ActionButton(title: "Approve", systemImage: "checkmark.seal") {
-                                    model.approveTerminal()
-                                }
+                        if isLoggedIn && model.sessions.isEmpty {
+                            SettingSection(title: "Pair Terminal") {
+                                PairTerminalForm(model: model, showScanner: $showScanner)
                             }
                         }
 
@@ -348,6 +554,87 @@ private struct SettingsView: View {
             }
             .navigationTitle("Settings")
         }
+    }
+}
+
+private struct LoggedOutTerminalEmptyState: View {
+    @ObservedObject var model: HarnessViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("You’re logged out.")
+                .font(Theme.title)
+                .foregroundColor(Theme.messageText)
+            Text("Create an account to pair a terminal and see your terminal sessions here.")
+                .font(Theme.body)
+                .foregroundColor(Theme.mutedText)
+            ActionButton(
+                title: model.isCreatingAccount ? "Creating…" : "Create Account",
+                systemImage: model.isCreatingAccount ? "hourglass" : "person.crop.circle.badge.plus"
+            ) {
+                model.createAccount()
+            }
+            .disabled(model.isCreatingAccount)
+        }
+        .padding()
+        .background(Theme.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .shadow(color: Theme.shadow, radius: 8, x: 0, y: 4)
+    }
+}
+
+private struct PairTerminalForm: View {
+    @ObservedObject var model: HarnessViewModel
+    @Binding var showScanner: Bool
+
+    var body: some View {
+        TextField("QR URL (delight://terminal?...)", text: $model.terminalURL)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled(true)
+            .textFieldStyle(.roundedBorder)
+        HStack(spacing: 12) {
+            ActionButton(title: "Scan QR", systemImage: "qrcode.viewfinder") {
+                showScanner = true
+            }
+            .disabled(model.isApprovingTerminal)
+
+            ActionButton(
+                title: model.isApprovingTerminal ? "Approving…" : "Approve",
+                systemImage: model.isApprovingTerminal ? "hourglass" : "checkmark.seal"
+            ) {
+                model.approveTerminal()
+            }
+            .disabled(model.isApprovingTerminal || model.terminalURL.isEmpty)
+        }
+    }
+}
+
+private struct CopyableValueRow: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                    .font(Theme.caption)
+                    .foregroundColor(Theme.mutedText)
+                Spacer()
+                Button {
+                    UIPasteboard.general.string = value
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .disabled(value.isEmpty || value == "—")
+            }
+            Text(value.isEmpty ? "—" : value)
+                .font(.system(.footnote, design: .monospaced))
+                .foregroundColor(Theme.messageText)
+                .textSelection(.enabled)
+        }
+        .padding(.vertical, 4)
     }
 }
 
@@ -834,12 +1121,44 @@ private struct ActionButton: View {
     var body: some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
-                .font(Theme.caption)
+                .font(.system(size: 15, weight: .semibold))
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .background(Color.white.opacity(0.9))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(.vertical, 12)
+                .background(Color.white.opacity(0.92))
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                )
         }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct PillButtonStyle: ButtonStyle {
+    let fill: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 17, weight: .semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .foregroundColor(.white)
+            .background(Capsule().fill(fill))
+            .opacity(configuration.isPressed ? 0.88 : 1.0)
+            .scaleEffect(configuration.isPressed ? 0.99 : 1.0)
+    }
+}
+
+private struct GhostButtonStyle: ButtonStyle {
+    let tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 17, weight: .semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .foregroundColor(tint.opacity(configuration.isPressed ? 0.7 : 1.0))
     }
 }
 
@@ -1025,6 +1344,7 @@ private struct DebugActionRow: View {
 
 private struct AccountDetailView: View {
     @ObservedObject var model: HarnessViewModel
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ZStack {
@@ -1036,7 +1356,7 @@ private struct AccountDetailView: View {
                 }
                 Section {
                     Button {
-                        model.logout()
+                        model.showLogoutConfirm = true
                     } label: {
                         Text("Log Out")
                             .foregroundColor(Theme.warning)
@@ -1047,6 +1367,11 @@ private struct AccountDetailView: View {
             .listStyle(.insetGrouped)
         }
         .navigationTitle("Account")
+        .onChange(of: model.token) { newValue in
+            if newValue.isEmpty {
+                dismiss()
+            }
+        }
     }
 }
 
