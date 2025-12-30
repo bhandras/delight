@@ -18,14 +18,23 @@ type UpdateInstruction struct {
 	userID    string
 	sessionID string
 	event     protocolwire.UpdateEvent
+	skipSelf  bool
 }
 
 func newUserUpdate(userID string, event protocolwire.UpdateEvent) UpdateInstruction {
 	return UpdateInstruction{scope: updateScopeUser, userID: userID, event: event}
 }
 
+func newUserUpdateSkippingSelf(userID string, event protocolwire.UpdateEvent) UpdateInstruction {
+	return UpdateInstruction{scope: updateScopeUser, userID: userID, event: event, skipSelf: true}
+}
+
 func newSessionUpdate(userID, sessionID string, event protocolwire.UpdateEvent) UpdateInstruction {
 	return UpdateInstruction{scope: updateScopeSession, userID: userID, sessionID: sessionID, event: event}
+}
+
+func newSessionUpdateSkippingSelf(userID, sessionID string, event protocolwire.UpdateEvent) UpdateInstruction {
+	return UpdateInstruction{scope: updateScopeSession, userID: userID, sessionID: sessionID, event: event, skipSelf: true}
 }
 
 // Scope returns where the update should be emitted.
@@ -37,6 +46,10 @@ func (u UpdateInstruction) IsUser() bool { return u.scope == updateScopeUser }
 // IsSession reports whether the update should be emitted to session-scoped
 // sockets for the given session id (plus user-scoped sockets).
 func (u UpdateInstruction) IsSession() bool { return u.scope == updateScopeSession }
+
+// SkipSelf reports whether the transport adapter should skip emitting the update
+// back to the calling socket.
+func (u UpdateInstruction) SkipSelf() bool { return u.skipSelf }
 
 // UserID returns the account id for the emission.
 func (u UpdateInstruction) UserID() string { return u.userID }

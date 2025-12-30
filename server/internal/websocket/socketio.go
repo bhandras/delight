@@ -3,7 +3,6 @@ package websocket
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -338,82 +337,27 @@ func (s *SocketIOServer) setupHandlers() {
 				}
 				return
 			}
-
-			machine, err := queries.GetMachine(context.Background(), models.GetMachineParams{
-				AccountID: sd.UserID,
-				ID:        req.MachineID,
-			})
-			if err != nil || machine.AccountID != sd.UserID {
-				if ack != nil {
-					ack(protocolwire.ResultAck{Result: "error", Message: "Machine not found"})
-				}
-				return
-			}
-
-			if machine.MetadataVersion != req.ExpectedVersion {
-				if ack != nil {
-					ack(protocolwire.VersionedAck{
-						Result:   "version-mismatch",
-						Version:  machine.MetadataVersion,
-						Metadata: machine.Metadata,
-					})
-				}
-				return
-			}
-
-			rows, err := queries.UpdateMachineMetadata(context.Background(), models.UpdateMachineMetadataParams{
-				Metadata:          req.Metadata,
-				MetadataVersion:   req.ExpectedVersion + 1,
-				AccountID:         sd.UserID,
-				ID:                req.MachineID,
-				MetadataVersion_2: req.ExpectedVersion,
-			})
-			if err != nil || rows == 0 {
-				current, err := queries.GetMachine(context.Background(), models.GetMachineParams{
-					AccountID: sd.UserID,
-					ID:        req.MachineID,
-				})
-				if ack != nil {
-					if err == nil {
-						ack(protocolwire.VersionedAck{
-							Result:   "version-mismatch",
-							Version:  current.MetadataVersion,
-							Metadata: current.Metadata,
-						})
-					} else {
-						ack(protocolwire.ResultAck{Result: "error"})
-					}
-				}
-				return
-			}
-
+			result := handlers.MachineUpdateMetadata(
+				context.Background(),
+				handlerDeps,
+				handlers.NewAuthContext(sd.UserID, sd.ClientType, string(client.Id())),
+				req,
+			)
 			if ack != nil {
-				ack(protocolwire.VersionedAck{
-					Result:   "success",
-					Version:  req.ExpectedVersion + 1,
-					Metadata: req.Metadata,
-				})
+				ack(result.Ack())
 			}
-
-			userSeq, err := queries.UpdateAccountSeq(context.Background(), sd.UserID)
-			if err != nil {
-				log.Printf("Failed to allocate user seq: %v", err)
-				return
+			for _, upd := range result.Updates() {
+				skipSocketID := ""
+				if upd.SkipSelf() {
+					skipSocketID = string(client.Id())
+				}
+				switch {
+				case upd.IsUser():
+					s.emitUpdateToUser(upd.UserID(), upd.Event(), skipSocketID)
+				case upd.IsSession():
+					s.emitUpdateToSession(upd.UserID(), upd.SessionID(), upd.Event(), skipSocketID)
+				}
 			}
-
-			s.emitUpdateToUser(sd.UserID, protocolwire.UpdateEvent{
-				ID:        pkgtypes.NewCUID(),
-				Seq:       userSeq,
-				CreatedAt: time.Now().UnixMilli(),
-				Body: protocolwire.UpdateBodyUpdateMachine{
-					T:         "update-machine",
-					MachineID: req.MachineID,
-					Metadata: &protocolwire.VersionedString{
-						Value:   req.Metadata,
-						Version: req.ExpectedVersion + 1,
-					},
-				},
-			}, string(client.Id()))
 		})
 
 		// Machine daemon state update
@@ -433,89 +377,27 @@ func (s *SocketIOServer) setupHandlers() {
 				}
 				return
 			}
-
-			machine, err := queries.GetMachine(context.Background(), models.GetMachineParams{
-				AccountID: sd.UserID,
-				ID:        req.MachineID,
-			})
-			if err != nil || machine.AccountID != sd.UserID {
-				if ack != nil {
-					ack(protocolwire.ResultAck{Result: "error", Message: "Machine not found"})
-				}
-				return
-			}
-
-			if machine.DaemonStateVersion != req.ExpectedVersion {
-				if ack != nil {
-					resp := protocolwire.VersionedAck{
-						Result:  "version-mismatch",
-						Version: machine.DaemonStateVersion,
-					}
-					if machine.DaemonState.Valid {
-						resp.DaemonState = machine.DaemonState.String
-					}
-					ack(resp)
-				}
-				return
-			}
-
-			stateVal := sql.NullString{Valid: true, String: req.DaemonState}
-			rows, err := queries.UpdateMachineDaemonState(context.Background(), models.UpdateMachineDaemonStateParams{
-				DaemonState:          stateVal,
-				DaemonStateVersion:   req.ExpectedVersion + 1,
-				AccountID:            sd.UserID,
-				ID:                   req.MachineID,
-				DaemonStateVersion_2: req.ExpectedVersion,
-			})
-			if err != nil || rows == 0 {
-				current, err := queries.GetMachine(context.Background(), models.GetMachineParams{
-					AccountID: sd.UserID,
-					ID:        req.MachineID,
-				})
-				if ack != nil {
-					if err == nil {
-						resp := protocolwire.VersionedAck{
-							Result:  "version-mismatch",
-							Version: current.DaemonStateVersion,
-						}
-						if current.DaemonState.Valid {
-							resp.DaemonState = current.DaemonState.String
-						}
-						ack(resp)
-					} else {
-						ack(protocolwire.ResultAck{Result: "error"})
-					}
-				}
-				return
-			}
-
+			result := handlers.MachineUpdateState(
+				context.Background(),
+				handlerDeps,
+				handlers.NewAuthContext(sd.UserID, sd.ClientType, string(client.Id())),
+				req,
+			)
 			if ack != nil {
-				ack(protocolwire.VersionedAck{
-					Result:      "success",
-					Version:     req.ExpectedVersion + 1,
-					DaemonState: req.DaemonState,
-				})
+				ack(result.Ack())
 			}
-
-			userSeq, err := queries.UpdateAccountSeq(context.Background(), sd.UserID)
-			if err != nil {
-				log.Printf("Failed to allocate user seq: %v", err)
-				return
+			for _, upd := range result.Updates() {
+				skipSocketID := ""
+				if upd.SkipSelf() {
+					skipSocketID = string(client.Id())
+				}
+				switch {
+				case upd.IsUser():
+					s.emitUpdateToUser(upd.UserID(), upd.Event(), skipSocketID)
+				case upd.IsSession():
+					s.emitUpdateToSession(upd.UserID(), upd.SessionID(), upd.Event(), skipSocketID)
+				}
 			}
-
-			s.emitUpdateToUser(sd.UserID, protocolwire.UpdateEvent{
-				ID:        pkgtypes.NewCUID(),
-				Seq:       userSeq,
-				CreatedAt: time.Now().UnixMilli(),
-				Body: protocolwire.UpdateBodyUpdateMachine{
-					T:         "update-machine",
-					MachineID: req.MachineID,
-					DaemonState: &protocolwire.VersionedString{
-						Value:   req.DaemonState,
-						Version: req.ExpectedVersion + 1,
-					},
-				},
-			}, string(client.Id()))
 		})
 
 		// Usage report event
@@ -564,57 +446,15 @@ func (s *SocketIOServer) setupHandlers() {
 			sd := s.getSocketData(client.Id())
 			raw, ack := getFirstAnyWithAck(data)
 			var req protocolwire.AccessKeyGetRequest
-			if err := decodeAny(raw, &req); err != nil || req.SessionID == "" || req.MachineID == "" {
-				if ack != nil {
-					ack(protocolwire.AccessKeyLookupAck{
-						OK:    false,
-						Error: "Invalid parameters: sessionId and machineId are required",
-					})
-				}
-				return
-			}
-
-			session, err := queries.GetSessionByID(context.Background(), req.SessionID)
-			if err != nil || session.AccountID != sd.UserID {
-				if ack != nil {
-					ack(protocolwire.AccessKeyLookupAck{OK: false, Error: "Session or machine not found", AccessKey: nil})
-				}
-				return
-			}
-			machine, err := queries.GetMachine(context.Background(), models.GetMachineParams{
-				AccountID: sd.UserID,
-				ID:        req.MachineID,
-			})
-			if err != nil || machine.AccountID != sd.UserID {
-				if ack != nil {
-					ack(protocolwire.AccessKeyLookupAck{OK: false, Error: "Session or machine not found", AccessKey: nil})
-				}
-				return
-			}
-
-			accessKey, err := queries.GetAccessKey(context.Background(), models.GetAccessKeyParams{
-				AccountID: sd.UserID,
-				MachineID: req.MachineID,
-				SessionID: req.SessionID,
-			})
+			_ = decodeAny(raw, &req)
+			result := handlers.AccessKeyGet(
+				context.Background(),
+				handlerDeps,
+				handlers.NewAuthContext(sd.UserID, sd.ClientType, string(client.Id())),
+				req,
+			)
 			if ack != nil {
-				if err == sql.ErrNoRows {
-					ack(protocolwire.AccessKeyLookupAck{OK: true, AccessKey: nil})
-					return
-				}
-				if err != nil {
-					ack(protocolwire.AccessKeyLookupAck{OK: false, Error: "Internal error", AccessKey: nil})
-					return
-				}
-				ack(protocolwire.AccessKeyLookupAck{
-					OK: true,
-					AccessKey: &protocolwire.AccessKeyInfo{
-						Data:        accessKey.Data,
-						DataVersion: accessKey.DataVersion,
-						CreatedAt:   accessKey.CreatedAt.UnixMilli(),
-						UpdatedAt:   accessKey.UpdatedAt.UnixMilli(),
-					},
-				})
+				ack(result.Ack())
 			}
 		})
 
@@ -629,32 +469,14 @@ func (s *SocketIOServer) setupHandlers() {
 				}
 				return
 			}
-
-			artifact, err := queries.GetArtifactByIDAndAccount(context.Background(), models.GetArtifactByIDAndAccountParams{
-				ID:        req.ArtifactID,
-				AccountID: sd.UserID,
-			})
-			if err != nil {
-				if ack != nil {
-					ack(protocolwire.ArtifactAck{Result: "error", Message: "Artifact not found"})
-				}
-				return
-			}
-
+			result := handlers.ArtifactRead(
+				context.Background(),
+				handlerDeps,
+				handlers.NewAuthContext(sd.UserID, sd.ClientType, string(client.Id())),
+				req,
+			)
 			if ack != nil {
-				ack(protocolwire.ArtifactAck{
-					Result: "success",
-					Artifact: &protocolwire.ArtifactInfo{
-						ID:            artifact.ID,
-						Header:        base64.StdEncoding.EncodeToString(artifact.Header),
-						HeaderVersion: artifact.HeaderVersion,
-						Body:          base64.StdEncoding.EncodeToString(artifact.Body),
-						BodyVersion:   artifact.BodyVersion,
-						Seq:           artifact.Seq,
-						CreatedAt:     artifact.CreatedAt.UnixMilli(),
-						UpdatedAt:     artifact.UpdatedAt.UnixMilli(),
-					},
-				})
+				ack(result.Ack())
 			}
 		})
 
@@ -669,122 +491,26 @@ func (s *SocketIOServer) setupHandlers() {
 				}
 				return
 			}
-
-			existing, err := queries.GetArtifactByID(context.Background(), req.ID)
-			if err == nil {
-				if existing.AccountID != sd.UserID {
-					if ack != nil {
-						ack(protocolwire.ArtifactAck{Result: "error", Message: "Artifact with this ID already exists for another account"})
-					}
-					return
-				}
-				if ack != nil {
-					ack(protocolwire.ArtifactAck{
-						Result: "success",
-						Artifact: &protocolwire.ArtifactInfo{
-							ID:            existing.ID,
-							Header:        base64.StdEncoding.EncodeToString(existing.Header),
-							HeaderVersion: existing.HeaderVersion,
-							Body:          base64.StdEncoding.EncodeToString(existing.Body),
-							BodyVersion:   existing.BodyVersion,
-							Seq:           existing.Seq,
-							CreatedAt:     existing.CreatedAt.UnixMilli(),
-							UpdatedAt:     existing.UpdatedAt.UnixMilli(),
-						},
-					})
-				}
-				return
-			} else if err != sql.ErrNoRows {
-				if ack != nil {
-					ack(protocolwire.ArtifactAck{Result: "error", Message: "Internal error"})
-				}
-				return
-			}
-
-			headerBytes, err := base64.StdEncoding.DecodeString(req.Header)
-			if err != nil {
-				if ack != nil {
-					ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid header encoding"})
-				}
-				return
-			}
-			bodyBytes, err := base64.StdEncoding.DecodeString(req.Body)
-			if err != nil {
-				if ack != nil {
-					ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid body encoding"})
-				}
-				return
-			}
-			dataKeyBytes, err := base64.StdEncoding.DecodeString(req.DataEncryptionKey)
-			if err != nil {
-				if ack != nil {
-					ack(protocolwire.ArtifactAck{Result: "error", Message: "Invalid dataEncryptionKey encoding"})
-				}
-				return
-			}
-
-			if err := queries.CreateArtifact(context.Background(), models.CreateArtifactParams{
-				ID:                req.ID,
-				AccountID:         sd.UserID,
-				Header:            headerBytes,
-				HeaderVersion:     1,
-				Body:              bodyBytes,
-				BodyVersion:       1,
-				DataEncryptionKey: dataKeyBytes,
-				Seq:               0,
-			}); err != nil {
-				if ack != nil {
-					ack(protocolwire.ArtifactAck{Result: "error", Message: "Internal error"})
-				}
-				return
-			}
-
-			artifact, err := queries.GetArtifactByIDAndAccount(context.Background(), models.GetArtifactByIDAndAccountParams{
-				ID:        req.ID,
-				AccountID: sd.UserID,
-			})
-			if err != nil {
-				if ack != nil {
-					ack(protocolwire.ArtifactAck{Result: "error", Message: "Internal error"})
-				}
-				return
-			}
-
-			userSeq, err := queries.UpdateAccountSeq(context.Background(), sd.UserID)
-			if err == nil {
-				s.emitUpdateToUser(sd.UserID, protocolwire.UpdateEvent{
-					ID:        pkgtypes.NewCUID(),
-					Seq:       userSeq,
-					CreatedAt: time.Now().UnixMilli(),
-					Body: protocolwire.UpdateBodyNewArtifact{
-						T:                 "new-artifact",
-						ArtifactID:        artifact.ID,
-						Seq:               artifact.Seq,
-						Header:            base64.StdEncoding.EncodeToString(artifact.Header),
-						HeaderVersion:     artifact.HeaderVersion,
-						Body:              base64.StdEncoding.EncodeToString(artifact.Body),
-						BodyVersion:       artifact.BodyVersion,
-						DataEncryptionKey: base64.StdEncoding.EncodeToString(artifact.DataEncryptionKey),
-						CreatedAt:         artifact.CreatedAt.UnixMilli(),
-						UpdatedAt:         artifact.UpdatedAt.UnixMilli(),
-					},
-				}, "")
-			}
-
+			result := handlers.ArtifactCreate(
+				context.Background(),
+				handlerDeps,
+				handlers.NewAuthContext(sd.UserID, sd.ClientType, string(client.Id())),
+				req,
+			)
 			if ack != nil {
-				ack(protocolwire.ArtifactAck{
-					Result: "success",
-					Artifact: &protocolwire.ArtifactInfo{
-						ID:            artifact.ID,
-						Header:        base64.StdEncoding.EncodeToString(artifact.Header),
-						HeaderVersion: artifact.HeaderVersion,
-						Body:          base64.StdEncoding.EncodeToString(artifact.Body),
-						BodyVersion:   artifact.BodyVersion,
-						Seq:           artifact.Seq,
-						CreatedAt:     artifact.CreatedAt.UnixMilli(),
-						UpdatedAt:     artifact.UpdatedAt.UnixMilli(),
-					},
-				})
+				ack(result.Ack())
+			}
+			for _, upd := range result.Updates() {
+				skipSocketID := ""
+				if upd.SkipSelf() {
+					skipSocketID = string(client.Id())
+				}
+				switch {
+				case upd.IsUser():
+					s.emitUpdateToUser(upd.UserID(), upd.Event(), skipSocketID)
+				case upd.IsSession():
+					s.emitUpdateToSession(upd.UserID(), upd.SessionID(), upd.Event(), skipSocketID)
+				}
 			}
 		})
 
@@ -804,11 +530,15 @@ func (s *SocketIOServer) setupHandlers() {
 				ack(result.Ack())
 			}
 			for _, upd := range result.Updates() {
+				skipSocketID := ""
+				if upd.SkipSelf() {
+					skipSocketID = string(client.Id())
+				}
 				switch {
 				case upd.IsUser():
-					s.emitUpdateToUser(upd.UserID(), upd.Event(), string(client.Id()))
+					s.emitUpdateToUser(upd.UserID(), upd.Event(), skipSocketID)
 				case upd.IsSession():
-					s.emitUpdateToSession(upd.UserID(), upd.SessionID(), upd.Event(), string(client.Id()))
+					s.emitUpdateToSession(upd.UserID(), upd.SessionID(), upd.Event(), skipSocketID)
 				}
 			}
 		})
@@ -824,43 +554,26 @@ func (s *SocketIOServer) setupHandlers() {
 				}
 				return
 			}
-
-			_, err := queries.GetArtifactByIDAndAccount(context.Background(), models.GetArtifactByIDAndAccountParams{
-				ID:        req.ArtifactID,
-				AccountID: sd.UserID,
-			})
-			if err != nil {
-				if ack != nil {
-					ack(protocolwire.ArtifactAck{Result: "error", Message: "Artifact not found"})
-				}
-				return
-			}
-
-			if err := queries.DeleteArtifact(context.Background(), models.DeleteArtifactParams{
-				ID:        req.ArtifactID,
-				AccountID: sd.UserID,
-			}); err != nil {
-				if ack != nil {
-					ack(protocolwire.ArtifactAck{Result: "error", Message: "Internal error"})
-				}
-				return
-			}
-
-			userSeq, err := queries.UpdateAccountSeq(context.Background(), sd.UserID)
-			if err == nil {
-				s.emitUpdateToUser(sd.UserID, protocolwire.UpdateEvent{
-					ID:        pkgtypes.NewCUID(),
-					Seq:       userSeq,
-					CreatedAt: time.Now().UnixMilli(),
-					Body: protocolwire.UpdateBodyDeleteArtifact{
-						T:          "delete-artifact",
-						ArtifactID: req.ArtifactID,
-					},
-				}, "")
-			}
-
+			result := handlers.ArtifactDelete(
+				context.Background(),
+				handlerDeps,
+				handlers.NewAuthContext(sd.UserID, sd.ClientType, string(client.Id())),
+				req,
+			)
 			if ack != nil {
-				ack(protocolwire.ResultAck{Result: "success"})
+				ack(result.Ack())
+			}
+			for _, upd := range result.Updates() {
+				skipSocketID := ""
+				if upd.SkipSelf() {
+					skipSocketID = string(client.Id())
+				}
+				switch {
+				case upd.IsUser():
+					s.emitUpdateToUser(upd.UserID(), upd.Event(), skipSocketID)
+				case upd.IsSession():
+					s.emitUpdateToSession(upd.UserID(), upd.SessionID(), upd.Event(), skipSocketID)
+				}
 			}
 		})
 		// Update metadata event
@@ -876,64 +589,27 @@ func (s *SocketIOServer) setupHandlers() {
 				}
 				return
 			}
-
-			session, err := queries.GetSessionByID(context.Background(), req.SID)
-			if err != nil || session.AccountID != sd.UserID {
-				if ack != nil {
-					ack(protocolwire.ResultAck{Result: "error"})
-				}
-				return
-			}
-
-			rows, err := queries.UpdateSessionMetadata(context.Background(), models.UpdateSessionMetadataParams{
-				Metadata:          req.Metadata,
-				MetadataVersion:   req.ExpectedVersion + 1,
-				ID:                req.SID,
-				MetadataVersion_2: req.ExpectedVersion,
-			})
-			if err != nil || rows == 0 {
-				current, err := queries.GetSessionByID(context.Background(), req.SID)
-				if ack != nil {
-					if err == nil {
-						ack(protocolwire.VersionedAck{
-							Result:   "version-mismatch",
-							Version:  current.MetadataVersion,
-							Metadata: current.Metadata,
-						})
-					} else {
-						ack(protocolwire.ResultAck{Result: "error"})
-					}
-				}
-				return
-			}
-
+			result := handlers.UpdateMetadata(
+				context.Background(),
+				handlerDeps,
+				handlers.NewAuthContext(sd.UserID, sd.ClientType, string(client.Id())),
+				req,
+			)
 			if ack != nil {
-				ack(protocolwire.VersionedAck{
-					Result:   "success",
-					Version:  req.ExpectedVersion + 1,
-					Metadata: req.Metadata,
-				})
+				ack(result.Ack())
 			}
-
-			userSeq, err := queries.UpdateAccountSeq(context.Background(), sd.UserID)
-			if err != nil {
-				log.Printf("Failed to allocate user seq: %v", err)
-				return
+			for _, upd := range result.Updates() {
+				skipSocketID := ""
+				if upd.SkipSelf() {
+					skipSocketID = string(client.Id())
+				}
+				switch {
+				case upd.IsUser():
+					s.emitUpdateToUser(upd.UserID(), upd.Event(), skipSocketID)
+				case upd.IsSession():
+					s.emitUpdateToSession(upd.UserID(), upd.SessionID(), upd.Event(), skipSocketID)
+				}
 			}
-
-			s.emitUpdateToSession(sd.UserID, req.SID, protocolwire.UpdateEvent{
-				ID:        pkgtypes.NewCUID(),
-				Seq:       userSeq,
-				CreatedAt: time.Now().UnixMilli(),
-				Body: protocolwire.UpdateBodyUpdateSession{
-					T:  "update-session",
-					ID: req.SID,
-					Metadata: &protocolwire.VersionedString{
-						Value:   req.Metadata,
-						Version: req.ExpectedVersion + 1,
-					},
-				},
-			}, string(client.Id()))
 		})
 
 		// Update state event
@@ -954,11 +630,15 @@ func (s *SocketIOServer) setupHandlers() {
 				ack(result.Ack())
 			}
 			for _, upd := range result.Updates() {
+				skipSocketID := ""
+				if upd.SkipSelf() {
+					skipSocketID = string(client.Id())
+				}
 				switch {
 				case upd.IsUser():
-					s.emitUpdateToUser(upd.UserID(), upd.Event(), string(client.Id()))
+					s.emitUpdateToUser(upd.UserID(), upd.Event(), skipSocketID)
 				case upd.IsSession():
-					s.emitUpdateToSession(upd.UserID(), upd.SessionID(), upd.Event(), string(client.Id()))
+					s.emitUpdateToSession(upd.UserID(), upd.SessionID(), upd.Event(), skipSocketID)
 				}
 			}
 		})

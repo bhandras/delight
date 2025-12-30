@@ -81,5 +81,5 @@ func UpdateState(ctx context.Context, deps Deps, auth AuthContext, req protocolw
 		},
 	}
 
-	return NewEventResult(ack, []UpdateInstruction{newSessionUpdate(auth.UserID(), req.SID, event)})
+	return NewEventResult(ack, []UpdateInstruction{newSessionUpdateSkippingSelf(auth.UserID(), req.SID, event)})
 }
