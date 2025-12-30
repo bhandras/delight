@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bhandras/delight/cli/internal/protocol/wire"
+	"github.com/bhandras/delight/protocol/wire"
 	socket "github.com/zishang520/socket.io/clients/socket/v3"
 	"github.com/zishang520/socket.io/v3/pkg/types"
 )

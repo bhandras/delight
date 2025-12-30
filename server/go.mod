@@ -14,6 +14,7 @@ require (
 
 require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
+	github.com/bhandras/delight/protocol v0.0.0
 	github.com/bytedance/sonic v1.11.6 // indirect
 	github.com/bytedance/sonic/loader v0.1.1 // indirect
 	github.com/cloudwego/base64x v0.1.4 // indirect
@@ -26,10 +27,10 @@ require (
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/gofrs/uuid v4.0.0+incompatible // indirect
 	github.com/gomodule/redigo v1.8.4 // indirect
-	github.com/google/uuid v1.6.0 // indirect
-	github.com/googollee/go-socket.io v1.7.0 // indirect
+	github.com/google/uuid v1.6.0
+	github.com/googollee/go-socket.io v1.7.0
 	github.com/gookit/color v1.6.0 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/gorilla/websocket v1.5.3
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.7 // indirect
@@ -49,8 +50,8 @@ require (
 	github.com/zishang520/socket.io/parsers/engine/v3 v3.0.0-rc.8 // indirect
 	github.com/zishang520/socket.io/parsers/socket/v3 v3.0.0-rc.8 // indirect
 	github.com/zishang520/socket.io/servers/engine/v3 v3.0.0-rc.8 // indirect
-	github.com/zishang520/socket.io/servers/socket/v3 v3.0.0-rc.8 // indirect
-	github.com/zishang520/socket.io/v3 v3.0.0-rc.8 // indirect
+	github.com/zishang520/socket.io/servers/socket/v3 v3.0.0-rc.8
+	github.com/zishang520/socket.io/v3 v3.0.0-rc.8
 	github.com/zishang520/webtransport-go v0.9.1 // indirect
 	go.uber.org/mock v0.6.0 // indirect
 	golang.org/x/arch v0.8.0 // indirect
@@ -63,3 +64,5 @@ require (
 	google.golang.org/protobuf v1.34.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/bhandras/delight/protocol => ../protocol

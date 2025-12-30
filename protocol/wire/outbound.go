@@ -1,5 +1,7 @@
 package wire
 
+import "encoding/json"
+
 // OutboundMessagePayload is the client -> server payload for the Socket.IO
 // "message" event.
 type OutboundMessagePayload struct {
@@ -9,6 +11,35 @@ type OutboundMessagePayload struct {
 	LocalID string `json:"localId,omitempty"`
 	// Message is the ciphertext envelope as a base64 string.
 	Message string `json:"message"`
+}
+
+// UnmarshalJSON accepts legacy field names seen across clients.
+//
+// Observed variants:
+// - sid vs sessionId
+// - message vs content
+func (p *OutboundMessagePayload) UnmarshalJSON(data []byte) error {
+	type compat struct {
+		SID       string `json:"sid"`
+		SessionID string `json:"sessionId"`
+		LocalID   string `json:"localId"`
+		Message   string `json:"message"`
+		Content   string `json:"content"`
+	}
+	var tmp compat
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+	p.SID = tmp.SID
+	if p.SID == "" {
+		p.SID = tmp.SessionID
+	}
+	p.LocalID = tmp.LocalID
+	p.Message = tmp.Message
+	if p.Message == "" {
+		p.Message = tmp.Content
+	}
+	return nil
 }
 
 // SessionAlivePayload is the client -> server payload for the "session-alive"

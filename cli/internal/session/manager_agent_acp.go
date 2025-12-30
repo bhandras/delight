@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 
 	"github.com/bhandras/delight/cli/internal/acp"
-	"github.com/bhandras/delight/cli/internal/protocol/wire"
 	"github.com/bhandras/delight/cli/pkg/types"
+	"github.com/bhandras/delight/protocol/wire"
 )
 
 func (m *Manager) startACP() error {

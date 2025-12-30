@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bhandras/delight/cli/internal/protocol/wire"
+	"github.com/bhandras/delight/protocol/wire"
 	"github.com/zishang520/socket.io/v3/pkg/types"
 )
 

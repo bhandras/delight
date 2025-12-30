@@ -17,10 +17,10 @@ import (
 
 	"github.com/bhandras/delight/cli/internal/claude"
 	"github.com/bhandras/delight/cli/internal/crypto"
-	"github.com/bhandras/delight/cli/internal/protocol/wire"
 	"github.com/bhandras/delight/cli/internal/storage"
 	"github.com/bhandras/delight/cli/internal/websocket"
 	"github.com/bhandras/delight/cli/pkg/types"
+	"github.com/bhandras/delight/protocol/wire"
 )
 
 func (m *Manager) startInboundLoop() {

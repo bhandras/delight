@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/bhandras/delight/cli/internal/codex"
-	"github.com/bhandras/delight/cli/internal/protocol/wire"
+	"github.com/bhandras/delight/protocol/wire"
 )
 
 func (m *Manager) runInboundRPC(fn func() (json.RawMessage, error)) (json.RawMessage, error) {

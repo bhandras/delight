@@ -24,9 +24,9 @@ var base64Like = regexp.MustCompile(`^[A-Za-z0-9+/=_-]+$`)
 // tests.
 //
 // Enable by setting either:
-// - `DELIGHT_WIRE_DUMP=1` (writes to a default repo-relative directory),
-//   or
-// - `DELIGHT_WIRE_DUMP_DIR=/abs/path` (writes to that directory).
+//   - `DELIGHT_WIRE_DUMP=1` (writes to a default repo-relative directory),
+//     or
+//   - `DELIGHT_WIRE_DUMP_DIR=/abs/path` (writes to that directory).
 //
 // The fixture is sanitized to avoid committing secrets or personal data.
 func DumpToTestdata(kind string, payload any) {
@@ -35,7 +35,7 @@ func DumpToTestdata(kind string, payload any) {
 		if os.Getenv(dumpEnableEnv) == "" {
 			return
 		}
-		dir = filepath.Join("cli", "internal", "protocol", "wire", "testdata", "captured")
+		dir = filepath.Join("protocol", "wire", "testdata", "captured")
 	}
 
 	if kind == "" {

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/crypto"
 	"github.com/bhandras/delight/server/internal/models"
 	pkgtypes "github.com/bhandras/delight/server/pkg/types"
@@ -100,8 +101,16 @@ func (s *SocketIOServer) setupHandlers() {
 			return
 		}
 
+		var auth protocolwire.SocketAuthPayload
+		if err := decodeAny(authMap, &auth); err != nil {
+			log.Printf("❌ Invalid auth data provided (socket %s): %v", client.Id(), err)
+			client.Emit("error", map[string]string{"message": "Invalid authentication data"})
+			client.Disconnect(true)
+			return
+		}
+
 		// Extract token
-		token, _ := authMap["token"].(string)
+		token := auth.Token
 		if token == "" {
 			log.Printf("❌ No token provided (socket %s)", client.Id())
 			client.Emit("error", map[string]string{"message": "Missing authentication token"})
@@ -110,12 +119,12 @@ func (s *SocketIOServer) setupHandlers() {
 		}
 
 		// Extract client type and optional IDs
-		clientType, _ := authMap["clientType"].(string)
+		clientType := auth.ClientType
 		if clientType == "" {
 			clientType = "user-scoped" // Default to user-scoped
 		}
-		sessionID, _ := authMap["sessionId"].(string)
-		machineID, _ := authMap["machineId"].(string)
+		sessionID := auth.SessionID
+		machineID := auth.MachineID
 
 		// Validate session-scoped clients have sessionId
 		if clientType == "session-scoped" && sessionID == "" {
@@ -189,18 +198,14 @@ func (s *SocketIOServer) setupHandlers() {
 				return
 			}
 
-			msgData, ok := data[0].(map[string]any)
-			if !ok {
-				log.Printf("Message data is not a map: %T", data[0])
+			var payload protocolwire.OutboundMessagePayload
+			if err := decodeAny(data[0], &payload); err != nil {
+				log.Printf("Message data decode error: %v (type=%T)", err, data[0])
 				return
 			}
 
 			// Get the target session ID from the message
-			// Mobile app sends "sid", web might send "sessionId"
-			targetSessionID, _ := msgData["sid"].(string)
-			if targetSessionID == "" {
-				targetSessionID, _ = msgData["sessionId"].(string)
-			}
+			targetSessionID := payload.SID
 			if targetSessionID == "" {
 				// If no session ID in message, use the sender's session ID (if session-scoped)
 				targetSessionID = sd.SessionID
@@ -233,14 +238,11 @@ func (s *SocketIOServer) setupHandlers() {
 			}
 
 			var localID sql.NullString
-			if l, ok := msgData["localId"].(string); ok && l != "" {
-				localID = sql.NullString{String: l, Valid: true}
+			if payload.LocalID != "" {
+				localID = sql.NullString{String: payload.LocalID, Valid: true}
 			}
 
-			content, _ := msgData["message"].(string)
-			if content == "" {
-				content, _ = msgData["content"].(string)
-			}
+			content := payload.Message
 			if content == "" {
 				log.Printf("❌ No message content provided")
 				return
@@ -1409,6 +1411,14 @@ func (s *SocketIOServer) setupHandlers() {
 			s.unregisterAllRPCMethods(sd.UserID, client)
 		})
 	})
+}
+
+func decodeAny(input any, out any) error {
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, out)
 }
 
 func (s *SocketIOServer) emitUpdateToSession(userID, sessionID string, payload map[string]any, skipSocketID string) {

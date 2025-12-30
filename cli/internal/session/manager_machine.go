@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/bhandras/delight/cli/internal/crypto"
-	"github.com/bhandras/delight/cli/internal/protocol/wire"
+	"github.com/bhandras/delight/protocol/wire"
 )
 
 func (m *Manager) registerMachineRPCHandlers() {
