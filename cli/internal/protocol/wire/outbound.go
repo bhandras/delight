@@ -133,6 +133,20 @@ type UpdateStatePayload struct {
 	ExpectedVersion int64 `json:"expectedVersion"`
 }
 
+// SocketAuthPayload is the client -> server Socket.IO auth payload used during
+// handshake for session-, machine-, and user-scoped sockets.
+type SocketAuthPayload struct {
+	// Token is the bearer token for the authenticated user.
+	Token string `json:"token"`
+	// ClientType selects the connection scope ("user-scoped", "session-scoped",
+	// or "machine-scoped").
+	ClientType string `json:"clientType"`
+	// SessionID scopes a session-scoped socket.
+	SessionID string `json:"sessionId,omitempty"`
+	// MachineID scopes a machine-scoped socket.
+	MachineID string `json:"machineId,omitempty"`
+}
+
 // RPCRegisterPayload is the client -> server payload for the "rpc-register"
 // event.
 type RPCRegisterPayload struct {
