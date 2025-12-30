@@ -29,8 +29,7 @@ type SocketIOServer struct {
 	server     *socket.Server
 	socketData sync.Map // Maps socket ID to user data
 	sessions   *sessionruntime.Manager
-	rpcMu      sync.Mutex
-	rpcMethods map[string]map[string]*socket.Socket // userID -> method -> socket
+	rpc        *RPCRegistry
 }
 
 // NewSocketIOServer creates a new Socket.IO v4 server
@@ -59,7 +58,7 @@ func NewSocketIOServer(db *sql.DB, jwtManager *crypto.JWTManager) *SocketIOServe
 		jwtManager: jwtManager,
 		server:     server,
 		socketData: sync.Map{},
-		rpcMethods: make(map[string]map[string]*socket.Socket),
+		rpc:        NewRPCRegistry(),
 	}
 	s.sessions = sessionruntime.NewManager(&sessionruntime.SQLStore{
 		Queries: models.New(db),
@@ -659,7 +658,7 @@ func (s *SocketIOServer) setupHandlers() {
 			if shouldDebugRPC() {
 				log.Printf("RPC register: user=%s client=%s method=%s", sd.UserID, sd.ClientType, method)
 			}
-			s.registerRPCMethod(sd.UserID, method, client)
+			s.rpc.Register(sd.UserID, method, string(client.Id()))
 			client.Emit("rpc-registered", protocolwire.RPCRegisteredPayload{Method: method})
 		})
 
@@ -676,7 +675,7 @@ func (s *SocketIOServer) setupHandlers() {
 				client.Emit("rpc-error", protocolwire.RPCErrorPayload{Type: "unregister", Error: "Invalid method name"})
 				return
 			}
-			s.unregisterRPCMethod(sd.UserID, method, client)
+			s.rpc.Unregister(sd.UserID, method, string(client.Id()))
 			client.Emit("rpc-unregistered", protocolwire.RPCUnregisteredPayload{Method: method})
 		})
 
@@ -691,36 +690,37 @@ func (s *SocketIOServer) setupHandlers() {
 				}
 				return
 			}
-			method := req.Method
-			params := req.Params
-			if method == "" {
+			forward, immediateAck := handlers.RPCCall(
+				handlers.NewAuthContext(sd.UserID, sd.ClientType, string(client.Id())),
+				s.rpc,
+				req,
+			)
+			if immediateAck != nil {
 				if ack != nil {
-					ack(protocolwire.RPCAck{OK: false, Error: "Invalid parameters: method is required"})
+					ack(*immediateAck)
+				}
+				return
+			}
+			if forward == nil {
+				if ack != nil {
+					ack(protocolwire.RPCAck{OK: false, Error: "Internal error"})
 				}
 				return
 			}
 
-			target := s.getRPCMethodSocket(sd.UserID, method)
-			if target == nil {
+			targetSD := s.getSocketData(forward.TargetSocketID())
+			if targetSD == nil || targetSD.Socket == nil {
 				if ack != nil {
 					ack(protocolwire.RPCAck{OK: false, Error: "RPC method not available"})
 				}
 				return
 			}
+			target := targetSD.Socket
 			if shouldDebugRPC() {
-				log.Printf("RPC call: user=%s client=%s method=%s target=%s", sd.UserID, sd.ClientType, method, target.Id())
-			}
-			if target.Id() == client.Id() {
-				if ack != nil {
-					ack(protocolwire.RPCAck{OK: false, Error: "Cannot call RPC on the same socket"})
-				}
-				return
+				log.Printf("RPC call: user=%s client=%s method=%s target=%s", sd.UserID, sd.ClientType, req.Method, target.Id())
 			}
 
-			target.Timeout(30*time.Second).EmitWithAck("rpc-request", protocolwire.RPCRequestPayload{
-				Method: method,
-				Params: params,
-			})(func(args []any, err error) {
+			target.Timeout(forward.Timeout()).EmitWithAck("rpc-request", forward.Request())(func(args []any, err error) {
 				if ack == nil {
 					return
 				}
@@ -785,7 +785,7 @@ func (s *SocketIOServer) setupHandlers() {
 			}
 			// Clean up socket data
 			s.socketData.Delete(client.Id())
-			s.unregisterAllRPCMethods(sd.UserID, client)
+			s.rpc.UnregisterAll(sd.UserID, string(client.Id()))
 		})
 	})
 }
@@ -886,59 +886,6 @@ func (s *SocketIOServer) EmitUpdateToUser(userID string, payload any) {
 // EmitEphemeralToUser exposes ephemeral emission for HTTP handlers.
 func (s *SocketIOServer) EmitEphemeralToUser(userID string, payload any) {
 	s.emitEphemeralToUser(userID, payload, "")
-}
-
-func (s *SocketIOServer) registerRPCMethod(userID, method string, sock *socket.Socket) {
-	s.rpcMu.Lock()
-	defer s.rpcMu.Unlock()
-	methods, ok := s.rpcMethods[userID]
-	if !ok {
-		methods = make(map[string]*socket.Socket)
-		s.rpcMethods[userID] = methods
-	}
-	methods[method] = sock
-}
-
-func (s *SocketIOServer) unregisterRPCMethod(userID, method string, sock *socket.Socket) {
-	s.rpcMu.Lock()
-	defer s.rpcMu.Unlock()
-	methods, ok := s.rpcMethods[userID]
-	if !ok {
-		return
-	}
-	if current, ok := methods[method]; ok && current != nil && current.Id() == sock.Id() {
-		delete(methods, method)
-	}
-	if len(methods) == 0 {
-		delete(s.rpcMethods, userID)
-	}
-}
-
-func (s *SocketIOServer) unregisterAllRPCMethods(userID string, sock *socket.Socket) {
-	s.rpcMu.Lock()
-	defer s.rpcMu.Unlock()
-	methods, ok := s.rpcMethods[userID]
-	if !ok {
-		return
-	}
-	for method, current := range methods {
-		if current != nil && current.Id() == sock.Id() {
-			delete(methods, method)
-		}
-	}
-	if len(methods) == 0 {
-		delete(s.rpcMethods, userID)
-	}
-}
-
-func (s *SocketIOServer) getRPCMethodSocket(userID, method string) *socket.Socket {
-	s.rpcMu.Lock()
-	defer s.rpcMu.Unlock()
-	methods, ok := s.rpcMethods[userID]
-	if !ok {
-		return nil
-	}
-	return methods[method]
 }
 
 func getFirstMap(data []any) (map[string]any, bool) {
