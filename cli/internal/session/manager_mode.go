@@ -398,16 +398,15 @@ func printRawRecord(record map[string]interface{}) {
 	}
 
 	for _, block := range blocks {
-		blockType, _ := block["type"].(string)
-		switch blockType {
+		switch block.Type {
 		case "text":
-			if text, _ := block["text"].(string); text != "" {
-				fmt.Fprintln(os.Stdout, prefix+text)
+			if block.Text != "" {
+				fmt.Fprintln(os.Stdout, prefix+block.Text)
 			}
 		case "tool_use":
-			name, _ := block["name"].(string)
-			id, _ := block["id"].(string)
-			summary := formatToolInput(block["input"])
+			name, _ := block.Fields["name"].(string)
+			id, _ := block.Fields["id"].(string)
+			summary := formatToolInput(block.Fields["input"])
 			line := prefix + "[tool] " + name
 			if id != "" {
 				line += " " + id
@@ -417,7 +416,7 @@ func printRawRecord(record map[string]interface{}) {
 			}
 			fmt.Fprintln(os.Stdout, line)
 		case "tool_result":
-			summary := formatToolResult(block["content"])
+			summary := formatToolResult(block.Fields["content"])
 			line := prefix + "[tool_result]"
 			if summary != "" {
 				line += " " + summary
@@ -480,20 +479,74 @@ func formatToolResult(content interface{}) string {
 
 // buildRawRecordFromRemote converts bridge RemoteMessage into the raw record
 // format expected by the mobile app (matches RawRecordSchema on client).
-func (m *Manager) buildRawRecordFromRemote(msg *claude.RemoteMessage) map[string]interface{} {
+func (m *Manager) buildRawRecordFromRemote(msg *claude.RemoteMessage) any {
+	type rawRecordProbe struct {
+		Role    string `json:"role"`
+		Content struct {
+			Type string `json:"type"`
+		} `json:"content"`
+	}
+
+	type legacySDKMessage struct {
+		Type    string              `json:"type"`
+		Role    string              `json:"role"`
+		Model   string              `json:"model,omitempty"`
+		Content []wire.ContentBlock `json:"content"`
+		Usage   any                 `json:"usage,omitempty"`
+		ID      string              `json:"id,omitempty"`
+	}
+
 	// If bridge already sent structured payload, prefer that
 	if len(msg.Message) > 0 {
-		var existing map[string]interface{}
-		if err := json.Unmarshal(msg.Message, &existing); err == nil {
-			if wrapped := wrapLegacySDKMessage(existing); wrapped != nil {
-				return wrapped
+		raw := json.RawMessage(msg.Message)
+
+		var legacy legacySDKMessage
+		if err := json.Unmarshal(raw, &legacy); err == nil &&
+			legacy.Type == "message" &&
+			(legacy.Role == "assistant" || legacy.Role == "user") &&
+			len(legacy.Content) > 0 {
+			model := legacy.Model
+			if legacy.Role == "assistant" && model == "" {
+				model = "unknown"
 			}
-			if isRawRecordMap(existing) {
-				return existing
+
+			outType := legacy.Role
+			uuid := legacy.ID
+			if uuid == "" {
+				uuid = types.NewCUID()
 			}
-			if msg.Type == "raw" {
-				return nil
+
+			return wire.AgentOutputRecord{
+				Role: "agent",
+				Content: wire.AgentOutputContent{
+					Type: "output",
+					Data: wire.AgentOutputData{
+						Type:             outType,
+						IsSidechain:      false,
+						IsCompactSummary: false,
+						IsMeta:           false,
+						UUID:             uuid,
+						ParentUUID:       nil,
+						Message: wire.AgentMessage{
+							Role:    legacy.Role,
+							Model:   model,
+							Content: legacy.Content,
+							Usage:   legacy.Usage,
+						},
+					},
+				},
 			}
+		}
+
+		var probe rawRecordProbe
+		if err := json.Unmarshal(raw, &probe); err == nil &&
+			(probe.Role == "agent" || probe.Role == "user") &&
+			probe.Content.Type != "" {
+			return raw
+		}
+
+		if msg.Type == "raw" {
+			return nil
 		}
 	}
 
@@ -511,55 +564,52 @@ func (m *Manager) buildRawRecordFromRemote(msg *claude.RemoteMessage) map[string
 		}
 
 		if role == "assistant" {
-			message := map[string]interface{}{
-				"role":    "assistant",
-				"model":   model,
-				"content": contentBlocks,
+			message := wire.AgentMessage{
+				Role:    "assistant",
+				Model:   model,
+				Content: contentBlocks,
 			}
 			if len(msg.Usage) > 0 {
 				var usage interface{}
 				if err := json.Unmarshal(msg.Usage, &usage); err == nil && usage != nil {
-					message["usage"] = usage
+					message.Usage = usage
 				}
 			}
 
-			data := map[string]interface{}{
-				"type":             "assistant",
-				"isSidechain":      false,
-				"isCompactSummary": false,
-				"isMeta":           false,
-				"uuid":             types.NewCUID(),
-				"parentUuid":       nil,
-				"message":          message,
+			data := wire.AgentOutputData{
+				Type:             "assistant",
+				IsSidechain:      false,
+				IsCompactSummary: false,
+				IsMeta:           false,
+				UUID:             types.NewCUID(),
+				ParentUUID:       nil,
+				Message:          message,
 			}
 			if msg.ParentToolUseID != "" {
-				data["parent_tool_use_id"] = msg.ParentToolUseID
+				data.ParentToolUseID = msg.ParentToolUseID
 			}
 
-			return map[string]interface{}{
-				"role": "agent",
-				"content": map[string]interface{}{
-					"type": "output",
-					"data": data,
-				},
+			return wire.AgentOutputRecord{
+				Role:    "agent",
+				Content: wire.AgentOutputContent{Type: "output", Data: data},
 			}
 		}
 
 		if role == "user" {
-			return map[string]interface{}{
-				"role": "agent",
-				"content": map[string]interface{}{
-					"type": "output",
-					"data": map[string]interface{}{
-						"type":             "user",
-						"isSidechain":      false,
-						"isCompactSummary": false,
-						"isMeta":           false,
-						"uuid":             types.NewCUID(),
-						"parentUuid":       nil,
-						"message": map[string]interface{}{
-							"role":    "user",
-							"content": contentBlocks,
+			return wire.AgentOutputRecord{
+				Role: "agent",
+				Content: wire.AgentOutputContent{
+					Type: "output",
+					Data: wire.AgentOutputData{
+						Type:             "user",
+						IsSidechain:      false,
+						IsCompactSummary: false,
+						IsMeta:           false,
+						UUID:             types.NewCUID(),
+						ParentUUID:       nil,
+						Message: wire.AgentMessage{
+							Role:    "user",
+							Content: contentBlocks,
 						},
 					},
 				},
@@ -588,30 +638,32 @@ func (m *Manager) buildRawRecordFromRemote(msg *claude.RemoteMessage) map[string
 			model = "unknown"
 		}
 
-		message := map[string]interface{}{
-			"role":    "assistant",
-			"model":   model,
-			"content": []map[string]interface{}{{"type": "text", "text": text}},
+		message := wire.AgentMessage{
+			Role:  "assistant",
+			Model: model,
+			Content: []wire.ContentBlock{
+				{Type: "text", Text: text},
+			},
 		}
 		if len(msg.Usage) > 0 {
 			var usage interface{}
 			if err := json.Unmarshal(msg.Usage, &usage); err == nil && usage != nil {
-				message["usage"] = usage
+				message.Usage = usage
 			}
 		}
 
-		return map[string]interface{}{
-			"role": "agent",
-			"content": map[string]interface{}{
-				"type": "output",
-				"data": map[string]interface{}{
-					"type":             "assistant",
-					"isSidechain":      false,
-					"isCompactSummary": false,
-					"isMeta":           false,
-					"uuid":             uuid,
-					"parentUuid":       nil,
-					"message":          message,
+		return wire.AgentOutputRecord{
+			Role: "agent",
+			Content: wire.AgentOutputContent{
+				Type: "output",
+				Data: wire.AgentOutputData{
+					Type:             "assistant",
+					IsSidechain:      false,
+					IsCompactSummary: false,
+					IsMeta:           false,
+					UUID:             uuid,
+					ParentUUID:       nil,
+					Message:          message,
 				},
 			},
 		}
@@ -623,12 +675,19 @@ func (m *Manager) buildRawRecordFromRemote(msg *claude.RemoteMessage) map[string
 			if v == "" {
 				return nil
 			}
+		default:
+			if fmt.Sprint(v) == "" {
+				return nil
+			}
 		}
-		return map[string]interface{}{
-			"role": "user",
-			"content": map[string]interface{}{
-				"type": "text",
-				"text": msg.Content,
+		return wire.UserTextRecord{
+			Role: "user",
+			Content: struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}{
+				Type: "text",
+				Text: fmt.Sprint(msg.Content),
 			},
 		}
 	default:
@@ -637,97 +696,36 @@ func (m *Manager) buildRawRecordFromRemote(msg *claude.RemoteMessage) map[string
 	}
 }
 
-func isRawRecordMap(existing map[string]interface{}) bool {
-	role, _ := existing["role"].(string)
-	if role != "agent" && role != "user" {
-		return false
-	}
-	content, ok := existing["content"].(map[string]interface{})
-	if !ok {
-		return false
-	}
-	_, ok = content["type"].(string)
-	return ok
-}
-
-func wrapLegacySDKMessage(existing map[string]interface{}) map[string]interface{} {
-	msgType, _ := existing["type"].(string)
-	if msgType != "message" {
-		return nil
-	}
-
-	role, _ := existing["role"].(string)
-	if role != "assistant" && role != "user" {
-		return nil
-	}
-
-	rawContent, ok := existing["content"].([]interface{})
-	if !ok || len(rawContent) == 0 {
-		return nil
-	}
-
-	contentBlocks := make([]map[string]interface{}, 0, len(rawContent))
-	for _, item := range rawContent {
-		if block, ok := item.(map[string]interface{}); ok {
-			contentBlocks = append(contentBlocks, block)
-		}
-	}
-	if len(contentBlocks) == 0 {
-		return nil
-	}
-
-	uuid := ""
-	if id, _ := existing["id"].(string); id != "" {
-		uuid = id
-	} else {
-		uuid = types.NewCUID()
-	}
-
-	message := map[string]interface{}{
-		"role":    role,
-		"content": contentBlocks,
-	}
-
-	if role == "assistant" {
-		model, _ := existing["model"].(string)
-		if model == "" {
-			model = "unknown"
-		}
-		message["model"] = model
-		if usage, ok := existing["usage"]; ok && usage != nil {
-			message["usage"] = usage
-		}
-	}
-
-	data := map[string]interface{}{
-		"type":             map[bool]string{true: "assistant", false: "user"}[role == "assistant"],
-		"isSidechain":      false,
-		"isCompactSummary": false,
-		"isMeta":           false,
-		"uuid":             uuid,
-		"parentUuid":       nil,
-		"message":          message,
-	}
-
-	return map[string]interface{}{
-		"role": "agent",
-		"content": map[string]interface{}{
-			"type": "output",
-			"data": data,
-		},
-	}
-}
-
-func extractRemoteContentBlocks(content interface{}) []map[string]interface{} {
+func extractRemoteContentBlocks(content interface{}) []wire.ContentBlock {
 	switch v := content.(type) {
-	case []map[string]interface{}:
+	case []wire.ContentBlock:
 		return v
-	case []interface{}:
-		blocks := make([]map[string]interface{}, 0, len(v))
+	case []map[string]interface{}:
+		blocks := make([]wire.ContentBlock, 0, len(v))
 		for _, item := range v {
-			if block, ok := item.(map[string]interface{}); ok {
-				blocks = append(blocks, block)
+			raw, err := json.Marshal(item)
+			if err != nil {
+				continue
 			}
+			var block wire.ContentBlock
+			if err := json.Unmarshal(raw, &block); err != nil {
+				continue
+			}
+			blocks = append(blocks, block)
+		}
+		return blocks
+	case []interface{}:
+		blocks := make([]wire.ContentBlock, 0, len(v))
+		for _, item := range v {
+			raw, err := json.Marshal(item)
+			if err != nil {
+				continue
+			}
+			var block wire.ContentBlock
+			if err := json.Unmarshal(raw, &block); err != nil {
+				continue
+			}
+			blocks = append(blocks, block)
 		}
 		return blocks
 	default:
@@ -741,14 +739,22 @@ func extractRemoteContentText(content interface{}) string {
 		return v
 	case []interface{}:
 		for _, item := range v {
-			block, ok := item.(map[string]interface{})
-			if !ok {
+			raw, err := json.Marshal(item)
+			if err != nil {
 				continue
 			}
-			if t, _ := block["type"].(string); t == "text" {
-				if text, _ := block["text"].(string); text != "" {
-					return text
-				}
+			var block wire.ContentBlock
+			if err := json.Unmarshal(raw, &block); err != nil {
+				continue
+			}
+			if block.Type == "text" && block.Text != "" {
+				return block.Text
+			}
+		}
+	case []wire.ContentBlock:
+		for _, block := range v {
+			if block.Type == "text" && block.Text != "" {
+				return block.Text
 			}
 		}
 	}
@@ -763,24 +769,24 @@ func (m *Manager) sendFakeAgentResponse(userText string) {
 	reply := fmt.Sprintf("fake-agent: %s", userText)
 	uuid := types.NewCUID()
 
-	message := map[string]interface{}{
-		"role":    "assistant",
-		"model":   "fake-agent",
-		"content": []map[string]interface{}{{"type": "text", "text": reply}},
-	}
-
-	payload := map[string]interface{}{
-		"role": "agent",
-		"content": map[string]interface{}{
-			"type": "output",
-			"data": map[string]interface{}{
-				"type":             "assistant",
-				"isSidechain":      false,
-				"isCompactSummary": false,
-				"isMeta":           false,
-				"uuid":             uuid,
-				"parentUuid":       nil,
-				"message":          message,
+	payload := wire.AgentOutputRecord{
+		Role: "agent",
+		Content: wire.AgentOutputContent{
+			Type: "output",
+			Data: wire.AgentOutputData{
+				Type:             "assistant",
+				IsSidechain:      false,
+				IsCompactSummary: false,
+				IsMeta:           false,
+				UUID:             uuid,
+				ParentUUID:       nil,
+				Message: wire.AgentMessage{
+					Role:  "assistant",
+					Model: "fake-agent",
+					Content: []wire.ContentBlock{
+						{Type: "text", Text: reply},
+					},
+				},
 			},
 		},
 	}

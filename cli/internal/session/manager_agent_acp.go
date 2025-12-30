@@ -150,20 +150,20 @@ func (m *Manager) handleACPMessage(content string) {
 	m.setThinking(false)
 }
 
-func (m *Manager) requestACPAwaitResume(awaitRequest map[string]interface{}) (map[string]interface{}, bool) {
+func (m *Manager) requestACPAwaitResume(awaitRequest map[string]interface{}) (wire.ACPAwaitResume, bool) {
 	requestID, err := acp.NewUUID()
 	if err != nil {
 		if m.debug {
 			log.Printf("ACP await request id error: %v", err)
 		}
-		return nil, false
+		return wire.ACPAwaitResume{}, false
 	}
 
-	payload, err := json.Marshal(map[string]interface{}{
-		"await": awaitRequest,
+	payload, err := json.Marshal(wire.ACPAwaitInput{
+		Await: awaitRequest,
 	})
 	if err != nil {
-		return nil, false
+		return wire.ACPAwaitResume{}, false
 	}
 
 	response, err := m.handlePermissionRequest(requestID, "acp.await", payload)
@@ -171,7 +171,7 @@ func (m *Manager) requestACPAwaitResume(awaitRequest map[string]interface{}) (ma
 		if m.debug {
 			log.Printf("ACP permission error: %v", err)
 		}
-		return nil, false
+		return wire.ACPAwaitResume{}, false
 	}
 	if m.debug {
 		log.Printf("ACP permission response received: requestId=%s", requestID)
@@ -183,9 +183,9 @@ func (m *Manager) requestACPAwaitResume(awaitRequest map[string]interface{}) (ma
 		message = response.Message
 	}
 
-	return map[string]interface{}{
-		"allow":   allow,
-		"message": message,
+	return wire.ACPAwaitResume{
+		Allow:   allow,
+		Message: message,
 	}, true
 }
 
@@ -196,23 +196,24 @@ func (m *Manager) sendAgentOutput(text string) {
 
 	uuid := types.NewCUID()
 
-	message := map[string]interface{}{
-		"role":    "assistant",
-		"model":   "acp",
-		"content": []map[string]interface{}{{"type": "text", "text": text}},
-	}
-	payload := map[string]interface{}{
-		"role": "agent",
-		"content": map[string]interface{}{
-			"type": "output",
-			"data": map[string]interface{}{
-				"type":             "assistant",
-				"isSidechain":      false,
-				"isCompactSummary": false,
-				"isMeta":           false,
-				"uuid":             uuid,
-				"parentUuid":       nil,
-				"message":          message,
+	payload := wire.AgentOutputRecord{
+		Role: "agent",
+		Content: wire.AgentOutputContent{
+			Type: "output",
+			Data: wire.AgentOutputData{
+				Type:             "assistant",
+				IsSidechain:      false,
+				IsCompactSummary: false,
+				IsMeta:           false,
+				UUID:             uuid,
+				ParentUUID:       nil,
+				Message: wire.AgentMessage{
+					Role:  "assistant",
+					Model: "acp",
+					Content: []wire.ContentBlock{
+						{Type: "text", Text: text},
+					},
+				},
 			},
 		},
 	}

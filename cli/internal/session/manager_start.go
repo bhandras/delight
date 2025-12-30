@@ -286,12 +286,10 @@ func (m *Manager) createSession() error {
 	}
 
 	// Create session request (encode metadata as base64 string)
-	reqBody := map[string]interface{}{
-		"tag":      m.sessionTag,
-		"metadata": base64.StdEncoding.EncodeToString(encryptedMeta),
-	}
-
-	body, err := json.Marshal(reqBody)
+	body, err := json.Marshal(wire.CreateSessionRequest{
+		Tag:      m.sessionTag,
+		Metadata: base64.StdEncoding.EncodeToString(encryptedMeta),
+	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -322,28 +320,18 @@ func (m *Manager) createSession() error {
 		return fmt.Errorf("create session failed: %s - %s", resp.Status, string(respBody))
 	}
 
-	// Parse response
-	var result map[string]interface{}
+	var result wire.CreateSessionResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
-
-	// Server returns {"session": {...}}
-	sessionObj, ok := result["session"].(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("invalid response: missing session object")
-	}
-
-	sessionID, ok := sessionObj["id"].(string)
-	if !ok {
+	if result.Session.ID == "" {
 		return fmt.Errorf("invalid response: missing session id")
 	}
-
-	m.sessionID = sessionID
+	m.sessionID = result.Session.ID
 
 	// Extract data key if present
-	if dataKeyB64, ok := sessionObj["dataEncryptionKey"].(string); ok && dataKeyB64 != "" {
-		decrypted, err := crypto.DecryptDataEncryptionKey(dataKeyB64, m.masterSecret)
+	if result.Session.DataEncryptionKey != "" {
+		decrypted, err := crypto.DecryptDataEncryptionKey(result.Session.DataEncryptionKey, m.masterSecret)
 		if err != nil {
 			log.Printf("Failed to decrypt data encryption key: %v", err)
 		} else {
@@ -380,13 +368,11 @@ func (m *Manager) createMachine() error {
 	}
 
 	// Create machine request
-	reqBody := map[string]interface{}{
-		"id":          m.machineID,
-		"metadata":    base64.StdEncoding.EncodeToString(encryptedMeta),
-		"daemonState": base64.StdEncoding.EncodeToString(encryptedState),
-	}
-
-	body, err := json.Marshal(reqBody)
+	body, err := json.Marshal(wire.CreateMachineRequest{
+		ID:          m.machineID,
+		Metadata:    base64.StdEncoding.EncodeToString(encryptedMeta),
+		DaemonState: base64.StdEncoding.EncodeToString(encryptedState),
+	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -417,12 +403,7 @@ func (m *Manager) createMachine() error {
 		return fmt.Errorf("create machine failed: %s - %s", resp.Status, string(respBody))
 	}
 
-	var response struct {
-		Machine struct {
-			MetadataVersion    int64 `json:"metadataVersion"`
-			DaemonStateVersion int64 `json:"daemonStateVersion"`
-		} `json:"machine"`
-	}
+	var response wire.CreateMachineResponse
 	if err := json.Unmarshal(respBody, &response); err == nil {
 		m.machineMetaVer = response.Machine.MetadataVersion
 		m.machineStateVer = response.Machine.DaemonStateVersion
@@ -456,6 +437,10 @@ func (m *Manager) handleMessage(data map[string]interface{}) {
 		}
 		return
 	}
+	m.handleEncryptedUserMessage(cipher, localID)
+}
+
+func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 
 	// Decrypt the message content
 	decrypted, err := m.decrypt(cipher)
@@ -550,16 +535,7 @@ func (m *Manager) handleUpdate(data map[string]interface{}) {
 		return
 	}
 
-	// Build a minimal payload compatible with handleMessage
-	payload := map[string]interface{}{
-		"message": map[string]interface{}{
-			"content": map[string]interface{}{
-				"t": "encrypted",
-				"c": cipher,
-			},
-		},
-	}
-	m.handleMessage(payload)
+	m.handleEncryptedUserMessage(cipher, "")
 }
 
 // handleSessionUpdate handles session update events

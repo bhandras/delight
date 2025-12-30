@@ -187,9 +187,7 @@ func (m *RPCManager) handleRPCCall(data map[string]interface{}, callback func(..
 		if m.debug {
 			log.Printf("No handler for RPC method: %s", method)
 		}
-		callback(map[string]interface{}{
-			"error": fmt.Sprintf("unknown method: %s", method),
-		})
+		callback(wire.ErrorResponse{Error: fmt.Sprintf("unknown method: %s", method)})
 		return
 	}
 
@@ -207,9 +205,7 @@ func (m *RPCManager) handleRPCCall(data map[string]interface{}, callback func(..
 				if m.debug {
 					log.Printf("Failed to decrypt RPC params: %v", err)
 				}
-				callback(map[string]interface{}{
-					"error": "decryption failed",
-				})
+				callback(wire.ErrorResponse{Error: "decryption failed"})
 				return
 			}
 		}
@@ -226,9 +222,7 @@ func (m *RPCManager) handleRPCCall(data map[string]interface{}, callback func(..
 		if m.debug {
 			log.Printf("RPC handler error: %v", err)
 		}
-		callback(map[string]interface{}{
-			"error": err.Error(),
-		})
+		callback(wire.ErrorResponse{Error: err.Error()})
 		return
 	}
 
@@ -240,9 +234,7 @@ func (m *RPCManager) handleRPCCall(data map[string]interface{}, callback func(..
 			if m.debug {
 				log.Printf("Failed to encrypt RPC result: %v", err)
 			}
-			callback(map[string]interface{}{
-				"error": "encryption failed",
-			})
+			callback(wire.ErrorResponse{Error: "encryption failed"})
 			return
 		}
 		response = encrypted

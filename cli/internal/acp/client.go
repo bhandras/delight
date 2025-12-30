@@ -36,9 +36,9 @@ type runRequest struct {
 }
 
 type runResumeRequest struct {
-	RunID       string                 `json:"run_id"`
-	AwaitResume map[string]interface{} `json:"await_resume"`
-	Mode        string                 `json:"mode"`
+	RunID       string `json:"run_id"`
+	AwaitResume any    `json:"await_resume"`
+	Mode        string `json:"mode"`
 }
 
 type RunResponse struct {
@@ -89,7 +89,7 @@ func (c *Client) Run(ctx context.Context, sessionID, inputText string) (*RunResu
 	return c.doRun(ctx, "/runs", req)
 }
 
-func (c *Client) Resume(ctx context.Context, runID string, awaitResume map[string]interface{}) (*RunResult, error) {
+func (c *Client) Resume(ctx context.Context, runID string, awaitResume any) (*RunResult, error) {
 	req := runResumeRequest{
 		RunID:       runID,
 		AwaitResume: awaitResume,

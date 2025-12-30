@@ -172,17 +172,21 @@ func (c *Client) Connect() error {
 	opts.SetTimeout(15 * time.Second)
 
 	// Set auth token, client type, and scope id (matching mobile app format)
-	auth := map[string]interface{}{
-		"token":      token,
-		"clientType": clientType,
+	auth := wire.SocketAuthPayload{
+		Token:      token,
+		ClientType: clientType,
 	}
 	switch clientType {
 	case "session-scoped":
-		auth["sessionId"] = sessionID
+		auth.SessionID = sessionID
 	case "machine-scoped":
-		auth["machineId"] = machineID
+		auth.MachineID = machineID
 	}
-	opts.SetAuth(auth)
+	authMap, ok := normalizePayload(auth).(map[string]any)
+	if !ok {
+		return fmt.Errorf("invalid auth payload type: %T", auth)
+	}
+	opts.SetAuth(authMap)
 
 	// Connect using base URL (path is set in options)
 	sock, err := socket.Connect(serverURL, opts)

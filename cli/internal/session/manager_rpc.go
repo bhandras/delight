@@ -129,6 +129,6 @@ func (m *Manager) registerRPCHandlers() {
 		// This handler must not go through the inbound queue, since permission
 		// requests are awaited synchronously in the inbound event loop.
 		m.HandlePermissionResponse(req.RequestID, req.Allow, req.Message)
-		return json.Marshal(map[string]bool{"success": true})
+		return json.Marshal(wire.SuccessResponse{Success: true})
 	})
 }

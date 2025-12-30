@@ -183,9 +183,9 @@ func (m *Manager) handleCodexEventInbound(event map[string]interface{}) {
 		if message == "" {
 			return
 		}
-		m.sendCodexRecord(map[string]interface{}{
-			"type":    "message",
-			"message": message,
+		m.sendCodexRecord(wire.CodexRecord{
+			Type:    "message",
+			Message: message,
 		})
 	case "agent_reasoning":
 		text, _ := event["text"].(string)
@@ -200,9 +200,9 @@ func (m *Manager) handleCodexEventInbound(event map[string]interface{}) {
 		if text == "" {
 			return
 		}
-		m.sendCodexRecord(map[string]interface{}{
-			"type":    "reasoning",
-			"message": text,
+		m.sendCodexRecord(wire.CodexRecord{
+			Type:    "reasoning",
+			Message: text,
 		})
 	case "exec_command_begin", "exec_approval_request":
 		callID := extractString(event, "call_id", "callId")
@@ -210,12 +210,12 @@ func (m *Manager) handleCodexEventInbound(event map[string]interface{}) {
 			callID = types.NewCUID()
 		}
 		input := filterMap(event, "type", "call_id", "callId")
-		m.sendCodexRecord(map[string]interface{}{
-			"type":   "tool-call",
-			"callId": callID,
-			"name":   "CodexBash",
-			"input":  input,
-			"id":     types.NewCUID(),
+		m.sendCodexRecord(wire.CodexRecord{
+			Type:   "tool-call",
+			CallID: callID,
+			Name:   "CodexBash",
+			Input:  input,
+			ID:     types.NewCUID(),
 		})
 	case "exec_command_end":
 		callID := extractString(event, "call_id", "callId")
@@ -223,11 +223,11 @@ func (m *Manager) handleCodexEventInbound(event map[string]interface{}) {
 			callID = types.NewCUID()
 		}
 		output := filterMap(event, "type", "call_id", "callId")
-		m.sendCodexRecord(map[string]interface{}{
-			"type":   "tool-call-result",
-			"callId": callID,
-			"output": output,
-			"id":     types.NewCUID(),
+		m.sendCodexRecord(wire.CodexRecord{
+			Type:   "tool-call-result",
+			CallID: callID,
+			Output: output,
+			ID:     types.NewCUID(),
 		})
 	}
 }
@@ -265,16 +265,16 @@ func (m *Manager) handleCodexPermission(requestID string, toolName string, input
 	}, nil
 }
 
-func (m *Manager) sendCodexRecord(data map[string]interface{}) {
+func (m *Manager) sendCodexRecord(data any) {
 	if m.wsClient == nil || !m.wsClient.IsConnected() {
 		return
 	}
 
-	payload := map[string]interface{}{
-		"role": "agent",
-		"content": map[string]interface{}{
-			"type": "codex",
-			"data": data,
+	payload := wire.AgentCodexRecord{
+		Role: "agent",
+		Content: wire.AgentCodexContent{
+			Type: "codex",
+			Data: data,
 		},
 	}
 

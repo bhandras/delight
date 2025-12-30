@@ -33,9 +33,9 @@ func (m *Manager) registerMachineRPCHandlers() {
 			if _, err := os.Stat(req.Directory); err != nil {
 				if os.IsNotExist(err) {
 					if !req.ApprovedNewDirectoryCreation {
-						return json.Marshal(map[string]interface{}{
-							"type":      "requestToApproveDirectoryCreation",
-							"directory": req.Directory,
+						return json.Marshal(wire.SpawnHappySessionResponse{
+							Type:      "requestToApproveDirectoryCreation",
+							Directory: req.Directory,
 						})
 					}
 					if err := os.MkdirAll(req.Directory, 0700); err != nil {
@@ -75,9 +75,9 @@ func (m *Manager) registerMachineRPCHandlers() {
 				m.spawnMu.Unlock()
 			}(child.sessionID, child)
 
-			return json.Marshal(map[string]interface{}{
-				"type":      "success",
-				"sessionId": child.sessionID,
+			return json.Marshal(wire.SpawnHappySessionResponse{
+				Type:      "success",
+				SessionID: child.sessionID,
 			})
 		})
 	})
@@ -105,7 +105,7 @@ func (m *Manager) registerMachineRPCHandlers() {
 			}
 			_ = child.Close()
 			m.removeSpawnedSession(req.SessionID)
-			return json.Marshal(map[string]string{"message": "Session stopped"})
+			return json.Marshal(wire.StopSessionResponse{Message: "Session stopped"})
 		})
 	})
 
@@ -115,14 +115,16 @@ func (m *Manager) registerMachineRPCHandlers() {
 			log.Printf("Stop-daemon requested")
 			m.scheduleShutdown()
 			m.forceExitAfter(2 * time.Second)
-			return json.Marshal(map[string]string{"message": "Daemon stop request acknowledged, starting shutdown sequence..."})
+			return json.Marshal(wire.StopDaemonResponse{
+				Message: "Daemon stop request acknowledged, starting shutdown sequence...",
+			})
 		})
 	})
 
 	m.machineRPC.RegisterHandler(prefix+"ping", func(params json.RawMessage) (json.RawMessage, error) {
 		return m.runInboundRPC(func() (json.RawMessage, error) {
 			wire.DumpToTestdata("rpc_machine_ping", params)
-			return json.Marshal(map[string]bool{"success": true})
+			return json.Marshal(wire.PingResponse{Success: true})
 		})
 	})
 }
