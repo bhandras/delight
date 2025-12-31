@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -100,8 +101,33 @@ func TestComputeSessionFSM_Table(t *testing.T) {
 			require.Equal(t, tt.wantState, ui["state"])
 			require.Equal(t, tt.wantCanSend, ui["canSend"])
 			require.Equal(t, tt.wantCanTake, ui["canTakeControl"])
+			require.Equal(t, false, ui["switching"])
+			require.Equal(t, "", ui["transition"])
 		})
 	}
+}
+
+func TestDeriveSessionUI_SwitchingDisablesActions(t *testing.T) {
+	t.Parallel()
+
+	now := int64(1_000)
+	cached := &sessionFSMState{
+		state:       "local",
+		active:      true,
+		connected:   true,
+		switching:   true,
+		transition:  "to-remote",
+		switchingAt: now - 50,
+	}
+
+	fsm, ui := deriveSessionUI(now, true, true, `{"controlledByUser":true}`, cached)
+
+	require.Equal(t, "local", fsm.state)
+	require.Equal(t, "local", ui["state"])
+	require.Equal(t, true, ui["switching"])
+	require.Equal(t, "to-remote", ui["transition"])
+	require.Equal(t, false, ui["canSend"])
+	require.Equal(t, false, ui["canTakeControl"])
 }
 
 func TestHandleUpdate_UpdateSession_AgentStateUpdatesFSM(t *testing.T) {
@@ -115,6 +141,9 @@ func TestHandleUpdate_UpdateSession_AgentStateUpdatesFSM(t *testing.T) {
 		active:           true,
 		connected:        true,
 		controlledByUser: false,
+		switching:        true,
+		transition:       "to-local",
+		switchingAt:      time.Now().UnixMilli(),
 	}
 
 	c.handleUpdate(map[string]interface{}{
@@ -132,6 +161,8 @@ func TestHandleUpdate_UpdateSession_AgentStateUpdatesFSM(t *testing.T) {
 	require.True(t, got.controlledByUser)
 	require.True(t, got.active)
 	require.True(t, got.connected)
+	require.False(t, got.switching)
+	require.Equal(t, "", got.transition)
 }
 
 func boolToJSON(v bool) string {

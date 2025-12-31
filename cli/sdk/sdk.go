@@ -66,6 +66,9 @@ type sessionFSMState struct {
 	active           bool
 	controlledByUser bool
 	connected        bool
+	switching        bool
+	transition       string
+	switchingAt      int64
 	updatedAt        int64
 	fetchedAt        int64
 }
@@ -111,14 +114,44 @@ func deriveSessionUI(
 
 	fsm := computeSessionFSM(connected, active, controlledByUser)
 	fsm.fetchedAt = now
+	if cached != nil {
+		fsm.updatedAt = cached.updatedAt
+		fsm.switching = cached.switching
+		fsm.transition = cached.transition
+		fsm.switchingAt = cached.switchingAt
+	}
+
+	uiState := fsm.state
+
+	// Transition UX: keep a simple stable UI state (local/remote/etc) and expose
+	// switching/transition flags orthogonally, so clients can show spinners and
+	// disable actions without implementing control logic themselves.
+	//
+	// If switching is set (by a switch RPC in-flight), keep the visible state at
+	// the previous value and disable send/take-control until the switch
+	// completes.
+	switching := false
+	transition := ""
+	if cached != nil && cached.switching {
+		const switchTTLms = int64(15_000)
+		if cached.switchingAt <= 0 || now-cached.switchingAt <= switchTTLms {
+			switching = true
+			transition = cached.transition
+			if cached.state != "" {
+				uiState = cached.state
+			}
+		}
+	}
 
 	ui := map[string]any{
-		"state":            fsm.state, // disconnected|offline|local|remote
+		"state":            uiState, // disconnected|offline|local|remote
 		"connected":        fsm.connected,
 		"active":           fsm.active,
 		"controlledByUser": fsm.controlledByUser,
-		"canTakeControl":   fsm.state == "local",
-		"canSend":          fsm.state == "remote",
+		"switching":        switching,
+		"transition":       transition,
+		"canTakeControl":   !switching && uiState == "local",
+		"canSend":          !switching && uiState == "remote",
 	}
 
 	return fsm, ui
@@ -663,6 +696,23 @@ func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
 		var params map[string]any
 		_ = json.Unmarshal([]byte(paramsJSON), &params)
 		mode, _ := params["mode"].(string)
+
+		// Mark the session as "switching" immediately so UI layers can show a
+		// spinner/disabled controls without implementing transition logic.
+		if mode == "remote" || mode == "local" {
+			transition := "to-" + mode
+			// Best-effort: only mark if we have a recent session snapshot.
+			if state, ok, _ := c.ensureSessionFSM(sessionID); ok {
+				c.mu.Lock()
+				prev := state
+				prev.switching = true
+				prev.transition = transition
+				prev.switchingAt = time.Now().UnixMilli()
+				c.sessionFSM[sessionID] = prev
+				c.mu.Unlock()
+			}
+		}
+
 		if mode == "remote" {
 			state, ok, err := c.ensureSessionFSM(sessionID)
 			if err != nil {
@@ -684,13 +734,26 @@ func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
 		Params: paramsJSON,
 	}, 10*time.Second)
 	if err != nil {
+		// Clear switching on failure so UI doesn't get stuck.
+		if strings.HasSuffix(method, ":switch") {
+			sessionID := strings.TrimSuffix(method, ":switch")
+			c.clearSessionSwitching(sessionID)
+		}
 		return "", err
 	}
 	if resp == nil {
+		if strings.HasSuffix(method, ":switch") {
+			sessionID := strings.TrimSuffix(method, ":switch")
+			c.clearSessionSwitching(sessionID)
+		}
 		return "", fmt.Errorf("missing rpc ack")
 	}
 
 	if ok, _ := resp["ok"].(bool); !ok {
+		if strings.HasSuffix(method, ":switch") {
+			sessionID := strings.TrimSuffix(method, ":switch")
+			c.clearSessionSwitching(sessionID)
+		}
 		if msg, _ := resp["error"].(string); msg != "" {
 			return "", fmt.Errorf("rpc call failed: %s", msg)
 		}
@@ -724,12 +787,28 @@ func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
 			next := computeSessionFSM(connected, active, controlledByUser)
 			next.updatedAt = prev.updatedAt
 			next.fetchedAt = time.Now().UnixMilli()
+			next.switching = false
+			next.transition = ""
+			next.switchingAt = 0
 			c.sessionFSM[sessionID] = next
 			c.mu.Unlock()
 		}
 	}
 
 	return string(encoded), nil
+}
+
+func (c *Client) clearSessionSwitching(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	c.mu.Lock()
+	prev := c.sessionFSM[sessionID]
+	prev.switching = false
+	prev.transition = ""
+	prev.switchingAt = 0
+	c.sessionFSM[sessionID] = prev
+	c.mu.Unlock()
 }
 
 func (c *Client) sendMessageWithLocalID(sessionID string, localID string, rawRecordJSON string) error {
@@ -1174,6 +1253,9 @@ func (c *Client) applyAgentStateToSessionFSM(sessionID string, agentState string
 
 	fsm, _ := deriveSessionUI(now, connected, active, agentState, &prev)
 	fsm.updatedAt = prev.updatedAt
+	fsm.switching = false
+	fsm.transition = ""
+	fsm.switchingAt = 0
 
 	c.mu.Lock()
 	c.sessionFSM[sessionID] = fsm
