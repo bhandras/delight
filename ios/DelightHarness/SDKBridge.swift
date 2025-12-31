@@ -1986,9 +1986,17 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             return nil
         }
         if let body = decoded["body"] as? [String: Any],
+           let sid = body["sid"] as? String,
+           !sid.isEmpty {
+            return sid
+        }
+        if let body = decoded["body"] as? [String: Any],
            let message = body["message"] as? [String: Any],
            let sessionID = message["sessionId"] as? String {
             return sessionID
+        }
+        if let sid = decoded["sid"] as? String, !sid.isEmpty {
+            return sid
         }
         if let message = decoded["message"] as? [String: Any],
            let sessionID = message["sessionId"] as? String {
