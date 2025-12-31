@@ -70,6 +70,9 @@ type Client struct {
 
 	lastConnectErrAt  time.Time
 	lastConnectErrMsg string
+
+	onConnect    []func()
+	onDisconnect []func(reason string)
 }
 
 // NewClient creates a new Socket.IO client
@@ -115,6 +118,28 @@ func (c *Client) SetDebug(enabled bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.debug = enabled
+}
+
+// OnConnect registers a callback that runs when the Socket.IO client reports a
+// successful connection.
+func (c *Client) OnConnect(fn func()) {
+	if fn == nil {
+		return
+	}
+	c.mu.Lock()
+	c.onConnect = append(c.onConnect, fn)
+	c.mu.Unlock()
+}
+
+// OnDisconnect registers a callback that runs when the Socket.IO client reports
+// a disconnect.
+func (c *Client) OnDisconnect(fn func(reason string)) {
+	if fn == nil {
+		return
+	}
+	c.mu.Lock()
+	c.onDisconnect = append(c.onDisconnect, fn)
+	c.mu.Unlock()
 }
 
 // On registers an event handler
@@ -189,28 +214,37 @@ func (c *Client) Connect() error {
 		c.mu.Lock()
 		c.connected = true
 		debug := c.debug
+		callbacks := append([]func(){}, c.onConnect...)
 		c.mu.Unlock()
 
 		if debug {
 			log.Printf("Socket.IO connected! ID: %s", sock.Id())
 		}
+		for _, cb := range callbacks {
+			cb()
+		}
 	})
 
 	// Set up disconnect handler
 	sock.On(types.EventName("disconnect"), func(args ...any) {
-		c.mu.Lock()
-		c.connected = false
-		debug := c.debug
-		c.mu.Unlock()
-
 		reason := ""
 		if len(args) > 0 {
 			if r, ok := args[0].(string); ok {
 				reason = r
 			}
 		}
+
+		c.mu.Lock()
+		c.connected = false
+		debug := c.debug
+		callbacks := append([]func(string){}, c.onDisconnect...)
+		c.mu.Unlock()
+
 		if debug {
 			log.Printf("Socket.IO disconnected: %s", reason)
+		}
+		for _, cb := range callbacks {
+			cb(reason)
 		}
 	})
 
