@@ -577,11 +577,15 @@ async function main() {
         }
         // New user turn begins.
         sawAssistantTextThisTurn = false;
+        const contentBlocks = normalizeContentBlocks(content);
+        if (!contentBlocks || contentBlocks.length === 0) {
+            throw new Error('Empty user content');
+        }
         const userMessage = {
             type: 'user',
             message: {
                 role: 'user',
-                content
+                content: contentBlocks
             }
         };
         currentChild.stdin.write(JSON.stringify(userMessage) + '\n');
