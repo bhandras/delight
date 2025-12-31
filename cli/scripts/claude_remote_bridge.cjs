@@ -192,7 +192,6 @@ async function main() {
     // Set up message queue and abort controller
     const messageQueue = new MessageQueue();
     let currentAbortController = null;
-    let queryRunning = false;
 
     // Set up stdin reader
     const rl = readline.createInterface({
@@ -229,30 +228,20 @@ async function main() {
                     break;
 
                 case 'abort':
-                    // Abort current query
-                    if (currentAbortController) {
-                        debugLog('Aborting current query');
-                        currentAbortController.abort();
-                    }
-                    if (currentChild && !currentChild.killed) {
-                        try {
-                            currentChild.kill('SIGTERM');
-                        } catch { }
-                    }
+                    // Abort current run. We keep the bridge alive, but restart the Claude
+                    // process so the next message can continue cleanly.
+                    debugLog('Abort requested');
+                    try { currentChild?.kill('SIGTERM'); } catch { }
+                    cleanupChild();
+                    maybePump();
                     break;
 
                 case 'shutdown':
                     // Graceful shutdown
                     debugLog('Shutdown requested');
                     messageQueue.close();
-                    if (currentAbortController) {
-                        currentAbortController.abort();
-                    }
-                    if (currentChild && !currentChild.killed) {
-                        try {
-                            currentChild.kill('SIGTERM');
-                        } catch { }
-                    }
+                    try { currentChild?.kill('SIGTERM'); } catch { }
+                    cleanupChild();
                     break;
 
                 default:
@@ -266,18 +255,9 @@ async function main() {
     rl.on('close', () => {
         debugLog('stdin closed');
         messageQueue.close();
-        if (currentAbortController) {
-            currentAbortController.abort();
-        }
-        if (currentChild && !currentChild.killed) {
-            try {
-                currentChild.kill('SIGTERM');
-            } catch { }
-        }
+        try { currentChild?.kill('SIGTERM'); } catch { }
+        cleanupChild();
     });
-
-    // Signal ready
-    sendMessage({ type: 'ready' });
 
     // Track current per-session overrides
     let currentPermissionMode = 'default';
@@ -289,6 +269,50 @@ async function main() {
     let currentDisallowedTools = undefined;
 
     let currentChild = null;
+    let currentStdout = null;
+    let currentStderr = null;
+    let currentStderrLines = [];
+    const resumeNotFoundRegex = /no conversation found with session id/i;
+    let readyForNext = true;
+    let configDirty = false;
+
+    // Per-turn state machine.
+    // Claude sometimes returns the assistant reply only in `result.result` without
+    // emitting a streaming `assistant` message. Track whether we saw an assistant
+    // text block for the current turn and synthesize one from `result.result` if not.
+    let sawAssistantTextThisTurn = false;
+
+    function normalizeContentBlocks(value) {
+        if (Array.isArray(value)) return value;
+        if (typeof value === 'string') {
+            const text = value;
+            if (text.trim().length === 0) return [];
+            return [{ type: 'text', text }];
+        }
+        if (value && typeof value === 'object') {
+            // Sometimes upstream uses a single content block object.
+            if (typeof value.type === 'string') return [value];
+            if (typeof value.text === 'string') return [{ type: 'text', text: value.text }];
+            if (typeof value.content === 'string') return [{ type: 'text', text: value.content }];
+        }
+        return [];
+    }
+
+    function extractResultText(value) {
+        if (typeof value === 'string') return value;
+        if (Array.isArray(value)) {
+            const parts = value
+                .map((block) => (block && block.type === 'text' && typeof block.text === 'string' ? block.text : ''))
+                .filter((t) => t && t.trim().length > 0);
+            return parts.join('\n\n');
+        }
+        if (value && typeof value === 'object') {
+            if (typeof value.text === 'string') return value.text;
+            if (typeof value.content === 'string') return value.content;
+            if (typeof value.result === 'string') return value.result;
+        }
+        return '';
+    }
 
     function buildArgs() {
         const cliArgs = ['--output-format', 'stream-json', '--verbose'];
@@ -311,7 +335,58 @@ async function main() {
         return cliArgs;
     }
 
-    async function runQuery(messageContent) {
+    function applyMeta(meta) {
+        meta = meta || {};
+        let changed = false;
+
+        if (Object.prototype.hasOwnProperty.call(meta, 'permissionMode') && typeof meta.permissionMode === 'string') {
+            if (currentPermissionMode !== meta.permissionMode) changed = true;
+            currentPermissionMode = meta.permissionMode;
+        }
+        if (Object.prototype.hasOwnProperty.call(meta, 'model')) {
+            if (currentModel !== (meta.model || undefined)) changed = true;
+            currentModel = meta.model || undefined;
+        }
+        if (Object.prototype.hasOwnProperty.call(meta, 'fallbackModel')) {
+            if (currentFallbackModel !== (meta.fallbackModel || undefined)) changed = true;
+            currentFallbackModel = meta.fallbackModel || undefined;
+        }
+        if (Object.prototype.hasOwnProperty.call(meta, 'customSystemPrompt')) {
+            if (currentCustomSystemPrompt !== (meta.customSystemPrompt || undefined)) changed = true;
+            currentCustomSystemPrompt = meta.customSystemPrompt || undefined;
+        }
+        if (Object.prototype.hasOwnProperty.call(meta, 'appendSystemPrompt')) {
+            if (currentAppendSystemPrompt !== (meta.appendSystemPrompt || undefined)) changed = true;
+            currentAppendSystemPrompt = meta.appendSystemPrompt || undefined;
+        }
+        if (Object.prototype.hasOwnProperty.call(meta, 'allowedTools')) {
+            const next = meta.allowedTools || undefined;
+            if (JSON.stringify(currentAllowedTools) !== JSON.stringify(next)) changed = true;
+            currentAllowedTools = next;
+        }
+        if (Object.prototype.hasOwnProperty.call(meta, 'disallowedTools')) {
+            const next = meta.disallowedTools || undefined;
+            if (JSON.stringify(currentDisallowedTools) !== JSON.stringify(next)) changed = true;
+            currentDisallowedTools = next;
+        }
+
+        // If Claude is already running, changing CLI args requires a respawn.
+        if (changed && currentChild) {
+            configDirty = true;
+        }
+    }
+
+    function cleanupChild() {
+        try { currentStdout?.close(); } catch { }
+        try { currentStderr?.close(); } catch { }
+        currentStdout = null;
+        currentStderr = null;
+        currentStderrLines = [];
+        currentChild = null;
+        readyForNext = true;
+    }
+
+    async function spawnClaude(allowResumeRetry = true) {
         // Ensure SDK entrypoint is set for Claude Code CLI.
         if (!process.env.CLAUDE_CODE_ENTRYPOINT) {
             process.env.CLAUDE_CODE_ENTRYPOINT = 'sdk-ts';
@@ -325,59 +400,119 @@ async function main() {
             stdio: ['pipe', 'pipe', 'pipe']
         });
         currentChild = child;
+        configDirty = false;
 
-        const exitPromise = new Promise((resolve) => {
-            child.on('close', (code) => resolve(code));
+        // Capture stderr so we can detect recoverable startup failures (e.g. invalid --resume).
+        currentStderrLines = [];
+        currentStderr = readline.createInterface({ input: child.stderr });
+        currentStderr.on('line', (line) => {
+            if (!line) return;
+            currentStderrLines.push(line);
+            if (currentStderrLines.length > 200) currentStderrLines.shift();
+            if (debug) {
+                console.error('[claude stderr]', line);
+            }
         });
 
-    const stdout = readline.createInterface({ input: child.stdout });
-    stdout.on('line', (line) => {
-        if (!line.trim()) return;
-        let msg;
-        try {
-            msg = JSON.parse(line);
-        } catch (err) {
-            debugLog('Invalid SDK message:', err.message);
-            return;
-        }
+        currentStdout = readline.createInterface({ input: child.stdout });
+        currentStdout.on('line', (line) => {
+            if (!line.trim()) return;
+            let msg;
+            try {
+                msg = JSON.parse(line);
+            } catch (err) {
+                debugLog('Invalid SDK message:', err.message);
+                return;
+            }
 
-        if (msg.type === 'message' && (msg.role === 'assistant' || msg.role === 'user')) {
-            const messageId = msg.id || crypto.randomUUID();
-            const content = Array.isArray(msg.content) ? msg.content : [];
-            const rawRecord = {
-                role: 'agent',
-                content: {
-                    type: 'output',
-                    data: {
-                        type: msg.role === 'assistant' ? 'assistant' : 'user',
-                        isSidechain: false,
-                        isCompactSummary: false,
-                        isMeta: false,
-                        uuid: messageId,
-                        parentUuid: null,
-                        message: msg.role === 'assistant'
-                            ? {
-                                role: 'assistant',
-                                model: msg.model || 'unknown',
-                                content,
-                                ...(msg.usage ? { usage: msg.usage } : {})
-                            }
-                            : {
-                                role: 'user',
-                                content
-                            }
+            // Normalize Claude stream-json "message"/"assistant"/"user" events into the raw record
+            // shape expected by Delight (so desktop + mobile render tool_use/tool_result consistently).
+            const isTranscriptMessage =
+                (msg.type === 'message' && (msg.role === 'assistant' || msg.role === 'user'))
+                || (msg.type === 'assistant' || msg.type === 'user');
+
+            if (isTranscriptMessage) {
+                const role = msg.role || msg.type;
+                if (role !== 'assistant' && role !== 'user') {
+                    // Not a transcript message.
+                    // Fall through to forwarding as-is.
+                } else {
+                const content = normalizeContentBlocks(msg.content);
+                if (role === 'assistant') {
+                    if (content.some((block) => block && block.type === 'text' && typeof block.text === 'string' && block.text.trim().length > 0)) {
+                        sawAssistantTextThisTurn = true;
                     }
                 }
-            };
-            sendMessage({ type: 'raw', message: rawRecord });
-            return;
-        }
+                const messageId = msg.id || crypto.randomUUID();
+                const rawRecord = {
+                    role: 'agent',
+                    content: {
+                        type: 'output',
+                        data: {
+                            type: role === 'assistant' ? 'assistant' : 'user',
+                            isSidechain: false,
+                            isCompactSummary: false,
+                            isMeta: false,
+                            uuid: messageId,
+                            parentUuid: null,
+                            message: role === 'assistant'
+                                ? {
+                                    role: 'assistant',
+                                    model: msg.model || 'unknown',
+                                    content,
+                                    ...(msg.usage ? { usage: msg.usage } : {})
+                                }
+                                : {
+                                    role: 'user',
+                                    content
+                                }
+                        }
+                    }
+                };
+                sendMessage({ type: 'raw', message: rawRecord });
+                return;
+                }
+            }
 
-        if (msg.type === 'control_request') {
-            const requestId = msg.request_id || crypto.randomUUID();
-            pendingPermissions.set(requestId, (response) => {
-                const controlResponse = {
-                    type: 'control_response',
+            // Some runs only populate the final assistant text in `result.result`.
+            // If we didn't see an assistant text message event this turn, synthesize
+            // a transcript entry so the desktop + phone both show the reply.
+            if (msg.type === 'result') {
+                const synthesized = extractResultText(msg.result);
+                if (!sawAssistantTextThisTurn && typeof synthesized === 'string' && synthesized.trim().length > 0) {
+                    const messageId = crypto.randomUUID();
+                    const content = [{ type: 'text', text: synthesized }];
+                    const rawRecord = {
+                        role: 'agent',
+                        content: {
+                            type: 'output',
+                            data: {
+                                type: 'assistant',
+                                isSidechain: false,
+                                isCompactSummary: false,
+                                isMeta: false,
+                                uuid: messageId,
+                                parentUuid: null,
+                                message: {
+                                    role: 'assistant',
+                                    model: msg.model || 'unknown',
+                                    content,
+                                    ...(msg.usage ? { usage: msg.usage } : {})
+                                }
+                            }
+                        }
+                    };
+                    sendMessage({ type: 'raw', message: rawRecord });
+                }
+                // Reset per-turn state for the next turn.
+                sawAssistantTextThisTurn = false;
+            }
+
+            if (msg.type === 'control_request') {
+                const requestId = msg.request_id || crypto.randomUUID();
+                pendingPermissions.set(requestId, (response) => {
+                    const controlResponse = {
+                        type: 'control_response',
                         response: {
                             subtype: 'success',
                             request_id: requestId,
@@ -399,7 +534,6 @@ async function main() {
                 return;
             }
 
-            debugLog('SDK message:', msg.type);
             sendMessage(msg);
 
             if (msg.type === 'system' && msg.subtype === 'init' && msg.session_id) {
@@ -408,83 +542,117 @@ async function main() {
             }
 
             if (msg.type === 'result') {
-                try {
-                    child.stdin.end();
-                } catch { }
+                readyForNext = true;
+                // If config changed mid-run, respawn before processing the next message.
+                if (configDirty) {
+                    debugLog('Config changed; restarting Claude Code to apply new args');
+                    try { child.kill('SIGTERM'); } catch { }
+                }
+                maybePump();
             }
         });
 
-        if (debug) {
-            const errReader = readline.createInterface({ input: child.stderr });
-            errReader.on('line', (line) => {
-                console.error('[claude stderr]', line);
-            });
-        }
+        child.on('close', async (code) => {
+            const stderrText = currentStderrLines.join('\n');
+            cleanupChild();
 
+            if (code !== 0) {
+                if (allowResumeRetry && resumeSessionId && resumeNotFoundRegex.test(stderrText)) {
+                    debugLog('Resume session not found; retrying without --resume:', resumeSessionId);
+                    resumeSessionId = null;
+                    await spawnClaude(false);
+                    maybePump();
+                    return;
+                }
+                sendMessage({ type: 'error', error: `Claude Code exited with code ${code}` });
+            }
+
+            // If the CLI exits cleanly (or was killed), we can respawn lazily when more messages arrive.
+        });
+    }
+
+    function sendUserToClaude(content) {
+        if (!currentChild || !currentChild.stdin || currentChild.stdin.destroyed) {
+            throw new Error('Claude Code process is not running');
+        }
+        // New user turn begins.
+        sawAssistantTextThisTurn = false;
         const userMessage = {
             type: 'user',
             message: {
                 role: 'user',
-                content: messageContent
+                content
             }
         };
-        child.stdin.write(JSON.stringify(userMessage) + '\n');
+        currentChild.stdin.write(JSON.stringify(userMessage) + '\n');
+        readyForNext = false;
+    }
 
-        const exitCode = await exitPromise;
-        if (exitCode !== 0) {
-            sendMessage({ type: 'error', error: `Claude Code exited with code ${exitCode}` });
+    let pumping = false;
+    async function maybePump() {
+        if (pumping) return;
+        pumping = true;
+        try {
+            if (!readyForNext) return;
+
+            const next = messageQueue.messages.length > 0 ? messageQueue.messages[0] : null;
+            if (!next) return;
+
+            // Dequeue now that we're going to process it.
+            const msg = await messageQueue.pull();
+            if (!msg) return;
+
+            applyMeta(msg.meta);
+
+            if (!currentChild) {
+                await spawnClaude(true);
+            }
+
+            sendUserToClaude(msg.content);
+        } catch (err) {
+            debugLog('Pump error:', err.message);
+            sendMessage({ type: 'error', error: err.message });
+            try { currentChild?.kill('SIGTERM'); } catch { }
+            cleanupChild();
+        } finally {
+            pumping = false;
         }
     }
 
-    // Main query loop - runs until shutdown
+    // When new messages arrive, pump if possible.
+    const origPush = messageQueue.push.bind(messageQueue);
+    messageQueue.push = (message) => {
+        origPush(message);
+        maybePump();
+    };
+
+    // Happy parity: start Claude immediately in remote mode so we don't pay the
+    // spawn cost on the first message (and can warm caches / load context).
+    //
+    // Claude Code CLI will remain idle until it receives the first stream-json
+    // user message on stdin.
+    try {
+        await spawnClaude(true);
+    } catch (err) {
+        debugLog('Failed to spawn Claude Code eagerly (will retry on first message):', err?.message || String(err));
+    }
+
+    // Signal ready once the bridge is fully wired (and we've attempted eager spawn).
+    // This avoids dropping the first message if it arrives immediately after "ready".
+    sendMessage({ type: 'ready' });
+
+    // For completeness, handle shutdown by stopping the child.
+    currentAbortController = new AbortController();
+
+    // Block forever until the queue is closed (stdin close/shutdown).
     while (!messageQueue.closed) {
-        const firstMessage = await messageQueue.pull();
-        if (!firstMessage) {
-            debugLog('No more messages, exiting');
-            break;
-        }
-
-        debugLog('Starting query with message');
-
-        const meta = firstMessage.meta || {};
-        if (Object.prototype.hasOwnProperty.call(meta, 'permissionMode') && typeof meta.permissionMode === 'string') {
-            currentPermissionMode = meta.permissionMode;
-        }
-        if (Object.prototype.hasOwnProperty.call(meta, 'model')) {
-            currentModel = meta.model || undefined;
-        }
-        if (Object.prototype.hasOwnProperty.call(meta, 'fallbackModel')) {
-            currentFallbackModel = meta.fallbackModel || undefined;
-        }
-        if (Object.prototype.hasOwnProperty.call(meta, 'customSystemPrompt')) {
-            currentCustomSystemPrompt = meta.customSystemPrompt || undefined;
-        }
-        if (Object.prototype.hasOwnProperty.call(meta, 'appendSystemPrompt')) {
-            currentAppendSystemPrompt = meta.appendSystemPrompt || undefined;
-        }
-        if (Object.prototype.hasOwnProperty.call(meta, 'allowedTools')) {
-            currentAllowedTools = meta.allowedTools || undefined;
-        }
-        if (Object.prototype.hasOwnProperty.call(meta, 'disallowedTools')) {
-            currentDisallowedTools = meta.disallowedTools || undefined;
-        }
-
-        currentAbortController = new AbortController();
-        queryRunning = true;
-
-        try {
-            await runQuery(firstMessage.content);
-        } catch (err) {
-            debugLog('Query error:', err.message);
-            sendMessage({ type: 'error', error: err.message });
-        } finally {
-            queryRunning = false;
-            currentAbortController = null;
-            currentChild = null;
-        }
+        // Sleep lightly; real work happens in maybePump() + stdout callbacks.
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r) => setTimeout(r, 250));
     }
 
     debugLog('Bridge shutting down');
+    try { currentChild?.kill('SIGTERM'); } catch { }
     process.exit(0);
 }
 
