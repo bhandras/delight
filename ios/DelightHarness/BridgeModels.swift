@@ -53,62 +53,43 @@ struct SessionMetadata {
 
     /// fromJSON parses a metadata payload that is either JSON or base64(JSON).
     static func fromJSON(_ json: String?) -> SessionMetadata? {
-        guard let json, let data = json.data(using: .utf8) else {
+        guard let json else {
             return nil
         }
-        let decoded: [String: Any]?
-        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            decoded = object
-        } else if let decodedData = Data(base64Encoded: json),
-                  let decodedObject = try? JSONSerialization.jsonObject(with: decodedData) as? [String: Any] {
-            decoded = decodedObject
-        } else {
-            decoded = nil
+        guard let payload: SessionMetadataPayload = BridgeJSONDecoder.decode(json, allowBase64: true) else {
+            return nil
         }
-        guard let decoded else { return nil }
-        let summary = decoded["summary"] as? [String: Any]
-        let summaryAgent = summary?["agent"] as? String ?? summary?["name"] as? String
-        let host = decoded["host"] as? String
-            ?? decoded["hostname"] as? String
-            ?? decoded["hostName"] as? String
-            ?? decoded["machineName"] as? String
-        let path = decoded["path"] as? String
-            ?? decoded["cwd"] as? String
-            ?? decoded["workDir"] as? String
-            ?? decoded["dir"] as? String
-        let daemon = decoded["daemon"] as? [String: Any]
-        let daemonPid = intValue(from: decoded["daemonPid"])
-            ?? intValue(from: daemon?["pid"])
-            ?? intValue(from: decoded["pid"])
-        let daemonStateVersion = intValue(from: decoded["daemonStateVersion"])
-            ?? intValue(from: daemon?["stateVersion"])
-            ?? intValue(from: daemon?["version"])
-        let flavor = decoded["flavor"] as? String
-            ?? decoded["os"] as? String
-            ?? decoded["platform"] as? String
+        let summaryAgent = payload.summary?.agent ?? payload.summary?.name
+        let host = payload.host
+            ?? payload.hostname
+            ?? payload.hostName
+            ?? payload.machineName
+        let path = payload.path
+            ?? payload.cwd
+            ?? payload.workDir
+            ?? payload.dir
+        let daemonPid = payload.daemonPid?.value
+            ?? payload.daemon?.pid?.value
+            ?? payload.pid?.value
+        let daemonStateVersion = payload.daemonStateVersion?.value
+            ?? payload.daemon?.stateVersion?.value
+            ?? payload.daemon?.version?.value
+        let flavor = payload.flavor
+            ?? payload.os
+            ?? payload.platform
         return SessionMetadata(
             path: path,
             host: host,
-            homeDir: decoded["homeDir"] as? String,
-            summaryText: summary?["text"] as? String,
-            agent: decoded["agent"] as? String ?? summaryAgent ?? flavor,
+            homeDir: payload.homeDir,
+            summaryText: payload.summary?.text,
+            agent: payload.agent ?? summaryAgent ?? flavor,
             flavor: flavor,
             daemonPid: daemonPid,
             daemonStateVersion: daemonStateVersion,
-            machineId: decoded["machineId"] as? String
+            machineId: payload.machineId
         )
     }
 
-    /// intValue normalizes JSON number/string values to an Int.
-    static func intValue(from value: Any?) -> Int? {
-        if let number = value as? NSNumber {
-            return number.intValue
-        }
-        if let string = value as? String, let number = Int(string) {
-            return number
-        }
-        return nil
-    }
 }
 
 /// SessionAgentState represents the durable agentState persisted by the CLI.
@@ -126,25 +107,25 @@ struct SessionAgentState {
 
     /// fromJSON parses a plaintext JSON agentState string.
     static func fromJSON(_ json: String?) -> SessionAgentState? {
-        guard let json, let data = json.data(using: .utf8) else {
+        guard let json else {
             return nil
         }
-        guard let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard let payload: SessionAgentStatePayload = BridgeJSONDecoder.decode(json) else {
             return nil
         }
-        let controlledByUser = decoded["controlledByUser"] as? Bool ?? true
-        let rawRequests = decoded["requests"] as? [String: Any] ?? [:]
+        let controlledByUser = payload.controlledByUser ?? true
+        let rawRequests = payload.requests ?? [:]
         var parsed: [String: SessionAgentPendingRequest] = [:]
         parsed.reserveCapacity(rawRequests.count)
-        for (requestID, value) in rawRequests {
-            guard let dict = value as? [String: Any] else { continue }
-            let toolName = dict["toolName"] as? String ?? dict["tool_name"] as? String ?? "unknown"
-            let input = dict["input"] as? String ?? "{}"
-            let createdAt =
-                dict["createdAt"] as? Int64
-                ?? (dict["createdAt"] as? NSNumber)?.int64Value
-                ?? (dict["created_at"] as? NSNumber)?.int64Value
-            parsed[requestID] = SessionAgentPendingRequest(toolName: toolName, input: input, createdAt: createdAt)
+        for (requestID, request) in rawRequests {
+            let toolName = request.toolName ?? request.toolNameLegacy ?? "unknown"
+            let input = request.input ?? "{}"
+            let createdAt = request.createdAt?.value ?? request.createdAtLegacy?.value
+            parsed[requestID] = SessionAgentPendingRequest(
+                toolName: toolName,
+                input: input,
+                createdAt: createdAt
+            )
         }
         return SessionAgentState(controlledByUser: controlledByUser, requests: parsed)
     }
@@ -255,18 +236,18 @@ struct MachineMetadata {
 
     /// fromJSON parses a plaintext JSON metadata payload.
     static func fromJSON(_ json: String?) -> MachineMetadata? {
-        guard let json, let data = json.data(using: .utf8) else {
+        guard let json else {
             return nil
         }
-        guard let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard let payload: MachineMetadataPayload = BridgeJSONDecoder.decode(json) else {
             return nil
         }
         return MachineMetadata(
-            host: decoded["host"] as? String,
-            platform: decoded["platform"] as? String,
-            cliVersion: decoded["happyCliVersion"] as? String ?? decoded["cliVersion"] as? String,
-            homeDir: decoded["homeDir"] as? String,
-            delightHomeDir: decoded["happyHomeDir"] as? String
+            host: payload.host,
+            platform: payload.platform,
+            cliVersion: payload.happyCliVersion ?? payload.cliVersion,
+            homeDir: payload.homeDir,
+            delightHomeDir: payload.happyHomeDir
         )
     }
 }
@@ -279,18 +260,164 @@ struct DaemonState {
 
     /// fromJSON parses a plaintext JSON daemon state payload.
     static func fromJSON(_ json: String?) -> DaemonState? {
-        guard let json, let data = json.data(using: .utf8) else {
+        guard let json else {
             return nil
         }
-        guard let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard let payload: DaemonStatePayload = BridgeJSONDecoder.decode(json) else {
             return nil
         }
         return DaemonState(
-            status: decoded["status"] as? String,
-            pid: SessionMetadata.intValue(from: decoded["pid"]),
-            startedAt: decoded["startedAt"] as? Int64 ?? (decoded["startedAt"] as? NSNumber)?.int64Value
+            status: payload.status,
+            pid: payload.pid?.value,
+            startedAt: payload.startedAt?.value
         )
     }
+}
+
+// MARK: - Codable payload helpers
+
+/// IntOrString decodes JSON numbers or numeric strings into an Int.
+private struct IntOrString: Decodable {
+    let value: Int?
+
+    /// init(from:) decodes an Int from either a number or a numeric string.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let intValue = try? container.decode(Int.self) {
+            value = intValue
+            return
+        }
+        if let stringValue = try? container.decode(String.self),
+           let intValue = Int(stringValue) {
+            value = intValue
+            return
+        }
+        value = nil
+    }
+}
+
+/// Int64OrString decodes JSON numbers or numeric strings into an Int64.
+private struct Int64OrString: Decodable {
+    let value: Int64?
+
+    /// init(from:) decodes an Int64 from either a number or a numeric string.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let intValue = try? container.decode(Int64.self) {
+            value = intValue
+            return
+        }
+        if let stringValue = try? container.decode(String.self),
+           let intValue = Int64(stringValue) {
+            value = intValue
+            return
+        }
+        if let doubleValue = try? container.decode(Double.self) {
+            value = Int64(doubleValue)
+            return
+        }
+        value = nil
+    }
+}
+
+/// BridgeJSONDecoder centralizes decoding for JSON string payloads, including base64-wrapped JSON.
+private enum BridgeJSONDecoder {
+    /// decode parses a JSON string into a typed payload.
+    ///
+    /// When allowBase64 is true, this will attempt to decode base64(JSON) if the first pass fails.
+    static func decode<T: Decodable>(_ json: String, allowBase64: Bool = false) -> T? {
+        if let decoded = try? JSONCoding.decode(T.self, from: json) {
+            return decoded
+        }
+        if allowBase64, let decoded: T = decodeBase64(json) {
+            return decoded
+        }
+        return nil
+    }
+
+    /// decodeBase64 decodes a base64 string into a JSON payload.
+    static func decodeBase64<T: Decodable>(_ value: String) -> T? {
+        guard let data = Data(base64Encoded: value),
+              let json = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return try? JSONCoding.decode(T.self, from: json)
+    }
+}
+
+/// SessionMetadataPayload is the raw JSON payload structure for session metadata.
+private struct SessionMetadataPayload: Decodable {
+    struct Summary: Decodable {
+        let agent: String?
+        let name: String?
+        let text: String?
+    }
+
+    struct Daemon: Decodable {
+        let pid: IntOrString?
+        let stateVersion: IntOrString?
+        let version: IntOrString?
+    }
+
+    let summary: Summary?
+    let host: String?
+    let hostname: String?
+    let hostName: String?
+    let machineName: String?
+    let path: String?
+    let cwd: String?
+    let workDir: String?
+    let dir: String?
+    let daemonPid: IntOrString?
+    let daemon: Daemon?
+    let pid: IntOrString?
+    let daemonStateVersion: IntOrString?
+    let flavor: String?
+    let os: String?
+    let platform: String?
+    let homeDir: String?
+    let agent: String?
+    let machineId: String?
+}
+
+/// SessionAgentStatePayload decodes the JSON wire payload for agent state.
+private struct SessionAgentStatePayload: Decodable {
+    let controlledByUser: Bool?
+    let requests: [String: SessionAgentRequestPayload]?
+}
+
+/// SessionAgentRequestPayload decodes a single pending permission request.
+private struct SessionAgentRequestPayload: Decodable {
+    let toolName: String?
+    let toolNameLegacy: String?
+    let input: String?
+    let createdAt: Int64OrString?
+    let createdAtLegacy: Int64OrString?
+
+    private enum CodingKeys: String, CodingKey {
+        case toolName
+        case toolNameLegacy = "tool_name"
+        case input
+        case createdAt
+        case createdAtLegacy = "created_at"
+    }
+}
+
+/// MachineMetadataPayload decodes machine metadata JSON.
+private struct MachineMetadataPayload: Decodable {
+    let host: String?
+    let platform: String?
+    let happyCliVersion: String?
+    let cliVersion: String?
+    let homeDir: String?
+    let happyHomeDir: String?
+}
+
+/// DaemonStatePayload decodes daemon state JSON.
+private struct DaemonStatePayload: Decodable {
+    let status: String?
+    let pid: IntOrString?
+    let startedAt: Int64OrString?
 }
 
 /// MachineInfo is a lightweight row model for the machine list UI.

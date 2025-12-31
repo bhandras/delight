@@ -122,4 +122,48 @@ final class SDKBridgeTests: XCTestCase {
         }
         waitForExpectations(timeout: 1.0)
     }
+
+    func testSessionMetadataParsesBase64Payload() {
+        let payload = """
+        {"host":"m2.local","path":"/work/project","summary":{"agent":"claude","text":"summary"}}
+        """
+        let base64 = Data(payload.utf8).base64EncodedString()
+        let metadata = SessionMetadata.fromJSON(base64)
+
+        XCTAssertEqual(metadata?.host, "m2.local")
+        XCTAssertEqual(metadata?.path, "/work/project")
+        XCTAssertEqual(metadata?.agent, "claude")
+        XCTAssertEqual(metadata?.summaryText, "summary")
+    }
+
+    func testSessionAgentStateParsesRequests() {
+        let json = """
+        {"controlledByUser":false,"requests":{"r1":{"tool_name":"bash","input":"{}","created_at":"123"}}}
+        """
+        let state = SessionAgentState.fromJSON(json)
+
+        XCTAssertEqual(state?.controlledByUser, false)
+        XCTAssertEqual(state?.requests["r1"]?.toolName, "bash")
+        XCTAssertEqual(state?.requests["r1"]?.createdAt, 123)
+    }
+
+    func testMachineMetadataParsesCliVersion() {
+        let json = """
+        {"host":"m2.local","platform":"darwin","happyCliVersion":"1.2.3","homeDir":"/Users/test"}
+        """
+        let metadata = MachineMetadata.fromJSON(json)
+
+        XCTAssertEqual(metadata?.cliVersion, "1.2.3")
+        XCTAssertEqual(metadata?.homeDir, "/Users/test")
+    }
+
+    func testDaemonStateParsesNumericStrings() {
+        let json = """
+        {"status":"ok","pid":"42","startedAt":"456"}
+        """
+        let daemon = DaemonState.fromJSON(json)
+
+        XCTAssertEqual(daemon?.pid, 42)
+        XCTAssertEqual(daemon?.startedAt, 456)
+    }
 }
