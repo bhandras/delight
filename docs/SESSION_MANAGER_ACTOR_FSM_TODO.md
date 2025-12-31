@@ -43,7 +43,7 @@ Rationale:
 ### 0.3 Baseline parity invariants (must remain true throughout)
 
 - [x] local mode: desktop controls, phone cannot send
-- [x] remote mode: phone controls, desktop `Ctrl+L` takes back control
+- [x] remote mode: phone controls, desktop "space twice" takes back control
 - [x] permission prompts durable on phone in remote mode only
 - [x] switching does not crash / leak processes
 - [x] remote replies appear on phone without extra send
@@ -55,23 +55,23 @@ Rationale:
 
 ### 1.1 Package layout
 
-- [ ] Create `cli/internal/actor` (or `cli/internal/fsm`) with:
-  - [ ] `Input` interface (`Event` + `Command`)
-  - [ ] `Effect` interface
-  - [ ] `Reducer[S]` interface or function type
-  - [ ] `Runtime` interface
-  - [ ] `Actor[S]` loop harness (mailbox, done channel, stop)
+- [x] Create `cli/internal/actor` (or `cli/internal/fsm`) with:
+  - [x] `Input` interface (`Event` + `Command`)
+  - [x] `Effect` interface
+  - [x] `Reducer[S]` interface or function type
+  - [x] `Runtime` interface
+  - [x] `Actor[S]` loop harness (mailbox, done channel, stop)
 - [ ] Add minimal utilities:
-  - [ ] typed logger hooks (`OnInput`, `OnEffect`, `OnStateChange`) (optional but recommended)
+  - [x] typed logger hooks (`OnInput`, `OnEffect`, `OnStateChange`) (optional but recommended)
   - [ ] `Clock` abstraction for deterministic timers (or explicit timer effects)
 
 ### 1.2 Testing harness utilities
 
-- [ ] Add a fake runtime:
-  - [ ] records effects
-  - [ ] can be scripted to emit events
-- [ ] Add a reducer test helper:
-  - [ ] `Step(state, input) -> (state, effects)`
+- [x] Add a fake runtime:
+  - [x] records effects
+  - [x] can be scripted to emit events
+- [x] Add a reducer test helper:
+  - [x] `Step(state, input) -> (state, effects)`
   - [ ] snapshot-friendly state printing (if needed)
 
 ---
@@ -80,13 +80,13 @@ Rationale:
 
 ### 2.1 Define state (single owner)
 
-- [ ] Create `sessionState` struct to replace scattered `Manager` fields:
-  - [ ] `mode` + explicit FSM state (`LocalStarting`, `LocalRunning`, …)
-  - [ ] `runnerGen` (monotonic)
+- [x] Create `sessionState` struct to replace scattered `Manager` fields:
+  - [x] `mode` + explicit FSM state (`LocalStarting`, `LocalRunning`, …)
+  - [x] `runnerGen` (monotonic)
   - [ ] `localRunner` handle (gen + pid / started bool / etc.)
   - [ ] `remoteRunner` handle (gen + pid / ready bool / etc.)
   - [ ] durable agent state (`controlledByUser`, requests, versions)
-  - [ ] pending permission promises (map requestID → promise)
+  - [x] pending permission promises (map requestID → promise)
   - [ ] dedupe windows (recent remote input IDs, recent outbound localIDs)
   - [ ] connection state (ws connected? machine socket connected?)
   - [ ] debouncer state (pending refresh/persist timers)
@@ -96,30 +96,30 @@ Rationale:
 - [ ] Events:
   - [ ] `evWSConnected`, `evWSDisconnected`
   - [ ] `evSessionUpdate`, `evMessageUpdate`, `evEphemeral`
-  - [ ] `evRunnerReady{gen}`, `evRunnerExited{gen, err}`
-  - [ ] `evPermissionRequested{requestID, tool, input}`
-  - [ ] `evDesktopTakeback` (Ctrl+L)
+  - [x] `evRunnerReady{gen}`, `evRunnerExited{gen, err}`
+  - [x] `evPermissionRequested{requestID, tool, input}`
+  - [x] `evDesktopTakeback` (desktop “space twice” takeback)
   - [ ] `evTimerFired{name, nowMs}`
   - [ ] `evNow{nowMs}` (if using explicit clock ticks)
 - [ ] Commands:
-  - [ ] `cmdSwitchMode{target, reply}`
-  - [ ] `cmdRemoteSend{text, meta, localID?, reply}`
-  - [ ] `cmdAbortRemote{reply}`
-  - [ ] `cmdPermissionDecision{requestID, allow, message, reply}`
+  - [x] `cmdSwitchMode{target, reply}`
+  - [x] `cmdRemoteSend{text, meta, localID?, reply}`
+  - [x] `cmdAbortRemote{reply}`
+  - [x] `cmdPermissionDecision{requestID, allow, message, reply}`
   - [ ] `cmdShutdown{reply}`
 
 ### 2.3 Define effects
 
 - [ ] Runner lifecycle:
-  - [ ] `effStartLocalRunner{gen, workDir, resume}`
-  - [ ] `effStopLocalRunner{gen}`
-  - [ ] `effStartRemoteRunner{gen, workDir, resume}`
-  - [ ] `effStopRemoteRunner{gen}`
+  - [x] `effStartLocalRunner{gen, workDir, resume}`
+  - [x] `effStopLocalRunner{gen}`
+  - [x] `effStartRemoteRunner{gen, workDir, resume}`
+  - [x] `effStopRemoteRunner{gen}`
 - [ ] Messaging:
-  - [ ] `effRemoteSend{gen, text, meta}`
-  - [ ] `effRemoteAbort{gen}`
+  - [x] `effRemoteSend{gen, text, meta}`
+  - [x] `effRemoteAbort{gen}`
 - [ ] Persistence / state propagation:
-  - [ ] `effPersistAgentState{agentStateJSON, expectedVersion?}`
+  - [x] `effPersistAgentState{agentStateJSON, expectedVersion?}`
   - [ ] `effEmitEphemeral{payload}`
   - [ ] `effEmitMessage{encryptedPayload}`
 - [ ] Timers / debounce:
@@ -130,27 +130,27 @@ Rationale:
 
 - [ ] Implement reducer transitions:
   - [ ] `cmdSwitchMode(remote)`:
-    - [ ] if already remote-running: idempotent success
-    - [ ] else transition to `RemoteStarting`
-    - [ ] increment gen
-    - [ ] stop local runner effects
-    - [ ] start remote runner effect
+    - [x] if already remote-running: idempotent success
+    - [x] else transition to `RemoteStarting`
+    - [x] increment gen
+    - [x] stop local runner effects
+    - [x] start remote runner effect
     - [ ] set `controlledByUser=false` in agent state
-    - [ ] schedule persist effect (debounced)
+    - [x] emit persist effect (non-debounced)
   - [ ] `cmdSwitchMode(local)`:
-    - [ ] symmetric, transition to `LocalStarting`
+    - [x] symmetric, transition to `LocalStarting`
     - [ ] set `controlledByUser=true`
   - [ ] `evRunnerReady{gen}`:
-    - [ ] ignore if `gen != state.runnerGen`
-    - [ ] transition to `LocalRunning`/`RemoteRunning` depending on target runner
-    - [ ] complete pending switch reply
+    - [x] ignore if `gen != state.runnerGen`
+    - [x] transition to `LocalRunning`/`RemoteRunning` depending on target runner
+    - [x] complete pending switch reply
   - [ ] `evRunnerExited{gen, err}`:
-    - [ ] ignore if stale gen
-    - [ ] if exiting during “Starting”, complete reply with error
+    - [x] ignore if stale gen
+    - [x] if exiting during “Starting”, complete reply with error
     - [ ] if exiting during “Running”, transition to safe state (typically `LocalRunning` fallback or `Closed`)
   - [ ] `cmdRemoteSend`:
-    - [ ] only allowed in `RemoteRunning`
-    - [ ] emit remote send effect
+    - [x] only allowed in `RemoteRunning`
+    - [x] emit remote send effect
   - [ ] `evPermissionRequested`:
     - [ ] only in remote mode; otherwise ignore/log
     - [ ] persist into `agentState.requests`
@@ -215,7 +215,7 @@ Rationale:
 ### 5.2 Compatibility checkpoints after each step
 
 - [ ] remote take control from phone works
-- [ ] Ctrl+L takeback works
+- [ ] desktop takeback (space twice) works
 - [ ] permission prompt appears on phone and resolves
 - [ ] CLI does not crash on rapid switching
 

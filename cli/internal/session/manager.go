@@ -126,7 +126,7 @@ type Manager struct {
 	recentOutboundUserLocalIDsMu sync.Mutex
 	recentOutboundUserLocalIDs   []outboundLocalIDRecord
 
-	// desktopTakebackCancel is used to stop the "press any key to take back control"
+	// desktopTakebackCancel is used to stop the "press space twice to take back control"
 	// watcher while the session is in remote mode.
 	desktopTakebackMu     sync.Mutex
 	desktopTakebackCancel chan struct{}

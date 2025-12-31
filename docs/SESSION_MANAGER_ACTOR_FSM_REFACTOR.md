@@ -62,7 +62,7 @@ they communicate exclusively by sending typed events into the loop.
    - Runner exit waiters (`proc.Wait`, `bridge.Wait`)
    - PTY/session scanner output
    - Timers (keepalive tick)
-   - Desktop hotkey watcher (`Ctrl+L` takeback)
+   - Desktop hotkey watcher (double-space takeback)
 
 Each event source is a goroutine that *never touches state directly*. It only
 enqueues typed events.

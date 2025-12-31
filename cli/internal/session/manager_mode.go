@@ -300,6 +300,9 @@ func (m *Manager) startDesktopTakebackWatcher() {
 		}()
 
 		buf := make([]byte, 16)
+		var pendingSpace bool
+		var pendingSpaceAt time.Time
+		const confirmWindow = 15 * time.Second
 		for {
 			select {
 			case <-m.stopCh:
@@ -329,17 +332,32 @@ func (m *Manager) startDesktopTakebackWatcher() {
 				continue
 			}
 
-			// Ctrl+L (FF) is our default "take back control" hotkey.
-			// Ignore other keys so users don't accidentally steal control while
-			// watching remote logs.
-			pressed := false
+			now := time.Now()
+			if pendingSpace && now.Sub(pendingSpaceAt) > confirmWindow {
+				pendingSpace = false
+			}
+
+			shouldSwitch := false
 			for _, b := range buf[:n] {
-				if b == 0x0c {
-					pressed = true
-					break
+				if b == ' ' {
+					if pendingSpace {
+						shouldSwitch = true
+						break
+					}
+					pendingSpace = true
+					pendingSpaceAt = now
+					// Match Happy semantics: first space arms a confirmation window.
+					writeRemoteLine("Press space again to take back control on desktop.")
+					continue
+				}
+
+				// Any non-space cancels the confirmation window, matching Happy's UI:
+				// stray keystrokes won't accidentally take back control.
+				if pendingSpace {
+					pendingSpace = false
 				}
 			}
-			if !pressed {
+			if !shouldSwitch {
 				continue
 			}
 
@@ -354,18 +372,12 @@ func (m *Manager) startDesktopTakebackWatcher() {
 			m.desktopTakebackMu.Unlock()
 
 			// Queue the switch so we don't race other inbound state mutations.
-			keys := append([]byte(nil), buf[:n]...)
 			_ = m.enqueueInbound(func() {
 				if m.GetMode() != ModeRemote {
 					return
 				}
 				if err := m.SwitchToLocal(); err != nil {
 					return
-				}
-				// Best-effort: forward the captured keystrokes into the local PTY so
-				// the first key isn't lost during the takeback.
-				if m.claudeProcess != nil {
-					_ = m.claudeProcess.SendInput(string(keys))
 				}
 			})
 			return
@@ -475,7 +487,7 @@ func (m *Manager) SwitchToRemote() error {
 	writeRemoteBlankLine()
 	writeRemoteLine("---")
 	writeRemoteLine("Remote mode active (phone controls this session).")
-	writeRemoteLine("Press Ctrl+L to take back control on desktop.")
+	writeRemoteLine("Press space twice to take back control on desktop.")
 	writeRemoteLine("---")
 	writeRemoteBlankLine()
 

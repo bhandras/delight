@@ -1155,11 +1155,11 @@ private struct ControlStatusBanner: View {
             case "local":
                 return "Desktop controls this session. Tap “Take Control” to send from phone."
             case "remote":
-                return "Phone controls this session. To return control, press Ctrl+L on desktop."
+                return "Phone controls this session. To return control, press space twice on desktop."
             default:
                 return controlledByDesktop
                     ? "Desktop controls this session. Tap “Take Control” to send from phone."
-                    : "Phone controls this session. To return control, press Ctrl+L on desktop."
+                    : "Phone controls this session. To return control, press space twice on desktop."
             }
         }()
         let canTakeControl = ui?.canTakeControl ?? false
@@ -1179,7 +1179,7 @@ private struct ControlStatusBanner: View {
                 }
                 Spacer()
                 // Phone UI only supports "Take Control" (switch to remote). Returning
-                // control is a desktop-only action (Ctrl+L).
+                // control is a desktop-only action (space twice).
                 if controlledByDesktop && state == "local" {
                     Button("Take Control") {
                         model.requestSessionControl(mode: "remote", sessionID: session.id)
