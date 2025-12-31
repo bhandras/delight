@@ -109,6 +109,9 @@ func (m *Manager) Start(workDir string) error {
 
 	// Connect WebSocket
 	m.wsClient = websocket.NewClient(m.cfg.ServerURL, m.token, m.sessionID, m.debug)
+	// Re-wire the session actor runtime with the now-constructed websocket client.
+	// initSessionActor is idempotent and updates runtime adapters when actor exists.
+	m.initSessionActor()
 
 	// Bridge socket lifecycle into the SessionActor so connection state and
 	// persistence retries are deterministic.

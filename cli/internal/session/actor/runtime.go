@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"sync"
 	"time"
 
@@ -53,6 +54,19 @@ type StateUpdater interface {
 	UpdateState(sessionID string, agentState string, version int64) (int64, error)
 }
 
+func isNilInterface(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Ptr, reflect.Interface, reflect.Slice, reflect.Map, reflect.Func, reflect.Chan:
+		return rv.IsNil()
+	default:
+		return false
+	}
+}
+
 // SocketEmitter emits session-scoped messages + ephemerals to the server.
 type SocketEmitter interface {
 	EmitEphemeral(data any) error
@@ -77,7 +91,14 @@ func (r *Runtime) WithSessionID(sessionID string) *Runtime {
 func (r *Runtime) WithStateUpdater(updater StateUpdater) *Runtime {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.stateUpdater = updater
+	// Beware: an interface can be non-nil while holding a nil concrete pointer.
+	// This can happen when Manager wires the runtime before websocket client
+	// construction; persist effects must treat that as "no updater".
+	if isNilInterface(updater) {
+		r.stateUpdater = nil
+	} else {
+		r.stateUpdater = updater
+	}
 	return r
 }
 
@@ -86,7 +107,11 @@ func (r *Runtime) WithStateUpdater(updater StateUpdater) *Runtime {
 func (r *Runtime) WithSocketEmitter(emitter SocketEmitter) *Runtime {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.socketEmitter = emitter
+	if isNilInterface(emitter) {
+		r.socketEmitter = nil
+	} else {
+		r.socketEmitter = emitter
+	}
 	return r
 }
 
