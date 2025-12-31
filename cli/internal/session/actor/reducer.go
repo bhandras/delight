@@ -417,6 +417,13 @@ func reduceRunnerExited(state State, ev evRunnerExited) (State, []actor.Effect) 
 			state.PendingRemoteSends = nil
 			state.FSM = StateLocalRunning
 			state.Mode = ModeLocal
+
+			// Remote never became active; reclaim control for desktop and persist so
+			// mobile clients don't get stuck in a "remote" UI state.
+			state.AgentState.ControlledByUser = true
+			state = refreshAgentStateJSON(state)
+			state, persistEffects := schedulePersistDebounced(state)
+			effects = append(effects, persistEffects...)
 			return state, effects
 		}
 

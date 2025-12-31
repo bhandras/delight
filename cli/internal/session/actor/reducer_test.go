@@ -393,6 +393,115 @@ func TestReduceRunnerReady_RemoteStartsTakebackWatcher(t *testing.T) {
 	require.True(t, found, "expected effStartDesktopTakebackWatcher, got: %+v", effects)
 }
 
+func TestReduceInboundUserMessage_LocalRunning_SwitchesAndBuffers(t *testing.T) {
+	t.Parallel()
+
+	nowMs := int64(1_000)
+	state := State{
+		FSM:       StateLocalRunning,
+		Mode:      ModeLocal,
+		RunnerGen: 10,
+		AgentState: types.AgentState{
+			ControlledByUser: true,
+		},
+	}
+
+	next, effects := Reduce(state, cmdInboundUserMessage{
+		Text:    "hello from phone",
+		Meta:    map[string]any{"origin": "mobile"},
+		LocalID: "l1",
+		NowMs:   nowMs,
+	})
+
+	require.Equal(t, StateRemoteStarting, next.FSM)
+	require.Equal(t, ModeRemote, next.Mode)
+	require.False(t, next.AgentState.ControlledByUser)
+	require.Len(t, next.PendingRemoteSends, 1)
+	require.Equal(t, "hello from phone", next.PendingRemoteSends[0].text)
+	require.Equal(t, "l1", next.PendingRemoteSends[0].localID)
+	require.Equal(t, nowMs, next.PendingRemoteSends[0].nowMs)
+
+	var foundStopLocal, foundStartRemote bool
+	for _, eff := range effects {
+		switch eff.(type) {
+		case effStopLocalRunner:
+			foundStopLocal = true
+		case effStartRemoteRunner:
+			foundStartRemote = true
+		}
+	}
+	require.True(t, foundStopLocal, "expected effStopLocalRunner in effects: %+v", effects)
+	require.True(t, foundStartRemote, "expected effStartRemoteRunner in effects: %+v", effects)
+}
+
+func TestReduceRunnerReady_RemoteStarting_FlushesPendingRemoteSends(t *testing.T) {
+	t.Parallel()
+
+	state := State{
+		FSM:       StateRemoteStarting,
+		Mode:      ModeRemote,
+		RunnerGen: 5,
+		PendingRemoteSends: []pendingRemoteSend{
+			{text: "m1", meta: map[string]any{"a": 1}, localID: "l1", nowMs: 10},
+			{text: "m2", meta: map[string]any{"a": 2}, localID: "l2", nowMs: 20},
+		},
+	}
+
+	next, effects := Reduce(state, evRunnerReady{Gen: 5, Mode: ModeRemote})
+	require.Equal(t, StateRemoteRunning, next.FSM)
+	require.Empty(t, next.PendingRemoteSends)
+
+	var got []effRemoteSend
+	for _, eff := range effects {
+		if s, ok := eff.(effRemoteSend); ok {
+			got = append(got, s)
+		}
+	}
+	require.Len(t, got, 2)
+	require.Equal(t, int64(5), got[0].Gen)
+	require.Equal(t, "m1", got[0].Text)
+	require.Equal(t, "l1", got[0].LocalID)
+	require.Equal(t, int64(5), got[1].Gen)
+	require.Equal(t, "m2", got[1].Text)
+	require.Equal(t, "l2", got[1].LocalID)
+}
+
+func TestReduceRunnerExited_RemoteStarting_WithPending_FallsBackToLocalAndReclaimsControl(t *testing.T) {
+	t.Parallel()
+
+	state := State{
+		FSM:       StateRemoteStarting,
+		Mode:      ModeRemote,
+		RunnerGen: 7,
+		AgentState: types.AgentState{
+			ControlledByUser: false,
+		},
+		PendingRemoteSends: []pendingRemoteSend{
+			{text: "hello", nowMs: 123},
+		},
+	}
+
+	next, effects := Reduce(state, evRunnerExited{Gen: 7, Mode: ModeRemote, Err: assertErr("boom")})
+	require.Equal(t, StateLocalRunning, next.FSM)
+	require.Equal(t, ModeLocal, next.Mode)
+	require.True(t, next.AgentState.ControlledByUser, "expected control to revert to desktop on remote-start failure")
+	require.Empty(t, next.PendingRemoteSends)
+
+	var foundLocalSend bool
+	for _, eff := range effects {
+		if s, ok := eff.(effLocalSendLine); ok {
+			foundLocalSend = true
+			require.Equal(t, int64(7), s.Gen)
+			require.Equal(t, "hello", s.Text)
+		}
+	}
+	require.True(t, foundLocalSend, "expected effLocalSendLine fallback effects: %+v", effects)
+}
+
+type assertErr string
+
+func (e assertErr) Error() string { return string(e) }
+
 func TestReduceDebouncedPersistence_CoalescesToLatest(t *testing.T) {
 	t.Parallel()
 
