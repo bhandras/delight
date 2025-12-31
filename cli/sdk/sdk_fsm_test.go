@@ -130,6 +130,48 @@ func TestDeriveSessionUI_SwitchingDisablesActions(t *testing.T) {
 	require.Equal(t, false, ui["canTakeControl"])
 }
 
+func TestDeriveSessionUI_SwitchingTTLExpires(t *testing.T) {
+	t.Parallel()
+
+	now := int64(100_000)
+	cached := &sessionFSMState{
+		state:       "local",
+		active:      true,
+		connected:   true,
+		switching:   true,
+		transition:  "to-remote",
+		switchingAt: now - 20_000, // > 15s TTL
+	}
+
+	_, ui := deriveSessionUI(now, true, true, `{"controlledByUser":true}`, cached)
+	require.Equal(t, false, ui["switching"])
+	require.Equal(t, "", ui["transition"])
+	require.Equal(t, "local", ui["state"])
+	require.Equal(t, false, ui["canSend"])
+	require.Equal(t, true, ui["canTakeControl"])
+}
+
+func TestDeriveSessionUI_SwitchingKeepsPreviousUIState(t *testing.T) {
+	t.Parallel()
+
+	now := int64(10_000)
+	cached := &sessionFSMState{
+		state:       "remote",
+		active:      true,
+		connected:   true,
+		switching:   true,
+		transition:  "to-local",
+		switchingAt: now - 50,
+	}
+
+	_, ui := deriveSessionUI(now, true, true, `{"controlledByUser":true}`, cached)
+	require.Equal(t, "remote", ui["state"])
+	require.Equal(t, true, ui["switching"])
+	require.Equal(t, "to-local", ui["transition"])
+	require.Equal(t, false, ui["canSend"])
+	require.Equal(t, false, ui["canTakeControl"])
+}
+
 func TestHandleUpdate_UpdateSession_AgentStateUpdatesFSM(t *testing.T) {
 	t.Parallel()
 
