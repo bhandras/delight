@@ -127,6 +127,15 @@ type cmdPermissionDecision struct {
 
 func (cmdPermissionDecision) isSessionCommand() {}
 
+// cmdPersistAgentState requests that the current agent state be persisted.
+// It is used during the migration to actor-owned persistence.
+type cmdPersistAgentState struct {
+	actor.InputBase
+	AgentStateJSON string
+}
+
+func (cmdPersistAgentState) isSessionCommand() {}
+
 // Events emitted by the runtime back into the reducer.
 
 type evRunnerReady struct {
@@ -161,28 +170,32 @@ type evDesktopTakeback struct {
 
 func (evDesktopTakeback) isSessionEvent() {}
 
-// Agent-state persistence events.
-
-type evAgentStatePersisted struct {
+// EvAgentStatePersisted indicates the server accepted an agent state update.
+// NewVersion is the server-side version after the update.
+type EvAgentStatePersisted struct {
 	actor.InputBase
 	NewVersion int64
 }
 
-func (evAgentStatePersisted) isSessionEvent() {}
+func (EvAgentStatePersisted) isSessionEvent() {}
 
-type evAgentStateVersionMismatch struct {
+// EvAgentStateVersionMismatch indicates the server rejected an agent state update
+// due to a version mismatch. ServerVersion is the server's current version.
+type EvAgentStateVersionMismatch struct {
 	actor.InputBase
 	ServerVersion int64
 }
 
-func (evAgentStateVersionMismatch) isSessionEvent() {}
+func (EvAgentStateVersionMismatch) isSessionEvent() {}
 
-type evAgentStatePersistFailed struct {
+// EvAgentStatePersistFailed indicates persisting agent state failed due to a
+// non-version-mismatch error.
+type EvAgentStatePersistFailed struct {
 	actor.InputBase
 	Err error
 }
 
-func (evAgentStatePersistFailed) isSessionEvent() {}
+func (EvAgentStatePersistFailed) isSessionEvent() {}
 
 // Effects
 

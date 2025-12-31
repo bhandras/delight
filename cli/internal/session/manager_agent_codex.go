@@ -26,7 +26,7 @@ func (m *Manager) startCodex() error {
 	m.stateMu.Lock()
 	m.state.ControlledByUser = false
 	m.stateMu.Unlock()
-	go m.updateState()
+	m.requestPersistAgentState()
 
 	go m.runCodexLoop()
 

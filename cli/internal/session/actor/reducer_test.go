@@ -96,7 +96,7 @@ func TestReduceAgentState_VersionMismatchRetriesOnce(t *testing.T) {
 		PersistRetryRemaining: 1,
 	}
 
-	next, effects := Reduce(state, evAgentStateVersionMismatch{ServerVersion: 5})
+	next, effects := Reduce(state, EvAgentStateVersionMismatch{ServerVersion: 5})
 	if next.AgentStateVersion != 5 {
 		t.Fatalf("AgentStateVersion=%d, want 5", next.AgentStateVersion)
 	}
@@ -110,6 +110,34 @@ func TestReduceAgentState_VersionMismatchRetriesOnce(t *testing.T) {
 		t.Fatalf("effect type=%T, want effPersistAgentState", effects[0])
 	} else if eff.ExpectedVersion != 5 {
 		t.Fatalf("ExpectedVersion=%d, want 5", eff.ExpectedVersion)
+	}
+}
+
+func TestReducePersistAgentState_EmitsPersistEffect(t *testing.T) {
+	t.Parallel()
+
+	state := State{
+		FSM:              StateLocalRunning,
+		Mode:             ModeLocal,
+		AgentStateVersion: 3,
+	}
+
+	next, effects := Reduce(state, cmdPersistAgentState{AgentStateJSON: `{"controlledByUser":true}`})
+	if next.AgentStateJSON == "" {
+		t.Fatalf("AgentStateJSON empty")
+	}
+	if next.PersistRetryRemaining != 1 {
+		t.Fatalf("PersistRetryRemaining=%d, want 1", next.PersistRetryRemaining)
+	}
+	if len(effects) != 1 {
+		t.Fatalf("effects=%d, want 1", len(effects))
+	}
+	eff, ok := effects[0].(effPersistAgentState)
+	if !ok {
+		t.Fatalf("effect=%T, want effPersistAgentState", effects[0])
+	}
+	if eff.ExpectedVersion != 3 {
+		t.Fatalf("ExpectedVersion=%d, want 3", eff.ExpectedVersion)
 	}
 }
 

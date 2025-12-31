@@ -470,7 +470,7 @@ func (m *Manager) SwitchToRemote() error {
 	m.stateMu.Lock()
 	m.state.ControlledByUser = false
 	m.stateMu.Unlock()
-	go m.updateState()
+	m.requestPersistAgentState()
 
 	writeRemoteBlankLine()
 	writeRemoteLine("---")
@@ -556,7 +556,7 @@ func (m *Manager) SwitchToLocal() error {
 	m.stateMu.Lock()
 	m.state.ControlledByUser = true
 	m.stateMu.Unlock()
-	go m.updateState()
+	m.requestPersistAgentState()
 
 	log.Println("Local mode active")
 	return nil

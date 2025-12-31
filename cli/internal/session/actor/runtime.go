@@ -258,7 +258,7 @@ func (r *Runtime) persistAgentState(ctx context.Context, eff effPersistAgentStat
 
 		newVersion, err := updater.UpdateState(sessionID, eff.AgentStateJSON, eff.ExpectedVersion)
 		if err == nil {
-			emit(evAgentStatePersisted{NewVersion: newVersion})
+			emit(EvAgentStatePersisted{NewVersion: newVersion})
 			return
 		}
 
@@ -266,12 +266,12 @@ func (r *Runtime) persistAgentState(ctx context.Context, eff effPersistAgentStat
 		if errors.Is(err, websocket.ErrVersionMismatch) {
 			if newVersion <= 0 {
 				// If the server didn't provide a version, treat as a generic failure.
-				emit(evAgentStatePersistFailed{Err: err})
+				emit(EvAgentStatePersistFailed{Err: err})
 				return
 			}
-			emit(evAgentStateVersionMismatch{ServerVersion: newVersion})
+			emit(EvAgentStateVersionMismatch{ServerVersion: newVersion})
 			return
 		}
-		emit(evAgentStatePersistFailed{Err: err})
+		emit(EvAgentStatePersistFailed{Err: err})
 	}()
 }

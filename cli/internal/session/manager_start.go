@@ -17,6 +17,8 @@ import (
 
 	"github.com/bhandras/delight/cli/internal/claude"
 	"github.com/bhandras/delight/cli/internal/crypto"
+	framework "github.com/bhandras/delight/cli/internal/actor"
+	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
 	"github.com/bhandras/delight/cli/internal/storage"
 	"github.com/bhandras/delight/cli/internal/websocket"
 	"github.com/bhandras/delight/cli/pkg/types"
@@ -173,9 +175,11 @@ func (m *Manager) Start(workDir string) error {
 			log.Println("WebSocket connected")
 			m.rpcManager.RegisterAll()
 			_ = m.wsClient.KeepSessionAlive(m.sessionID, m.thinking)
+			// Initialize the session actor (Phase 4): actor-owned persistence of agentState.
+			m.initSessionActor()
 			// Persist the initial agent state immediately so mobile can derive control mode
 			// deterministically (and to migrate any legacy/invalid agentState on the server).
-			go m.updateState()
+			m.requestPersistAgentState()
 		} else {
 			log.Printf("Warning: WebSocket connection timeout")
 		}
@@ -277,6 +281,52 @@ func (m *Manager) Start(workDir string) error {
 	go m.keepAliveLoop()
 
 	return nil
+}
+
+func (m *Manager) initSessionActor() {
+	// Idempotent.
+	if m.sessionActor != nil {
+		if m.sessionActorRuntime != nil {
+			m.sessionActorRuntime.WithSessionID(m.sessionID)
+			if m.wsClient != nil {
+				m.sessionActorRuntime.WithStateUpdater(m.wsClient)
+			}
+		}
+		return
+	}
+
+	rt := sessionactor.NewRuntime(m.workDir, m.debug).
+		WithSessionID(m.sessionID).
+		WithStateUpdater(m.wsClient)
+
+	hooks := framework.Hooks[sessionactor.State]{
+		OnInput: func(input framework.Input) {
+			// Keep Manager.stateDirty aligned with persistence outcomes while we
+			// transition to actor-owned state.
+			switch input.(type) {
+			case sessionactor.EvAgentStatePersisted:
+				m.stateMu.Lock()
+				m.stateDirty = false
+				m.stateMu.Unlock()
+			case sessionactor.EvAgentStateVersionMismatch, sessionactor.EvAgentStatePersistFailed:
+				m.stateMu.Lock()
+				m.stateDirty = true
+				m.stateMu.Unlock()
+			}
+		},
+	}
+
+	// Initialize with the current agent-state version (usually 0 until first persist).
+	initial := sessionactor.State{
+		FSM:                 sessionactor.StateLocalRunning,
+		Mode:                sessionactor.ModeLocal,
+		PersistRetryRemaining: 0,
+		AgentStateVersion:    m.stateVersion,
+	}
+
+	m.sessionActorRuntime = rt
+	m.sessionActor = framework.New(initial, sessionactor.Reduce, rt, framework.WithHooks(hooks))
+	m.sessionActor.Start()
 }
 
 // createSession creates a new session on the server
@@ -647,7 +697,7 @@ func (m *Manager) keepAliveLoop() {
 					// If a previous state update failed due to transient Socket.IO issues,
 					// retry opportunistically once we're connected again.
 					if m.stateDirty {
-						go m.updateState()
+						m.requestPersistAgentState()
 					}
 				}
 			})

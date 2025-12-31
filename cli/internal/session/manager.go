@@ -11,10 +11,12 @@ import (
 	"time"
 
 	"github.com/bhandras/delight/cli/internal/acp"
+	framework "github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/claude"
 	"github.com/bhandras/delight/cli/internal/codex"
 	"github.com/bhandras/delight/cli/internal/config"
 	"github.com/bhandras/delight/cli/internal/session/runtime"
+	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
 	"github.com/bhandras/delight/cli/internal/storage"
 	"github.com/bhandras/delight/cli/internal/websocket"
 	"github.com/bhandras/delight/cli/pkg/types"
@@ -100,6 +102,12 @@ type Manager struct {
 	shutdownOnce sync.Once
 
 	rt *runtime.Runtime
+
+	// sessionActor owns the session's agent-state persistence logic (Phase 4 wiring).
+	// Additional responsibilities (mode switching, permission promises) will be migrated
+	// into this actor in subsequent phases.
+	sessionActor       *framework.Actor[sessionactor.State]
+	sessionActorRuntime *sessionactor.Runtime
 
 	lastMachineKeepAliveSkipAt time.Time
 
@@ -208,7 +216,7 @@ func (m *Manager) handlePermissionRequest(requestID string, toolName string, inp
 		CreatedAt: time.Now().UnixMilli(),
 	}
 	m.stateMu.Unlock()
-	go m.updateState()
+	m.requestPersistAgentState()
 
 	// Send permission request to mobile app via RPC.
 	//
@@ -292,8 +300,6 @@ func (m *Manager) HandlePermissionResponse(requestID string, allow bool, message
 
 func (m *Manager) clearPendingRequestState(requestID string, allow bool, message string) {
 	m.stateMu.Lock()
-	defer m.stateMu.Unlock()
-
 	toolName := ""
 	input := ""
 	if m.state.Requests != nil {
@@ -320,7 +326,9 @@ func (m *Manager) clearPendingRequestState(requestID string, allow bool, message
 		Message:    message,
 		ResolvedAt: time.Now().UnixMilli(),
 	}
-	go m.updateState()
+	m.stateMu.Unlock()
+
+	m.requestPersistAgentState()
 }
 
 // broadcastThinking broadcasts thinking state to connected clients.
@@ -384,4 +392,26 @@ func (m *Manager) updateState() {
 		m.stateDirty = false
 		return
 	}
+}
+
+// requestPersistAgentState schedules persisting the current agent state via the
+// SessionActor.
+//
+// This replaces direct networking inside updateState while we migrate the
+// session manager to an actor-owned state machine.
+func (m *Manager) requestPersistAgentState() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+
+	if m.sessionActor == nil || m.wsClient == nil || !m.wsClient.IsConnected() {
+		m.stateDirty = true
+		return
+	}
+
+	stateData, err := json.Marshal(m.state)
+	if err != nil {
+		return
+	}
+	m.stateDirty = true
+	_ = m.sessionActor.Enqueue(sessionactor.PersistAgentState(string(stateData)))
 }

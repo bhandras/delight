@@ -18,6 +18,8 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 		return reduceAbortRemote(state, in)
 	case cmdPermissionDecision:
 		return reducePermissionDecision(state, in)
+	case cmdPersistAgentState:
+		return reducePersistAgentState(state, in)
 
 	case evRunnerReady:
 		return reduceRunnerReady(state, in)
@@ -28,14 +30,25 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 	case evDesktopTakeback:
 		// Desktop takeback is a switch to local.
 		return reduceSwitchMode(state, cmdSwitchMode{Target: ModeLocal, Reply: nil})
-	case evAgentStatePersisted:
+	case EvAgentStatePersisted:
 		return reduceAgentStatePersisted(state, in)
-	case evAgentStateVersionMismatch:
+	case EvAgentStateVersionMismatch:
 		return reduceAgentStateVersionMismatch(state, in)
-	case evAgentStatePersistFailed:
+	case EvAgentStatePersistFailed:
 		return reduceAgentStatePersistFailed(state, in)
 	default:
 		return state, nil
+	}
+}
+
+func reducePersistAgentState(state State, cmd cmdPersistAgentState) (State, []actor.Effect) {
+	if cmd.AgentStateJSON == "" {
+		return state, nil
+	}
+	state.AgentStateJSON = cmd.AgentStateJSON
+	state.PersistRetryRemaining = 1
+	return state, []actor.Effect{
+		effPersistAgentState{AgentStateJSON: state.AgentStateJSON, ExpectedVersion: state.AgentStateVersion},
 	}
 }
 
@@ -205,7 +218,7 @@ func reducePermissionDecision(state State, cmd cmdPermissionDecision) (State, []
 	return state, nil
 }
 
-func reduceAgentStatePersisted(state State, ev evAgentStatePersisted) (State, []actor.Effect) {
+func reduceAgentStatePersisted(state State, ev EvAgentStatePersisted) (State, []actor.Effect) {
 	if ev.NewVersion > 0 {
 		state.AgentStateVersion = ev.NewVersion
 	}
@@ -213,7 +226,7 @@ func reduceAgentStatePersisted(state State, ev evAgentStatePersisted) (State, []
 	return state, nil
 }
 
-func reduceAgentStateVersionMismatch(state State, ev evAgentStateVersionMismatch) (State, []actor.Effect) {
+func reduceAgentStateVersionMismatch(state State, ev EvAgentStateVersionMismatch) (State, []actor.Effect) {
 	if ev.ServerVersion > 0 {
 		state.AgentStateVersion = ev.ServerVersion
 	}
@@ -226,7 +239,7 @@ func reduceAgentStateVersionMismatch(state State, ev evAgentStateVersionMismatch
 	}
 }
 
-func reduceAgentStatePersistFailed(state State, ev evAgentStatePersistFailed) (State, []actor.Effect) {
+func reduceAgentStatePersistFailed(state State, ev EvAgentStatePersistFailed) (State, []actor.Effect) {
 	_ = ev
 	// Phase 4 minimal behavior: keep version as-is and allow a future tick/debounce
 	// mechanism to retry. We don't retry immediately on arbitrary errors because
