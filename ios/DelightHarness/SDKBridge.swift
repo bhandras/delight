@@ -107,7 +107,15 @@ struct SessionMetadata {
 
 struct SessionAgentState {
     let controlledByUser: Bool
-    let hasPendingRequests: Bool
+    let requests: [String: SessionAgentPendingRequest]
+
+    var hasPendingRequests: Bool { !requests.isEmpty }
+
+    struct SessionAgentPendingRequest {
+        let toolName: String
+        let input: String
+        let createdAt: Int64?
+    }
 
     static func fromJSON(_ json: String?) -> SessionAgentState? {
         guard let json, let data = json.data(using: .utf8) else {
@@ -116,10 +124,48 @@ struct SessionAgentState {
         guard let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
-        let controlledByUser = decoded["controlledByUser"] as? Bool ?? false
-        let requests = decoded["requests"] as? [String: Any]
-        let hasPendingRequests = !(requests?.isEmpty ?? true)
-        return SessionAgentState(controlledByUser: controlledByUser, hasPendingRequests: hasPendingRequests)
+        let controlledByUser = decoded["controlledByUser"] as? Bool ?? true
+        let rawRequests = decoded["requests"] as? [String: Any] ?? [:]
+        var parsed: [String: SessionAgentPendingRequest] = [:]
+        parsed.reserveCapacity(rawRequests.count)
+        for (requestID, value) in rawRequests {
+            guard let dict = value as? [String: Any] else { continue }
+            let toolName = dict["toolName"] as? String ?? dict["tool_name"] as? String ?? "unknown"
+            let input = dict["input"] as? String ?? "{}"
+            let createdAt =
+                dict["createdAt"] as? Int64
+                ?? (dict["createdAt"] as? NSNumber)?.int64Value
+                ?? (dict["created_at"] as? NSNumber)?.int64Value
+            parsed[requestID] = SessionAgentPendingRequest(toolName: toolName, input: input, createdAt: createdAt)
+        }
+        return SessionAgentState(controlledByUser: controlledByUser, requests: parsed)
+    }
+}
+
+struct SessionUIState: Equatable {
+    let state: String // disconnected|offline|local|remote
+    let connected: Bool
+    let active: Bool
+    let controlledByUser: Bool
+    let canTakeControl: Bool
+    let canSend: Bool
+
+    static func fromJSONDict(_ dict: [String: Any]?) -> SessionUIState? {
+        guard let dict else { return nil }
+        let state = dict["state"] as? String ?? "disconnected"
+        let connected = dict["connected"] as? Bool ?? false
+        let active = dict["active"] as? Bool ?? false
+        let controlledByUser = dict["controlledByUser"] as? Bool ?? true
+        let canTakeControl = dict["canTakeControl"] as? Bool ?? false
+        let canSend = dict["canSend"] as? Bool ?? false
+        return SessionUIState(
+            state: state,
+            connected: connected,
+            active: active,
+            controlledByUser: controlledByUser,
+            canTakeControl: canTakeControl,
+            canSend: canSend
+        )
     }
 }
 
@@ -132,6 +178,7 @@ struct SessionSummary: Identifiable {
     let subtitle: String?
     let metadata: SessionMetadata?
     let agentState: SessionAgentState?
+    let uiState: SessionUIState?
     let thinking: Bool
 
     func updatingActivity(active: Bool?, activeAt: Int64?, thinking: Bool?) -> SessionSummary {
@@ -144,6 +191,7 @@ struct SessionSummary: Identifiable {
             subtitle: subtitle,
             metadata: metadata,
             agentState: agentState,
+            uiState: uiState,
             thinking: thinking ?? self.thinking
         )
     }
@@ -304,6 +352,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var activePermissionRequest: PendingPermissionRequest?
     @Published var showPermissionPrompt: Bool = false
     @Published var isRespondingToPermission: Bool = false
+    @Published var isSwitchingControl: Bool = false
     @Published var isCreatingAccount: Bool = false
     @Published var isApprovingTerminal: Bool = false
     @Published var isLoggingOut: Bool = false
@@ -320,6 +369,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private var logLines: [String] = []
     private var needsSessionRefresh: Bool = false
     private var oldestLoadedSeq: Int64?
+    private var scheduledSessionRefresh: DispatchWorkItem?
+    private var lastSessionRefreshAt: Date = .distantPast
 
     // Calls into the gomobile-generated SDK must be serialized and must never be made
     // synchronously from inside a Go→Swift callback (e.g. `onUpdate`).
@@ -593,6 +644,50 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
+    func requestSessionControl(mode: String, sessionID: String? = nil) {
+        let targetID = sessionID ?? self.sessionID
+        guard !targetID.isEmpty else { return }
+
+        DispatchQueue.main.async { self.isSwitchingControl = true }
+
+        sdkCallAsync {
+            do {
+                let paramsData = try JSONSerialization.data(withJSONObject: ["mode": mode], options: [])
+                let paramsJSON = String(data: paramsData, encoding: .utf8) ?? "{\"mode\":\"\(mode)\"}"
+                let responseBuf = try self.sdkCallSync {
+                    try self.client.callRPCBuffer(targetID + ":switch", paramsJSON: paramsJSON)
+                }
+                let responseJSON = self.stringFromBuffer(responseBuf)
+                let returnedMode: String? = {
+                    guard let responseJSON,
+                          let data = responseJSON.data(using: .utf8),
+                          let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        return nil
+                    }
+                    if let result = decoded["result"] as? [String: Any] {
+                        return result["mode"] as? String
+                    }
+                    return nil
+                }()
+
+                // Do not optimistically rewrite session state in Swift.
+                // The Go SDK is the source of truth for control FSM; we refresh sessions below.
+                _ = returnedMode // parsed for debugging / future UI messaging.
+
+                // Refresh sessions to pick up the authoritative agent state (plus requests).
+                self.listSessions()
+                DispatchQueue.main.async {
+                    self.isSwitchingControl = false
+                }
+            } catch {
+                self.logSwiftOnly("Switch control error: \(error)")
+                DispatchQueue.main.async {
+                    self.isSwitchingControl = false
+                }
+            }
+        }
+    }
+
     private func completePermissionRequest(requestID: String) {
         permissionQueue.removeAll(where: { $0.requestID == requestID })
         if let next = permissionQueue.first {
@@ -615,11 +710,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     func prettyPrintedJSON(fromJSONString json: String) -> String? {
         guard let data = json.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data),
-              let prettyData = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]),
+              let prettyData = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .withoutEscapingSlashes]),
               let pretty = String(data: prettyData, encoding: .utf8) else {
             return nil
         }
-        return pretty
+        // Some tool payloads contain shell-escaped paths like "\/Users\/...".
+        // They're valid, but visually noisy. Clean up common path-only escapes for display.
+        return pretty.replacingOccurrences(of: "\\/", with: "/")
     }
 
     func authWithKeypair() {
@@ -874,7 +971,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let outgoingText = messageText
         messageText = ""
         let localID = UUID().uuidString
-        let shouldSwitchToRemote = sessions.first(where: { $0.id == sessionID })?.agentState?.controlledByUser == true
 
         updateSessionThinking(true)
 
@@ -907,20 +1003,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             // Do network work on the SDK queue to keep the UI responsive.
             sdkCallAsync {
                 do {
-                    // If the session is currently in "local" mode (controlled by the desktop),
-                    // switch to remote mode so permission prompts can be handled by the app.
-                    if shouldSwitchToRemote {
-                        do {
-                            let paramsData = try JSONSerialization.data(withJSONObject: ["mode": "remote"], options: [])
-                            let paramsJSON = String(data: paramsData, encoding: .utf8) ?? "{\"mode\":\"remote\"}"
-                            _ = try self.sdkCallSync {
-                                try self.client.callRPCBuffer(self.sessionID + ":switch", paramsJSON: paramsJSON)
-                            }
-                        } catch {
-                            self.log("Switch-to-remote error (continuing): \(error)")
-                        }
-                    }
-
                     try self.sdkCallSync {
                         try self.client.sendMessage(withLocalID: self.sessionID, localID: localID, rawRecordJSON: json)
                     }
@@ -1154,6 +1236,27 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     self.sessions[index] = updated
                 }
             }
+            // Activity / keep-alive updates are the earliest reliable signal that a CLI
+            // came online after the phone app started. Refresh sessions so the UI state
+            // (remote/local/offline) stays SDK-owned and up-to-date.
+            scheduleSessionsRefreshDebounced()
+        }
+    }
+
+    private func scheduleSessionsRefreshDebounced(minIntervalSeconds: TimeInterval = 1.0, delaySeconds: TimeInterval = 0.35) {
+        DispatchQueue.main.async {
+            self.scheduledSessionRefresh?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                let now = Date()
+                if now.timeIntervalSince(self.lastSessionRefreshAt) < minIntervalSeconds {
+                    return
+                }
+                self.lastSessionRefreshAt = now
+                self.listSessions()
+            }
+            self.scheduledSessionRefresh = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + delaySeconds, execute: work)
         }
     }
 
@@ -1175,6 +1278,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         )
 
         DispatchQueue.main.async {
+            if let session = self.sessions.first(where: { $0.id == request.sessionID }),
+               session.agentState?.controlledByUser == true {
+                // Desktop controls: approvals appear in the desktop TUI.
+                return
+            }
             if self.permissionQueue.contains(where: { $0.requestID == request.requestID }) {
                 return
             }
@@ -1214,12 +1322,23 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         if let type = decoded["type"] as? String, type == "activity" {
             return readActivityFields(from: decoded)
         }
+        if let type = decoded["type"] as? String, type == "session-alive" {
+            return readSessionAliveFields(from: decoded)
+        }
         if let body = decoded["body"] as? [String: Any],
-           let type = body["t"] as? String, type == "activity" {
-            return readActivityFields(from: body)
+           let type = body["t"] as? String {
+            if type == "activity" {
+                return readActivityFields(from: body)
+            }
+            if type == "session-alive" {
+                return readSessionAliveFields(from: body)
+            }
         }
         if let type = decoded["t"] as? String, type == "activity" {
             return readActivityFields(from: decoded)
+        }
+        if let type = decoded["t"] as? String, type == "session-alive" {
+            return readSessionAliveFields(from: decoded)
         }
         return nil
     }
@@ -1233,6 +1352,20 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let activeAt = payload["activeAt"] as? Int64 ?? (payload["activeAt"] as? NSNumber)?.int64Value
         let thinking = payload["thinking"] as? Bool
         return (id: id, active: active, activeAt: activeAt, thinking: thinking)
+    }
+
+    private func readSessionAliveFields(from payload: [String: Any]) -> (id: String, active: Bool?, activeAt: Int64?, thinking: Bool?)? {
+        let id = payload["id"] as? String ?? payload["sid"] as? String
+        guard let id else {
+            return nil
+        }
+        // Session alive implies the session is active.
+        let activeAt =
+            payload["activeAt"] as? Int64
+            ?? (payload["activeAt"] as? NSNumber)?.int64Value
+            ?? payload["time"] as? Int64
+            ?? (payload["time"] as? NSNumber)?.int64Value
+        return (id: id, active: true, activeAt: activeAt, thinking: nil)
     }
 
     private func log(_ message: String) {
@@ -1362,9 +1495,25 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
         if let decoded = try? JSONDecoder().decode(SessionsResponse.self, from: data) {
             DispatchQueue.main.async { [self] in
-                self.sessions = decoded.sessions.map {
+                // Decode UI state from the SDK-enriched JSON response.
+                let rawRoot = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+                let uiByID: [String: SessionUIState] = {
+                    guard let rawSessions = rawRoot["sessions"] as? [[String: Any]] else { return [:] }
+                    var out: [String: SessionUIState] = [:]
+                    out.reserveCapacity(rawSessions.count)
+                    for raw in rawSessions {
+                        guard let id = raw["id"] as? String else { continue }
+                        if let ui = SessionUIState.fromJSONDict(raw["ui"] as? [String: Any]) {
+                            out[id] = ui
+                        }
+                    }
+                    return out
+                }()
+
+                let parsedSessions: [SessionSummary] = decoded.sessions.map {
                     let metadata = SessionMetadata.fromJSON($0.metadata)
                     let agentState = SessionAgentState.fromJSON($0.agentState)
+                    let uiState = uiByID[$0.id]
                     let title = metadata?.agent
                         ?? metadata?.summaryText
                         ?? $0.machineId
@@ -1378,8 +1527,42 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                             ?? $0.machineId,
                         metadata: metadata,
                         agentState: agentState,
+                        uiState: uiState,
                         thinking: false
                     )
+                }
+                self.sessions = parsedSessions
+
+                // Hydrate pending permission prompts from durable agent state.
+                let now = Int64(Date().timeIntervalSince1970 * 1000)
+                for session in parsedSessions {
+                    // Only hydrate/show permission prompts when the phone is actively
+                    // controlling the session (remote mode). For offline/disconnected
+                    // sessions, we keep the UI quiet and require the user to take control
+                    // again once the CLI is online.
+                    guard session.uiState?.state == "remote" else {
+                        self.permissionQueue.removeAll(where: { $0.sessionID == session.id })
+                        continue
+                    }
+                    for (requestID, req) in session.agentState?.requests ?? [:] {
+                        if self.permissionQueue.contains(where: { $0.requestID == requestID }) {
+                            continue
+                        }
+                        self.permissionQueue.append(
+                            PendingPermissionRequest(
+                                sessionID: session.id,
+                                requestID: requestID,
+                                toolName: req.toolName,
+                                input: req.input,
+                                receivedAt: req.createdAt ?? now
+                            )
+                        )
+                    }
+                }
+
+                if self.activePermissionRequest == nil, let next = self.permissionQueue.first {
+                    self.activePermissionRequest = next
+                    self.showPermissionPrompt = true
                 }
                 if let current = self.sessions.first(where: { $0.id == self.sessionID }) {
                     self.selectedMetadata = current.metadata
@@ -1513,17 +1696,31 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 .compactMap(\.localID)
                 .filter { !$0.isEmpty }
         )
-        let serverUserSignatures = Set(
-            incoming
-                .filter { $0.role == .user && !$0.id.hasPrefix("local-") }
-                .map { blocksSignature($0.blocks) }
-        )
+        // Signature-only dedupe is too aggressive when users send the same text twice
+        // (e.g. "ls -l" again). Use (signature, time window) instead so we don't
+        // hide the new optimistic bubble until the server echo arrives.
+        var serverUserCreatedAtsBySignature: [String: [Int64]] = [:]
+        for item in incoming {
+            guard item.role == .user, !item.id.hasPrefix("local-") else { continue }
+            guard let createdAt = item.createdAt else { continue }
+            let sig = blocksSignature(item.blocks)
+            serverUserCreatedAtsBySignature[sig, default: []].append(createdAt)
+        }
         let merged = resultByID.values.filter { item in
             if item.id.hasPrefix("local-"), item.role == .user {
                 if let localID = item.localID, !localID.isEmpty, serverLocalIDs.contains(localID) {
                     return false
                 }
-                return !serverUserSignatures.contains(blocksSignature(item.blocks))
+                guard let optimisticAt = item.createdAt else { return true }
+                let sig = blocksSignature(item.blocks)
+                if let ats = serverUserCreatedAtsBySignature[sig] {
+                    // If the server already has a matching user message within a short
+                    // window, the optimistic bubble is redundant and can be removed.
+                    for at in ats where isNearInTime(optimisticAt, at) {
+                        return false
+                    }
+                }
+                return true
             }
             return true
         }

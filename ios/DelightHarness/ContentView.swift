@@ -358,6 +358,26 @@ private struct PermissionPromptSheet: View {
 
     @State private var message: String = ""
 
+    private func infoRow(label: String, value: String, valueWeight: Font.Weight) -> some View {
+        Grid(horizontalSpacing: 14, verticalSpacing: 0) {
+            GridRow {
+                Text(label)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(Theme.mutedText)
+                    .frame(width: 80, alignment: .leading)
+                Text(value)
+                    .font(.system(size: 15, weight: valueWeight))
+                    .foregroundColor(Theme.messageText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -370,20 +390,12 @@ private struct PermissionPromptSheet: View {
                             .foregroundColor(Theme.messageText)
 
                         FeatureListCard {
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack {
-                                    Text("Tool")
-                                    Spacer()
-                                    Text(req.toolName)
-                                        .foregroundColor(Theme.mutedText)
-                                }
+                            VStack(spacing: 0) {
+                                infoRow(label: "Tool", value: req.toolName, valueWeight: .semibold)
                                 if let title = model.sessionTitle(for: req.sessionID) {
-                                    HStack {
-                                        Text("Terminal")
-                                        Spacer()
-                                        Text(title)
-                                            .foregroundColor(Theme.mutedText)
-                                    }
+                                    Divider()
+                                        .overlay(Theme.codeBorder.opacity(0.35))
+                                    infoRow(label: "Terminal", value: title, valueWeight: .regular)
                                 }
                             }
                         }
@@ -850,11 +862,32 @@ private struct TerminalDetailView: View {
     @State private var initialScrollDone: Bool = false
 
     var body: some View {
+        let currentSession = model.sessions.first(where: { $0.id == session.id }) ?? session
+        let ui = currentSession.uiState
+        let uiState = ui?.state ?? "disconnected"
+        let isComposerEnabled = ui?.canSend ?? false
+        let placeholder: String = {
+            switch ui?.state {
+            case "disconnected":
+                return "Disconnected…"
+            case "offline":
+                return "Terminal offline…"
+            case "local":
+                return "Tap “Take Control” to type from phone…"
+            case "remote":
+                return "Type a message..."
+            default:
+                return "Type a message..."
+            }
+        }()
         ZStack {
             Theme.background.ignoresSafeArea()
             VStack(spacing: 0) {
-                if session.agentState?.controlledByUser == true {
-                    ControlStatusBanner(model: model)
+                // Only show the control banner when the desktop controls the session.
+                // In remote mode, it's redundant noise (the composer is enabled and the
+                // user is actively interacting already).
+                if uiState == "local" {
+                    ControlStatusBanner(model: model, session: currentSession)
                 }
                 TerminalMessagesView(
                     messages: model.messages,
@@ -869,9 +902,9 @@ private struct TerminalDetailView: View {
                     model.scrollRequest = ScrollRequest(target: .bottom)
                 }
 
-                ConnectionStatusRow(status: statusInfo(for: session), activityText: session.thinking ? vibingMessage(for: session.id) : nil)
+                ConnectionStatusRow(status: statusInfo(for: currentSession), activityText: currentSession.thinking ? vibingMessage(for: currentSession.id) : nil)
                     .background(Theme.cardBackground)
-                MessageComposer(model: model)
+                MessageComposer(model: model, isEnabled: isComposerEnabled, placeholder: placeholder)
                     .background(Theme.cardBackground)
             }
         }
@@ -1103,23 +1136,65 @@ private struct ToolChipView: View {
 
 private struct ControlStatusBanner: View {
     @ObservedObject var model: HarnessViewModel
+    let session: SessionSummary
 
     var body: some View {
-        HStack(spacing: 8) {
-            StatusDot(color: Theme.success, isPulsing: false, size: 7)
-            Group {
-                if model.permissionQueueCount > 0 {
-                    Text("terminal control - permission request pending")
-                } else {
-                    Text("terminal control enabled")
+        let ui = session.uiState
+        let state = ui?.state ?? "disconnected"
+        let isConnectedAndActive = (state == "local" || state == "remote")
+        let controlledByDesktop = isConnectedAndActive
+            ? (ui?.controlledByUser ?? (session.agentState?.controlledByUser ?? true))
+            : true
+        let controllerText = isConnectedAndActive ? (controlledByDesktop ? "Desktop" : "Phone") : "—"
+        let subtitle: String = {
+            switch ui?.state {
+            case "disconnected":
+                return "Disconnected from server."
+            case "offline":
+                return "Terminal is offline. Start the CLI to take control."
+            case "local":
+                return "Desktop controls this session. Tap “Take Control” to send from phone."
+            case "remote":
+                return "Phone controls this session. To return control, press Ctrl+L on desktop."
+            default:
+                return controlledByDesktop
+                    ? "Desktop controls this session. Tap “Take Control” to send from phone."
+                    : "Phone controls this session. To return control, press Ctrl+L on desktop."
+            }
+        }()
+        let canTakeControl = ui?.canTakeControl ?? false
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                StatusDot(color: controlledByDesktop ? Theme.success : Theme.accent, isPulsing: false, size: 7)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Controlled by: \(controllerText)")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Theme.messageText)
+                    if model.permissionQueueCount > 0 {
+                        Text("permission request pending")
+                            .font(Theme.caption)
+                            .foregroundColor(Theme.warning)
+                    }
+                }
+                Spacer()
+                // Phone UI only supports "Take Control" (switch to remote). Returning
+                // control is a desktop-only action (Ctrl+L).
+                if controlledByDesktop && state == "local" {
+                    Button("Take Control") {
+                        model.requestSessionControl(mode: "remote", sessionID: session.id)
+                    }
+                    .buttonStyle(PillButtonStyle(fill: Theme.accent))
+                    .disabled(model.isSwitchingControl || !canTakeControl)
                 }
             }
-            .font(Theme.caption)
-            .foregroundColor(Theme.success)
-            Spacer()
+
+            Text(subtitle)
+                .font(Theme.caption)
+                .foregroundColor(Theme.mutedText)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.vertical, 10)
         .background(Theme.cardBackground)
     }
 }
@@ -1233,15 +1308,22 @@ private struct StatusDot: View {
 
 private struct MessageComposer: View {
     @ObservedObject var model: HarnessViewModel
+    let isEnabled: Bool
+    let placeholder: String
 
     var body: some View {
         HStack(spacing: 12) {
-            TextField("Type a message...", text: $model.messageText, axis: .vertical)
+            TextField(
+                placeholder,
+                text: $model.messageText,
+                axis: .vertical
+            )
                 .font(Theme.body)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
                 .background(Color(uiColor: .secondarySystemBackground))
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .disabled(!isEnabled)
             Button {
                 model.sendMessage()
                 model.messageText = ""
@@ -1253,6 +1335,8 @@ private struct MessageComposer: View {
                     .foregroundColor(.white)
                     .clipShape(Circle())
             }
+            .disabled(!isEnabled || model.sessionID.isEmpty || model.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .opacity((!isEnabled || model.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ? 0.5 : 1.0)
         }
         .padding()
     }
