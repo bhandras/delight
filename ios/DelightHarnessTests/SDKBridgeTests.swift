@@ -54,6 +54,7 @@ final class SDKBridgeTests: XCTestCase {
                 subtitle: nil,
                 metadata: nil,
                 agentState: nil,
+                uiState: nil,
                 thinking: false
             )
         ]

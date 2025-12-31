@@ -2,6 +2,40 @@ import Foundation
 import SwiftUI
 import DelightSDK
 
+/// PermissionDecisionParams is the payload sent to `sessionID:permission` RPC calls.
+private struct PermissionDecisionParams: Encodable {
+    let requestId: String
+    let allow: Bool
+    let message: String
+}
+
+/// SwitchControlParams is the payload sent to `sessionID:switch` RPC calls.
+private struct SwitchControlParams: Encodable {
+    let mode: String
+}
+
+/// SwitchControlResponse is the best-effort response schema for switch RPC calls.
+private struct SwitchControlResponse: Decodable {
+    struct Result: Decodable {
+        let mode: String?
+    }
+
+    let result: Result?
+}
+
+/// RawUserMessageRecord is the schema used by the CLI to represent a user chat message.
+///
+/// This is forwarded to the CLI via the Go SDK as `rawRecordJSON`.
+private struct RawUserMessageRecord: Encodable {
+    struct Content: Encodable {
+        let type: String
+        let text: String
+    }
+
+    let role: String
+    let content: Content
+}
+
 final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var serverURL: String = "http://localhost:3005" {
         didSet { persistSettings() }
@@ -312,13 +346,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         isRespondingToPermission = true
         sdkCallAsync {
             do {
-                let payload: [String: Any] = [
-                    "requestId": request.requestID,
-                    "allow": allow,
-                    "message": message
-                ]
-                let data = try JSONSerialization.data(withJSONObject: payload, options: [])
-                let paramsJSON = String(data: data, encoding: .utf8) ?? "{}"
+                let paramsJSON = try JSONCoding.encode(
+                    PermissionDecisionParams(requestId: request.requestID, allow: allow, message: message)
+                )
                 let method = request.sessionID + ":permission"
 
                 _ = try self.sdkCallSync {
@@ -343,23 +373,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
         sdkCallAsync {
             do {
-                let paramsData = try JSONSerialization.data(withJSONObject: ["mode": mode], options: [])
-                let paramsJSON = String(data: paramsData, encoding: .utf8) ?? "{\"mode\":\"\(mode)\"}"
+                let paramsJSON = try JSONCoding.encode(SwitchControlParams(mode: mode))
                 let responseBuf = try self.sdkCallSync {
                     try self.client.callRPCBuffer(targetID + ":switch", paramsJSON: paramsJSON)
                 }
-                let responseJSON = self.stringFromBuffer(responseBuf)
-                let returnedMode: String? = {
-                    guard let responseJSON,
-                          let data = responseJSON.data(using: .utf8),
-                          let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                        return nil
-                    }
-                    if let result = decoded["result"] as? [String: Any] {
-                        return result["mode"] as? String
-                    }
-                    return nil
-                }()
+                let responseJSON = self.stringFromBuffer(responseBuf) ?? ""
+                let returnedMode: String? = (try? JSONCoding.decode(SwitchControlResponse.self, from: responseJSON))
+                    .flatMap { $0.result?.mode }
 
                 // Do not optimistically rewrite session state in Swift.
                 // The Go SDK is the source of truth for control FSM; we refresh sessions below.
@@ -393,15 +413,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func prettyPrintedJSON(fromJSONString json: String) -> String? {
-        guard let data = json.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data),
-              let prettyData = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .withoutEscapingSlashes]),
-              let pretty = String(data: prettyData, encoding: .utf8) else {
-            return nil
-        }
-        // Some tool payloads contain shell-escaped paths like "\/Users\/...".
-        // They're valid, but visually noisy. Clean up common path-only escapes for display.
-        return pretty.replacingOccurrences(of: "\\/", with: "/")
+        JSONCoding.prettyPrint(json: json)
     }
 
     func authWithKeypair() {
@@ -684,16 +696,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             self.scrollRequest = ScrollRequest(target: .bottom)
         }
 
-        let rawRecord: [String: Any] = [
-            "role": "user",
-            "content": [
-                "type": "text",
-                "text": outgoingText
-            ]
-        ]
         do {
-            let data = try JSONSerialization.data(withJSONObject: rawRecord, options: [])
-            let json = String(data: data, encoding: .utf8) ?? "{}"
+            let json = try JSONCoding.encode(
+                RawUserMessageRecord(role: "user", content: .init(type: "text", text: outgoingText))
+            )
 
             // Do network work on the SDK queue to keep the UI responsive.
             sdkCallAsync {
