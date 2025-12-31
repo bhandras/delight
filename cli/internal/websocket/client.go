@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -174,7 +175,22 @@ func (c *Client) Connect() error {
 
 	// Set the path (like JS client does)
 	opts.SetPath("/v1/updates")
-	opts.SetTransports(types.NewSet(socket.Polling, socket.WebSocket))
+
+	transportMode := os.Getenv("DELIGHT_SOCKETIO_TRANSPORT")
+	switch transportMode {
+	case "websocket":
+		if debug {
+			log.Printf("Socket.IO transports: websocket only (DELIGHT_SOCKETIO_TRANSPORT=websocket)")
+		}
+		opts.SetTransports(types.NewSet(socket.WebSocket))
+	case "polling":
+		if debug {
+			log.Printf("Socket.IO transports: polling only (DELIGHT_SOCKETIO_TRANSPORT=polling)")
+		}
+		opts.SetTransports(types.NewSet(socket.Polling))
+	default:
+		opts.SetTransports(types.NewSet(socket.Polling, socket.WebSocket))
+	}
 	opts.SetForceNew(true)
 	opts.SetMultiplex(false)
 
