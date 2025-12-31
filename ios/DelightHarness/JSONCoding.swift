@@ -63,6 +63,7 @@ enum JSONCodingError: Error {
 enum JSONValue: Codable, Equatable {
     case null
     case bool(Bool)
+    case int(Int64)
     case number(Double)
     case string(String)
     case array([JSONValue])
@@ -74,6 +75,8 @@ enum JSONValue: Codable, Equatable {
             self = .null
         } else if let value = try? container.decode(Bool.self) {
             self = .bool(value)
+        } else if let value = try? container.decode(Int64.self) {
+            self = .int(value)
         } else if let value = try? container.decode(Double.self) {
             self = .number(value)
         } else if let value = try? container.decode(String.self) {
@@ -96,6 +99,8 @@ enum JSONValue: Codable, Equatable {
         case .null:
             try container.encodeNil()
         case .bool(let value):
+            try container.encode(value)
+        case .int(let value):
             try container.encode(value)
         case .number(let value):
             try container.encode(value)
@@ -120,6 +125,26 @@ enum JSONValue: Codable, Equatable {
         return nil
     }
 
+    /// int64 returns the underlying int64, if this value is an integer.
+    var int64: Int64? {
+        if case .int(let value) = self { return value }
+        return nil
+    }
+
+    /// number returns the underlying number as a Double, if this is numeric.
+    ///
+    /// NOTE: Prefer `int64` when you need integer semantics and stable decoding.
+    var number: Double? {
+        switch self {
+        case .int(let value):
+            return Double(value)
+        case .number(let value):
+            return value
+        default:
+            return nil
+        }
+    }
+
     /// object returns the underlying object, if this value is an object.
     var object: [String: JSONValue]? {
         if case .object(let value) = self { return value }
@@ -141,6 +166,8 @@ enum JSONValue: Codable, Equatable {
         case .null:
             return NSNull()
         case .bool(let value):
+            return value
+        case .int(let value):
             return value
         case .number(let value):
             return value

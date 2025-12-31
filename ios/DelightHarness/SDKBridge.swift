@@ -196,21 +196,49 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
-    /// decodeJSONAny decodes an arbitrary JSON document into Foundation JSON containers.
-    ///
-    /// This intentionally keeps the dynamic parts of the wire protocol out of UI code.
-    /// `SDKBridge` is in the middle of a migration from `[String: Any]` parsing to
-    /// strongly typed DTOs; this helper provides a safe bridge during that transition.
-    private func decodeJSONAny(_ json: String) -> Any? {
-        guard let value = try? JSONCoding.decode(JSONValue.self, from: json) else {
-            return nil
-        }
-        return value.toAny()
-    }
-
     /// decodeUpdateEnvelope decodes the best-effort update envelope used by `onUpdate`.
     private func decodeUpdateEnvelope(_ json: String) -> UpdateEnvelope? {
         try? JSONCoding.decode(UpdateEnvelope.self, from: json)
+    }
+
+    /// decodeJSONValue decodes a JSON string into a JSONValue tree.
+    private func decodeJSONValue(_ json: String) -> JSONValue? {
+        try? JSONCoding.decode(JSONValue.self, from: json)
+    }
+
+    private func firstNonNull(_ candidates: JSONValue?...) -> JSONValue? {
+        for candidate in candidates {
+            if case .null = candidate {
+                continue
+            }
+            if let candidate {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private func jsonString(_ obj: [String: JSONValue], _ key: String) -> String? {
+        obj[key]?.string
+    }
+
+    private func jsonBool(_ obj: [String: JSONValue], _ key: String) -> Bool? {
+        obj[key]?.bool
+    }
+
+    private func jsonInt64(_ obj: [String: JSONValue], _ key: String) -> Int64? {
+        guard let value = obj[key] else { return nil }
+        if let int64 = value.int64 { return int64 }
+        if let double = value.number { return Int64(double) }
+        return nil
+    }
+
+    private func jsonObject(_ obj: [String: JSONValue], _ key: String) -> [String: JSONValue]? {
+        obj[key]?.object
+    }
+
+    private func jsonArray(_ obj: [String: JSONValue], _ key: String) -> [JSONValue]? {
+        obj[key]?.array
     }
 
     private func stringFromBuffer(_ buffer: SdkBuffer?) -> String? {
@@ -894,7 +922,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
               let body = update.body,
               body.t == "new-message",
               let messageValue = body.message,
-              let message = messageValue.toAny() as? [String: Any] else {
+              let message = messageValue.object else {
             return false
         }
 
@@ -904,9 +932,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             return true
         }
 
-        let id = message["id"] as? String ?? UUID().uuidString
-        let createdAt = message["createdAt"] as? Int64
-        let seq = (message["seq"] as? NSNumber)?.int64Value ?? message["seq"] as? Int64
+        let id = message["id"]?.string ?? UUID().uuidString
+        let createdAt = jsonInt64(message, "createdAt")
+        let seq = jsonInt64(message, "seq")
 
         var blocks = extractBlocks(from: content, sessionID: sessionID)
         if blocks.isEmpty, let text = extractText(from: content) {
@@ -922,7 +950,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
 
         let role = extractRole(from: message, content: content)
-        let localID = message["localId"] as? String
+        let localID = message["localId"]?.string
         let uuid = self.extractMessageUUID(from: content)
         let serverItem = MessageItem(id: id, seq: seq, localID: localID, uuid: uuid, role: role, blocks: blocks, createdAt: createdAt)
 
@@ -986,7 +1014,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
               let body = update.body,
               body.t == "new-message",
               let messageValue = body.message,
-              let message = messageValue.toAny() as? [String: Any] else {
+              let message = messageValue.object else {
             return true
         }
         let content = normalizeContent(firstNonNull(message["content"], message["data"]))
@@ -1648,34 +1676,36 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     private func decodeMessagesPage(_ json: String) -> MessagesPage {
-        guard let parsed = decodeJSONAny(json) else {
+        guard let parsed = decodeJSONValue(json) else {
             log("Parse messages error: invalid JSON payload")
             return MessagesPage(messages: [], hasMore: false, nextBeforeSeq: nil)
         }
 
-        let itemsArray: [Any]
+        let itemsArray: [JSONValue]
         var hasMore: Bool = false
         var nextBeforeSeq: Int64?
-        if let dict = parsed as? [String: Any] {
-            if let messages = dict["messages"] as? [Any] {
+
+        switch parsed {
+        case .array(let array):
+            itemsArray = array
+        case .object(let dict):
+            if let messages = dict["messages"]?.array {
                 itemsArray = messages
-                if let page = dict["page"] as? [String: Any] {
-                    hasMore = page["hasMore"] as? Bool ?? false
-                    nextBeforeSeq = page["nextBeforeSeq"] as? Int64 ?? (page["nextBeforeSeq"] as? NSNumber)?.int64Value
+                if let page = dict["page"]?.object {
+                    hasMore = page["hasMore"]?.bool ?? false
+                    nextBeforeSeq = page["nextBeforeSeq"]?.int64 ?? (page["nextBeforeSeq"]?.number).map { Int64($0) }
                 }
-            } else if let dataDict = dict["data"] as? [String: Any],
-                      let messages = dataDict["messages"] as? [Any] {
+            } else if let dataDict = dict["data"]?.object,
+                      let messages = dataDict["messages"]?.array {
                 itemsArray = messages
-            } else if let items = dict["items"] as? [Any] {
+            } else if let items = dict["items"]?.array {
                 itemsArray = items
-            } else if let dataItems = dict["data"] as? [Any] {
+            } else if let dataItems = dict["data"]?.array {
                 itemsArray = dataItems
             } else {
                 itemsArray = []
             }
-        } else if let array = parsed as? [Any] {
-            itemsArray = array
-        } else {
+        default:
             itemsArray = []
         }
 
@@ -1685,7 +1715,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         var richFallbackKeys = Set<String>()
 
         for item in itemsArray {
-            guard let dict = item as? [String: Any] else { continue }
+            guard let dict = item.object else { continue }
             let content = normalizeContent(firstNonNull(dict["content"], dict["message"], dict["data"]))
             if isNullMessage(content) || isFileHistorySnapshot(content) || isToolResultMessage(content) {
                 continue
@@ -1695,17 +1725,17 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if localID != nil || uuid != nil {
                 let role = extractRole(from: dict, content: content)
                 let text = extractText(from: content)
-                if let key = fallbackDedupeKey(role: role, createdAt: dict["createdAt"] as? Int64, text: text) {
+                if let key = fallbackDedupeKey(role: role, createdAt: jsonInt64(dict, "createdAt"), text: text) {
                     richFallbackKeys.insert(key)
                 }
             }
         }
 
         for item in itemsArray {
-            guard let dict = item as? [String: Any] else { continue }
-            let id = dict["id"] as? String ?? UUID().uuidString
-            let createdAt = dict["createdAt"] as? Int64
-            let seq = dict["seq"] as? Int64 ?? (dict["seq"] as? NSNumber)?.int64Value
+            guard let dict = item.object else { continue }
+            let id = jsonString(dict, "id") ?? UUID().uuidString
+            let createdAt = jsonInt64(dict, "createdAt")
+            let seq = jsonInt64(dict, "seq")
             let content = normalizeContent(firstNonNull(dict["content"], dict["message"], dict["data"]))
             if isNullMessage(content) || isFileHistorySnapshot(content) {
                 continue
@@ -1765,9 +1795,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return MessagesPage(messages: messages, hasMore: hasMore, nextBeforeSeq: nextBeforeSeq)
     }
 
-    private func normalizeContent(_ content: Any?) -> Any? {
+    private func normalizeContent(_ content: JSONValue?) -> JSONValue? {
         guard let content else { return nil }
-        if let text = content as? String, let nested = parseJSONString(text) {
+        if let text = content.string, let nested = parseJSONString(text) {
             return nested
         }
         return content
@@ -1777,12 +1807,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         guard let update = decodeUpdateEnvelope(json) else { return nil }
         if let sid = update.body?.sid, !sid.isEmpty { return sid }
         if let sid = update.sid, !sid.isEmpty { return sid }
-        if let messageValue = update.body?.message, let message = messageValue.toAny() as? [String: Any],
-           let sessionID = message["sessionId"] as? String, !sessionID.isEmpty {
+        if let messageValue = update.body?.message, let message = messageValue.object,
+           let sessionID = message["sessionId"]?.string, !sessionID.isEmpty {
             return sessionID
         }
-        if let messageValue = update.message, let message = messageValue.toAny() as? [String: Any],
-           let sessionID = message["sessionId"] as? String, !sessionID.isEmpty {
+        if let messageValue = update.message, let message = messageValue.object,
+           let sessionID = message["sessionId"]?.string, !sessionID.isEmpty {
             return sessionID
         }
         return nil
@@ -1798,7 +1828,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
         guard let update = decodeUpdateEnvelope(json),
               let messageValue = update.body?.message,
-              let message = messageValue.toAny() as? [String: Any] else {
+              let message = messageValue.object else {
             return
         }
         let content = normalizeContent(firstNonNull(message["content"], message["data"]))
@@ -1811,10 +1841,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
-    private func extractBlocks(from content: Any?, sessionID: String?) -> [MessageBlock] {
-        if let dict = content as? [String: Any] {
-            if let type = dict["t"] as? String, let payload = dict["c"] {
-                if type == "text", let text = payload as? String {
+    private func extractBlocks(from content: JSONValue?, sessionID: String?) -> [MessageBlock] {
+        guard let content else { return [] }
+        if let dict = content.object {
+            if let type = dict["t"]?.string, let payload = dict["c"] {
+                if type == "text", let text = payload.string {
                     return [.text(text)]
                 }
                 if type == "encrypted" || type == "ciphertext" {
@@ -1822,10 +1853,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 }
                 return extractBlocks(from: payload, sessionID: sessionID)
             }
-            if let text = dict["text"] as? String {
+            if let text = dict["text"]?.string {
                 return splitMarkdownBlocks(text)
             }
-            if let contentText = dict["content"] as? String {
+            if let contentText = dict["content"]?.string {
                 return splitMarkdownBlocks(contentText)
             }
             if let inner = dict["content"] {
@@ -1837,12 +1868,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if let data = dict["data"] {
                 return extractBlocks(from: data, sessionID: sessionID)
             }
-        } else if let array = content as? [Any] {
+        } else if let array = content.array {
             var blocks: [MessageBlock] = []
             for part in array {
-                guard let dict = part as? [String: Any] else { continue }
-                if let type = dict["type"] as? String {
-                    if type == "text", let text = dict["text"] as? String {
+                guard let dict = part.object else { continue }
+                if let type = dict["type"]?.string {
+                    if type == "text", let text = dict["text"]?.string {
                         blocks.append(contentsOf: splitMarkdownBlocks(text))
                         continue
                     }
@@ -1850,7 +1881,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                         continue
                     }
                     if type == "tool-call" || type == "tool_use" || type == "tool-use" {
-                        let name = dict["name"] as? String ?? "tool"
+                        let name = dict["name"]?.string ?? "tool"
                         if let summary = toolSummary(name: name, input: dict["input"]) {
                             blocks.append(.toolCall(summary))
                         }
@@ -1860,23 +1891,23 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                         continue
                     }
                 }
-                if let name = dict["name"] as? String, let input = dict["input"] {
+                if let name = dict["name"]?.string, let input = dict["input"] {
                     if let summary = toolSummary(name: name, input: input) {
                         blocks.append(.toolCall(summary))
                     }
                     continue
                 }
-                if let text = dict["text"] as? String {
+                if let text = dict["text"]?.string {
                     blocks.append(contentsOf: splitMarkdownBlocks(text))
                     continue
                 }
-                if let contentText = dict["content"] as? String {
+                if let contentText = dict["content"]?.string {
                     blocks.append(contentsOf: splitMarkdownBlocks(contentText))
                     continue
                 }
             }
             return blocks
-        } else if let text = content as? String {
+        } else if let text = content.string {
             if let nested = parseJSONString(text) {
                 return extractBlocks(from: nested, sessionID: sessionID)
             }
@@ -1888,25 +1919,24 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return []
     }
 
-    private func isNullMessage(_ content: Any?) -> Bool {
-        if content is NSNull {
+    private func isNullMessage(_ content: JSONValue?) -> Bool {
+        guard let content else { return true }
+        if case .null = content {
             return true
         }
-        if let dict = content as? [String: Any] {
-            if dict["message"] is NSNull {
-                return true
-            }
+        if let dict = content.object, case .null = dict["message"] {
+            return true
         }
         return false
     }
 
-    private func isFileHistorySnapshot(_ content: Any?) -> Bool {
-        if let dict = content as? [String: Any] {
-            if let type = dict["type"] as? String, type == "file-history-snapshot" {
+    private func isFileHistorySnapshot(_ content: JSONValue?) -> Bool {
+        guard let content else { return false }
+        if let dict = content.object {
+            if dict["type"]?.string == "file-history-snapshot" {
                 return true
             }
-            if let message = dict["message"] as? [String: Any],
-               let type = message["type"] as? String, type == "file-history-snapshot" {
+            if let message = dict["message"]?.object, message["type"]?.string == "file-history-snapshot" {
                 return true
             }
             if let inner = dict["content"], isFileHistorySnapshot(inner) {
@@ -1916,13 +1946,14 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return false
     }
 
-    private func isToolResultMessage(_ content: Any?) -> Bool {
-        if let dict = content as? [String: Any] {
-            if let type = dict["type"] as? String,
+    private func isToolResultMessage(_ content: JSONValue?) -> Bool {
+        guard let content else { return false }
+        if let dict = content.object {
+            if let type = dict["type"]?.string,
                type == "tool_result" || type == "tool-result" {
                 return true
             }
-            if let message = dict["message"] as? [String: Any] {
+            if let message = dict["message"] {
                 return isToolResultMessage(message)
             }
             if let inner = dict["content"] {
@@ -1932,10 +1963,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 return isToolResultMessage(data)
             }
         }
-        if let array = content as? [Any] {
+        if let array = content.array {
             for part in array {
-                if let dict = part as? [String: Any],
-                   let type = dict["type"] as? String,
+                if let dict = part.object,
+                   let type = dict["type"]?.string,
                    type == "tool_result" || type == "tool-result" {
                     return true
                 }
@@ -1944,20 +1975,21 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return false
     }
 
-    private func extractLocalID(from dict: [String: Any]) -> String? {
-        if let localID = dict["localId"] as? String, !localID.isEmpty {
-            return localID
+    private func extractLocalID(from dict: [String: JSONValue]) -> String? {
+        guard let localID = dict["localId"]?.string, !localID.isEmpty else {
+            return nil
         }
-        return nil
+        return localID
     }
 
-    private func extractMessageUUID(from content: Any?) -> String? {
-        if let dict = content as? [String: Any] {
-            if let uuid = dict["uuid"] as? String, !uuid.isEmpty {
+    private func extractMessageUUID(from content: JSONValue?) -> String? {
+        guard let content else { return nil }
+        if let dict = content.object {
+            if let uuid = dict["uuid"]?.string, !uuid.isEmpty {
                 return uuid
             }
-            if let message = dict["message"] as? [String: Any],
-               let uuid = message["uuid"] as? String, !uuid.isEmpty {
+            if let message = dict["message"]?.object,
+               let uuid = message["uuid"]?.string, !uuid.isEmpty {
                 return uuid
             }
             if let inner = dict["content"], let uuid = extractMessageUUID(from: inner) {
@@ -2004,9 +2036,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return "fallback:\(role.rawValue):\(createdAt):\(sample)"
     }
 
-    private func containsThinkingBlock(_ content: Any?) -> Bool {
-        if let dict = content as? [String: Any] {
-            if let type = dict["type"] as? String, type == "thinking" {
+    private func containsThinkingBlock(_ content: JSONValue?) -> Bool {
+        guard let content else { return false }
+        if let dict = content.object {
+            if dict["type"]?.string == "thinking" {
                 return true
             }
             if let inner = dict["content"], containsThinkingBlock(inner) {
@@ -2019,11 +2052,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 return true
             }
         }
-        if let array = content as? [Any] {
-            for part in array {
-                if containsThinkingBlock(part) {
-                    return true
-                }
+        if let array = content.array {
+            for part in array where containsThinkingBlock(part) {
+                return true
             }
         }
         return false
@@ -2047,10 +2078,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
-    private func extractText(from content: Any?) -> String? {
-        if let dict = content as? [String: Any] {
-            if let type = dict["t"] as? String, let payload = dict["c"] {
-                if type == "text", let text = payload as? String {
+    private func extractText(from content: JSONValue?) -> String? {
+        guard let content else { return nil }
+        if let dict = content.object {
+            if let type = dict["t"]?.string, let payload = dict["c"] {
+                if type == "text", let text = payload.string {
                     return text
                 }
                 if type == "encrypted" || type == "ciphertext" {
@@ -2058,7 +2090,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 }
                 return extractText(from: payload)
             }
-            if let text = dict["text"] as? String {
+            if let text = dict["text"]?.string {
                 return text
             }
             if let inner = dict["content"] {
@@ -2070,18 +2102,18 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if let data = dict["data"] {
                 return extractText(from: data)
             }
-        } else if let array = content as? [Any] {
+        } else if let array = content.array {
             let texts = array.compactMap { part -> String? in
-                guard let dict = part as? [String: Any] else { return nil }
-                if let type = dict["type"] as? String, type == "text" {
-                    return dict["text"] as? String
+                guard let dict = part.object else { return nil }
+                if dict["type"]?.string == "text" {
+                    return dict["text"]?.string
                 }
-                return dict["text"] as? String
+                return dict["text"]?.string
             }
             if !texts.isEmpty {
                 return texts.joined(separator: "\n")
             }
-        } else if let text = content as? String {
+        } else if let text = content.string {
             if let nested = parseJSONString(text) {
                 return extractText(from: nested)
             }
@@ -2093,27 +2125,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return nil
     }
 
-    private func firstNonNull(_ candidates: Any?...) -> Any? {
-        for candidate in candidates {
-            if candidate is NSNull {
-                continue
-            }
-            if let value = candidate {
-                return value
-            }
-        }
-        return nil
-    }
-
-    private func parseJSONString(_ text: String) -> Any? {
+    private func parseJSONString(_ text: String) -> JSONValue? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.first == "{" || trimmed.first == "[" else {
             return nil
         }
-        guard let value = try? JSONCoding.decode(JSONValue.self, from: trimmed) else {
-            return nil
-        }
-        return value.toAny()
+        return try? JSONCoding.decode(JSONValue.self, from: trimmed)
     }
 
     private func isProbablyBase64(_ value: String) -> Bool {
@@ -2133,20 +2150,16 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return ratio > 0.98
     }
 
-    private func logUnsupportedMessage(id: String, content: Any?) {
+    private func logUnsupportedMessage(id: String, content: JSONValue?) {
         let snippet = describeContent(content)
         log("Unsupported message format id=\(id) content=\(snippet)")
     }
 
-    private func describeContent(_ content: Any?) -> String {
+    private func describeContent(_ content: JSONValue?) -> String {
         if let content {
-            if let text = content as? String {
-                return truncate(text)
-            }
-            if let value = content as? JSONValue, let json = try? JSONCoding.encode(value) {
+            if let json = try? JSONCoding.encode(content) {
                 return truncate(json)
             }
-            return truncate(String(describing: content))
         }
         return "nil"
     }
@@ -2190,7 +2203,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return blocks
     }
 
-    private func toolSummary(name: String, input: Any?) -> ToolCallSummary? {
+    private func toolSummary(name: String, input: JSONValue?) -> ToolCallSummary? {
         let normalized = name.lowercased()
         let icon: String
         switch normalized {
@@ -2207,28 +2220,28 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
 
         if normalized == "grep",
-           let dict = input as? [String: Any],
-           let pattern = dict["pattern"] as? String {
+           let dict = input?.object,
+           let pattern = dict["pattern"]?.string {
             return ToolCallSummary(title: "grep(pattern: \(pattern))", icon: icon, subtitle: nil)
         }
         if normalized == "read",
-           let dict = input as? [String: Any],
-           let filePath = dict["file_path"] as? String {
+           let dict = input?.object,
+           let filePath = dict["file_path"]?.string {
             return ToolCallSummary(title: displayPath(filePath), icon: icon, subtitle: nil)
         }
         if normalized == "glob",
-           let dict = input as? [String: Any],
-           let pattern = dict["pattern"] as? String {
+           let dict = input?.object,
+           let pattern = dict["pattern"]?.string {
             return ToolCallSummary(title: pattern, icon: icon, subtitle: nil)
         }
         if normalized == "ls",
-           let dict = input as? [String: Any],
-           let path = dict["path"] as? String {
+           let dict = input?.object,
+           let path = dict["path"]?.string {
             return ToolCallSummary(title: displayPath(path), icon: icon, subtitle: nil)
         }
         if normalized == "bash",
-           let dict = input as? [String: Any],
-           let command = dict["command"] as? String {
+           let dict = input?.object,
+           let command = dict["command"]?.string {
             return ToolCallSummary(title: command, icon: icon, subtitle: nil)
         }
         return ToolCallSummary(title: name, icon: icon, subtitle: nil)
@@ -2248,30 +2261,30 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return path
     }
 
-    private func extractRole(from message: [String: Any], content: Any?) -> MessageRole {
-        if let role = message["role"] as? String {
+    private func extractRole(from message: [String: JSONValue], content: JSONValue?) -> MessageRole {
+        if let role = message["role"]?.string {
             return normalizeRole(role)
         }
-        if let dict = content as? [String: Any] {
-            if let role = dict["role"] as? String {
+        if let dict = content?.object {
+            if let role = dict["role"]?.string {
                 return normalizeRole(role)
             }
-            if let inner = dict["content"] as? [String: Any],
-               let role = inner["role"] as? String {
+            if let inner = dict["content"]?.object,
+               let role = inner["role"]?.string {
                 return normalizeRole(role)
             }
-            if let message = dict["message"] as? [String: Any],
-               let role = message["role"] as? String {
+            if let message = dict["message"]?.object,
+               let role = message["role"]?.string {
                 return normalizeRole(role)
             }
-            if let message = dict["message"] as? [String: Any],
-               let inner = message["content"] as? [String: Any],
-               let role = inner["role"] as? String {
+            if let message = dict["message"]?.object,
+               let inner = message["content"]?.object,
+               let role = inner["role"]?.string {
                 return normalizeRole(role)
             }
-            if let data = dict["data"] as? [String: Any],
-               let message = data["message"] as? [String: Any],
-               let role = message["role"] as? String {
+            if let data = dict["data"]?.object,
+               let message = data["message"]?.object,
+               let role = message["role"]?.string {
                 return normalizeRole(role)
             }
         }

@@ -4,7 +4,7 @@ import XCTest
 final class JSONCodingTests: XCTestCase {
     func testJSONValueRoundTrip() throws {
         let value: JSONValue = .object([
-            "a": .number(1),
+            "a": .int(1),
             "b": .string("two"),
             "c": .array([.bool(true), .null])
         ])
@@ -22,4 +22,3 @@ final class JSONCodingTests: XCTestCase {
         XCTAssertTrue(pretty?.contains("\n") == true)
     }
 }
-
