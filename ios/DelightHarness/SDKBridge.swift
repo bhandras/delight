@@ -1057,6 +1057,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         // crash the Go runtime.
         if let updateJSON {
             logSwiftOnly("Update: \(updateJSON)")
+            if handleSessionUIUpdate(updateJSON) {
+                return
+            }
             handleActivityUpdate(updateJSON)
             handlePermissionRequestUpdate(updateJSON)
             if let updateSessionID = extractUpdateSessionID(from: updateJSON) {
@@ -1087,6 +1090,37 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 self.fetchMessages()
             }
         }
+    }
+
+    private func handleSessionUIUpdate(_ json: String) -> Bool {
+        guard let data = json.data(using: .utf8),
+              let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let body = decoded["body"] as? [String: Any],
+              let type = body["t"] as? String, type == "session-ui",
+              let sessionID = body["sid"] as? String,
+              let uiDict = body["ui"] as? [String: Any],
+              let ui = SessionUIState.fromJSONDict(uiDict) else {
+            return false
+        }
+
+        DispatchQueue.main.async {
+            if let index = self.sessions.firstIndex(where: { $0.id == sessionID }) {
+                let prev = self.sessions[index]
+                self.sessions[index] = SessionSummary(
+                    id: prev.id,
+                    updatedAt: prev.updatedAt,
+                    active: prev.active,
+                    activeAt: prev.activeAt,
+                    title: prev.title,
+                    subtitle: prev.subtitle,
+                    metadata: prev.metadata,
+                    agentState: prev.agentState,
+                    uiState: ui,
+                    thinking: prev.thinking
+                )
+            }
+        }
+        return true
     }
 
     private func tryAppendMessageFromUpdate(_ updateJSON: String, sessionID: String) -> Bool {
