@@ -968,6 +968,16 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             return
         }
 
+        // Require explicit "Take Control" before sending from phone.
+        if let session = sessions.first(where: { $0.id == sessionID }) {
+            let ui = session.uiState
+            let controlledByDesktop = ui?.controlledByUser ?? (session.agentState?.controlledByUser ?? true)
+            if controlledByDesktop {
+                log("Desktop controls this session. Tap “Take Control” first.")
+                return
+            }
+        }
+
         let outgoingText = messageText
         messageText = ""
         let localID = UUID().uuidString

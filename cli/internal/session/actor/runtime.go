@@ -619,23 +619,106 @@ func (r *Runtime) printRemoteOutputIfApplicable(plaintext []byte) {
 		return
 	}
 	role := rec.Content.Data.Message.Role
-	if role != "assistant" {
-		return
+	blocks := rec.Content.Data.Message.Content
+
+	printSection := func(header string, body string) {
+		body = strings.TrimSpace(body)
+		if body == "" {
+			return
+		}
+		fmt.Fprintln(os.Stdout, "")
+		fmt.Fprintln(os.Stdout, header)
+		fmt.Fprintln(os.Stdout, body)
+		fmt.Fprintln(os.Stdout, "")
 	}
 
-	var parts []string
-	for _, block := range rec.Content.Data.Message.Content {
-		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
-			parts = append(parts, strings.TrimSpace(block.Text))
+	printJSONSection := func(header string, payload any) {
+		fmt.Fprintln(os.Stdout, "")
+		fmt.Fprintln(os.Stdout, header)
+		if payload == nil {
+			fmt.Fprintln(os.Stdout, "{}")
+			fmt.Fprintln(os.Stdout, "")
+			return
 		}
+		pretty, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			fmt.Fprintln(os.Stdout, fmt.Sprintf("%v", payload))
+			fmt.Fprintln(os.Stdout, "")
+			return
+		}
+		fmt.Fprintln(os.Stdout, strings.TrimSpace(string(pretty)))
+		fmt.Fprintln(os.Stdout, "")
 	}
-	if len(parts) == 0 {
+
+	extractTextBlocks := func(blocks []wire.ContentBlock) string {
+		var parts []string
+		for _, block := range blocks {
+			if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+				parts = append(parts, strings.TrimSpace(block.Text))
+			}
+		}
+		return strings.Join(parts, "\n\n")
+	}
+
+	switch role {
+	case "user":
+		text := extractTextBlocks(blocks)
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+		printSection("[user]", text)
+	case "assistant":
+		// Thinking blocks (if present)
+		for _, block := range blocks {
+			if block.Type != "thinking" && block.Type != "reasoning" {
+				continue
+			}
+			text := strings.TrimSpace(block.Text)
+			if text == "" {
+				if v, ok := block.Fields["text"].(string); ok {
+					text = strings.TrimSpace(v)
+				}
+			}
+			if text != "" {
+				printSection("[thinking]", text)
+			}
+		}
+
+		// Tool blocks
+		for _, block := range blocks {
+			switch block.Type {
+			case "tool_use":
+				name, _ := block.Fields["name"].(string)
+				id, _ := block.Fields["id"].(string)
+				input := block.Fields["input"]
+				header := "[tool]"
+				if name != "" && id != "" {
+					header = fmt.Sprintf("[tool] %s (%s)", name, id)
+				} else if name != "" {
+					header = fmt.Sprintf("[tool] %s", name)
+				} else if id != "" {
+					header = fmt.Sprintf("[tool] (%s)", id)
+				}
+				printJSONSection(header, input)
+			case "tool_result":
+				toolUseID, _ := block.Fields["tool_use_id"].(string)
+				content := block.Fields["content"]
+				header := "[tool-result]"
+				if toolUseID != "" {
+					header = fmt.Sprintf("[tool-result] (%s)", toolUseID)
+				}
+				printJSONSection(header, content)
+			}
+		}
+
+		// Assistant reply text blocks
+		text := extractTextBlocks(blocks)
+		if strings.TrimSpace(text) != "" {
+			printSection("[agent]", text)
+		}
+	default:
 		return
 	}
-	fmt.Fprintln(os.Stdout, "")
-	fmt.Fprintln(os.Stdout, "[claude]")
-	fmt.Fprintln(os.Stdout, strings.Join(parts, "\n\n"))
-	fmt.Fprintln(os.Stdout, "")
 }
 
 func (r *Runtime) localSendLine(eff effLocalSendLine) {

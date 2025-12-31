@@ -865,7 +865,11 @@ private struct TerminalDetailView: View {
         let currentSession = model.sessions.first(where: { $0.id == session.id }) ?? session
         let ui = currentSession.uiState
         let uiState = ui?.state ?? "disconnected"
-        let isComposerEnabled = ui?.canSend ?? false
+        // The phone should only send input when it controls the session.
+        // Even if the backend accidentally marks `canSend=true` while in local mode,
+        // keep the UX consistent: user must tap "Take Control" first.
+        let controlledByDesktop = ui?.controlledByUser ?? (currentSession.agentState?.controlledByUser ?? true)
+        let isComposerEnabled = (ui?.canSend ?? false) && !controlledByDesktop
         let placeholder: String = {
             switch ui?.state {
             case "disconnected":
