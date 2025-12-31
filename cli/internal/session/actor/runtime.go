@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -486,6 +487,11 @@ func (r *Runtime) startRemote(ctx context.Context, eff effStartRemoteRunner, emi
 			return nil
 		}
 
+		// Best-effort desktop UI while in remote mode: print assistant replies
+		// to stdout so the local terminal reflects what's happening, even
+		// though the interactive Claude TUI is not running.
+		r.printRemoteOutputIfApplicable(plaintext)
+
 		r.mu.Lock()
 		encryptFn := r.encryptFn
 		r.mu.Unlock()
@@ -510,6 +516,8 @@ func (r *Runtime) startRemote(ctx context.Context, eff effStartRemoteRunner, emi
 		return
 	}
 
+	r.printRemoteBanner()
+
 	r.mu.Lock()
 	if r.remoteBridge != nil {
 		r.remoteBridge.Kill()
@@ -528,16 +536,19 @@ func (r *Runtime) startRemote(ctx context.Context, eff effStartRemoteRunner, emi
 
 func (r *Runtime) stopRemote(eff effStopRemoteRunner) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.remoteBridge == nil {
+		r.mu.Unlock()
 		return
 	}
 	if r.remoteGen != 0 && eff.Gen != 0 && eff.Gen != r.remoteGen {
+		r.mu.Unlock()
 		return
 	}
 	r.remoteBridge.Kill()
 	r.remoteBridge = nil
 	r.remoteGen = 0
+	r.mu.Unlock()
+	r.printLocalBanner()
 }
 
 func (r *Runtime) remoteSend(eff effRemoteSend) {
@@ -566,6 +577,65 @@ func (r *Runtime) remoteAbort(eff effRemoteAbort) {
 		return
 	}
 	_ = bridge.Abort()
+}
+
+func (r *Runtime) printRemoteBanner() {
+	r.mu.Lock()
+	localActive := r.localProc != nil
+	r.mu.Unlock()
+	if localActive {
+		return
+	}
+	fmt.Fprintln(os.Stdout, "Remote mode active (phone controls Claude).")
+	fmt.Fprintln(os.Stdout, "Tip: press space twice to take back control on desktop.")
+}
+
+func (r *Runtime) printLocalBanner() {
+	// Only print if the interactive TUI isn't active; otherwise we can corrupt
+	// the user's terminal.
+	r.mu.Lock()
+	localActive := r.localProc != nil
+	r.mu.Unlock()
+	if localActive {
+		return
+	}
+	fmt.Fprintln(os.Stdout, "Local mode active (desktop controls Claude).")
+}
+
+func (r *Runtime) printRemoteOutputIfApplicable(plaintext []byte) {
+	if len(plaintext) == 0 {
+		return
+	}
+
+	r.mu.Lock()
+	localActive := r.localProc != nil
+	r.mu.Unlock()
+	if localActive {
+		return
+	}
+
+	rec, ok, err := wire.TryParseAgentOutputRecord(plaintext)
+	if err != nil || !ok || rec == nil {
+		return
+	}
+	role := rec.Content.Data.Message.Role
+	if role != "assistant" {
+		return
+	}
+
+	var parts []string
+	for _, block := range rec.Content.Data.Message.Content {
+		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+			parts = append(parts, strings.TrimSpace(block.Text))
+		}
+	}
+	if len(parts) == 0 {
+		return
+	}
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "[claude]")
+	fmt.Fprintln(os.Stdout, strings.Join(parts, "\n\n"))
+	fmt.Fprintln(os.Stdout, "")
 }
 
 func (r *Runtime) localSendLine(eff effLocalSendLine) {
