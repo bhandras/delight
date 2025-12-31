@@ -44,3 +44,37 @@ For Go code:
 - All exported functions, variables, constants, types, structs,
   interfaces, and fields must have GoDoc comments.
 - GoDoc comments should be formatted to not overflow 80 columns.
+
+## Documentation And Readability Guidelines
+
+These guidelines exist to keep the CLI/SDK architecture maintainable as the
+project grows, and to ensure behavior is understandable without running the UI
+or server.
+
+### Go Documentation
+
+- All functions must have GoDoc comments, including unexported helpers.
+  - Keep comments concise; expand only when it materially improves readability.
+- All exported variables, constants, types, structs, interfaces, and methods
+  must have GoDoc comments.
+- Non-trivial blocks of logic (e.g. multi-branch reducers, protocol shims,
+  caching/invalidation, concurrency) must include brief inline documentation
+  explaining intent and invariants.
+
+### Swift Documentation (Harness/App)
+
+- All functions should have doc comments, including private helpers, when the
+  function embodies non-obvious logic (parsing, dedupe, state application,
+  async/dispatch constraints).
+- Larger blocks of logic must include inline documentation explaining why the
+  logic exists (especially around Go↔Swift callback constraints).
+
+### No Magic Numbers
+
+- Avoid magic numbers and stringly-typed constants in logic.
+- Introduce named constants for:
+  - timeouts/TTLs/debounce windows
+  - state string discriminants (where practical)
+  - queue sizes / buffer lengths
+- When a numeric value is protocol-defined, reference the protocol source or
+  explain it in a short comment near the constant.
