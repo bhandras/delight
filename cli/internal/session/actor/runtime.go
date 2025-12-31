@@ -562,6 +562,12 @@ func (r *Runtime) remoteSend(eff effRemoteSend) {
 	if gen != 0 && eff.Gen != 0 && eff.Gen != gen {
 		return
 	}
+
+	// The Node bridge does not emit a raw-record "user" event for inputs we send
+	// into Claude via stdin. To keep parity with the mobile transcript and make
+	// remote mode readable on desktop, echo the user message here.
+	r.printRemoteUserInputIfApplicable(eff.Text)
+
 	_ = bridge.SendUserMessage(eff.Text, eff.Meta)
 }
 
@@ -719,6 +725,25 @@ func (r *Runtime) printRemoteOutputIfApplicable(plaintext []byte) {
 	default:
 		return
 	}
+}
+
+func (r *Runtime) printRemoteUserInputIfApplicable(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+
+	r.mu.Lock()
+	localActive := r.localProc != nil
+	r.mu.Unlock()
+	if localActive {
+		return
+	}
+
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "[user]")
+	fmt.Fprintln(os.Stdout, text)
+	fmt.Fprintln(os.Stdout, "")
 }
 
 func (r *Runtime) localSendLine(eff effLocalSendLine) {
