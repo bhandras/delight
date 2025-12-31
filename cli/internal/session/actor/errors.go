@@ -10,4 +10,3 @@ var (
 	// ErrUnknownPermissionRequest is returned when a permission decision is submitted for a missing request id.
 	ErrUnknownPermissionRequest = fmt.Errorf("unknown permission request")
 )
-

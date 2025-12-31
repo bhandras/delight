@@ -76,4 +76,3 @@ func TestSpawnActor_ShutdownBlocksFurtherSpawns(t *testing.T) {
 		t.Fatalf("expected reply")
 	}
 }
-

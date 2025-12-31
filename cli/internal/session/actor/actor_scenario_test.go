@@ -58,7 +58,7 @@ func TestActorScenario_SwitchLoopDoesNotDeadlock(t *testing.T) {
 	a.Start()
 	defer a.Stop()
 
-	for i := 0; i < 25; i++ {
+	for i := 0; i < 50; i++ {
 		toRemote := make(chan error, 1)
 		if ok := a.Enqueue(cmdSwitchMode{Target: ModeRemote, Reply: toRemote}); !ok {
 			t.Fatalf("enqueue switch to remote failed at iter %d", i)
@@ -148,10 +148,17 @@ func TestActorScenario_RemoteSendRecorded(t *testing.T) {
 		// ok
 	}
 
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	if len(rt.sentRemote) != 1 || rt.sentRemote[0] != "Hello" {
-		t.Fatalf("sent=%v, want [Hello]", rt.sentRemote)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		rt.mu.Lock()
+		sent := append([]string(nil), rt.sentRemote...)
+		rt.mu.Unlock()
+		if len(sent) == 1 && sent[0] == "Hello" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("sent=%v, want [Hello]", sent)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
-

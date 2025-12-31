@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/bhandras/delight/cli/internal/websocket"
 	"github.com/bhandras/delight/cli/pkg/types"
 	"github.com/bhandras/delight/protocol/wire"
+	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 )
 
 // Runtime interprets SessionActor effects for the Delight CLI.
@@ -23,10 +26,10 @@ type Runtime struct {
 	mu sync.Mutex
 
 	sessionID string
-	workDir  string
-	debug   bool
+	workDir   string
+	debug     bool
 
-	stateUpdater StateUpdater
+	stateUpdater  StateUpdater
 	socketEmitter SocketEmitter
 
 	encryptFn func([]byte) (string, error)
@@ -38,6 +41,11 @@ type Runtime struct {
 	localScanner *claude.Scanner
 	remoteBridge *claude.RemoteBridge
 	remoteGen    int64
+
+	takebackCancel chan struct{}
+	takebackDone   chan struct{}
+	takebackTTY    *os.File
+	takebackState  *term.State
 }
 
 // StateUpdater persists session agent state to a server.
@@ -109,6 +117,8 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 			r.startRemote(ctx, e, emit)
 		case effStopRemoteRunner:
 			r.stopRemote(e)
+		case effLocalSendLine:
+			r.localSendLine(e)
 		case effRemoteSend:
 			r.remoteSend(e)
 		case effRemoteAbort:
@@ -117,6 +127,10 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 			r.remotePermissionDecision(e)
 		case effPersistAgentState:
 			r.persistAgentState(ctx, e, emit)
+		case effStartDesktopTakebackWatcher:
+			r.startDesktopTakebackWatcher(ctx, emit)
+		case effStopDesktopTakebackWatcher:
+			r.stopDesktopTakebackWatcher()
 		case effStartTimer:
 			r.startTimer(ctx, e, emit)
 		case effCancelTimer:
@@ -134,7 +148,7 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 // Stop implements actor.Runtime.
 func (r *Runtime) Stop() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	cancel, done, tty, state := r.stopDesktopTakebackWatcherLocked()
 	for _, timer := range r.timers {
 		timer.Stop()
 	}
@@ -147,6 +161,194 @@ func (r *Runtime) Stop() {
 		r.localProc.Kill()
 		r.localProc = nil
 	}
+	r.mu.Unlock()
+
+	if cancel != nil {
+		func() {
+			defer func() { recover() }()
+			close(cancel)
+		}()
+	}
+	if state != nil && tty != nil {
+		_ = term.Restore(int(tty.Fd()), state)
+	}
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(framework.Input)) {
+	r.mu.Lock()
+	if r.takebackCancel != nil {
+		r.mu.Unlock()
+		return
+	}
+	cancel := make(chan struct{})
+	done := make(chan struct{})
+	r.takebackCancel = cancel
+	r.takebackDone = done
+	tty, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0)
+	if err != nil {
+		r.takebackCancel = nil
+		r.takebackDone = nil
+		r.mu.Unlock()
+		return
+	}
+	r.takebackTTY = tty
+	r.mu.Unlock()
+
+	fd := int(tty.Fd())
+	if !term.IsTerminal(fd) {
+		_ = tty.Close()
+		r.stopDesktopTakebackWatcher()
+		return
+	}
+
+	go func() {
+		defer close(done)
+
+		restored := false
+		oldState, err := term.MakeRaw(fd)
+		if err != nil {
+			_ = tty.Close()
+			r.mu.Lock()
+			if r.takebackDone == done {
+				r.takebackCancel = nil
+				r.takebackDone = nil
+				r.takebackTTY = nil
+				r.takebackState = nil
+			}
+			r.mu.Unlock()
+			return
+		}
+		r.mu.Lock()
+		if r.takebackDone == done {
+			r.takebackState = oldState
+		}
+		r.mu.Unlock()
+
+		defer func() {
+			if !restored {
+				_ = term.Restore(fd, oldState)
+			}
+			_ = tty.Close()
+			r.mu.Lock()
+			if r.takebackDone == done {
+				r.takebackCancel = nil
+				r.takebackDone = nil
+				r.takebackTTY = nil
+				r.takebackState = nil
+			}
+			r.mu.Unlock()
+		}()
+
+		buf := make([]byte, 16)
+		var pendingSpace bool
+		var pendingSpaceAt time.Time
+		const confirmWindow = 15 * time.Second
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-cancel:
+				return
+			default:
+			}
+
+			pollRes, err := unix.Poll([]unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}, 50)
+			if err != nil {
+				if err == unix.EINTR {
+					continue
+				}
+				return
+			}
+			if pollRes == 0 {
+				continue
+			}
+
+			n, err := tty.Read(buf)
+			if err != nil || n <= 0 {
+				return
+			}
+
+			now := time.Now()
+			if pendingSpace && now.Sub(pendingSpaceAt) > confirmWindow {
+				pendingSpace = false
+			}
+
+			shouldSwitch := false
+			for _, b := range buf[:n] {
+				if b == ' ' {
+					if pendingSpace {
+						shouldSwitch = true
+						break
+					}
+					pendingSpace = true
+					pendingSpaceAt = now
+					fmt.Fprintln(os.Stdout, "Press space again to take back control on desktop.")
+					continue
+				}
+
+				if pendingSpace {
+					pendingSpace = false
+				}
+			}
+			if !shouldSwitch {
+				continue
+			}
+
+			_ = term.Restore(fd, oldState)
+			restored = true
+			r.mu.Lock()
+			if r.takebackState == oldState {
+				r.takebackState = nil
+			}
+			r.mu.Unlock()
+
+			emit(evDesktopTakeback{})
+			return
+		}
+	}()
+}
+
+func (r *Runtime) stopDesktopTakebackWatcher() {
+	r.mu.Lock()
+	cancel, done, tty, state := r.stopDesktopTakebackWatcherLocked()
+	r.mu.Unlock()
+
+	if cancel != nil {
+		func() {
+			defer func() { recover() }()
+			close(cancel)
+		}()
+	}
+
+	if state != nil && tty != nil {
+		_ = term.Restore(int(tty.Fd()), state)
+	}
+
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func (r *Runtime) stopDesktopTakebackWatcherLocked() (chan struct{}, chan struct{}, *os.File, *term.State) {
+	cancel := r.takebackCancel
+	done := r.takebackDone
+	tty := r.takebackTTY
+	state := r.takebackState
+	r.takebackCancel = nil
+	r.takebackDone = nil
+	r.takebackTTY = nil
+	r.takebackState = nil
+	return cancel, done, tty, state
 }
 
 func (r *Runtime) startLocal(ctx context.Context, eff effStartLocalRunner, emit func(framework.Input)) {
@@ -341,6 +543,20 @@ func (r *Runtime) remoteAbort(eff effRemoteAbort) {
 	_ = bridge.Abort()
 }
 
+func (r *Runtime) localSendLine(eff effLocalSendLine) {
+	r.mu.Lock()
+	proc := r.localProc
+	gen := r.localGen
+	r.mu.Unlock()
+	if proc == nil {
+		return
+	}
+	if gen != 0 && eff.Gen != 0 && eff.Gen != gen {
+		return
+	}
+	_ = proc.SendLine(eff.Text)
+}
+
 func (r *Runtime) remotePermissionDecision(eff effRemotePermissionDecision) {
 	r.mu.Lock()
 	bridge := r.remoteBridge
@@ -356,10 +572,14 @@ func (r *Runtime) remotePermissionDecision(eff effRemotePermissionDecision) {
 	if eff.Allow {
 		behavior = "allow"
 	}
-	_ = bridge.SendPermissionResponse(eff.RequestID, &claude.PermissionResponse{
+	resp := &claude.PermissionResponse{
 		Behavior: behavior,
 		Message:  eff.Message,
-	})
+	}
+	if eff.Allow && len(eff.UpdatedInput) > 0 {
+		resp.UpdatedInput = eff.UpdatedInput
+	}
+	_ = bridge.SendPermissionResponse(eff.RequestID, resp)
 }
 
 func (r *Runtime) watchLocalSession(ctx context.Context, gen int64, workDir string, proc *claude.Process, emit func(framework.Input)) {
@@ -378,6 +598,8 @@ func (r *Runtime) watchLocalSession(ctx context.Context, gen int64, workDir stri
 			if !claude.WaitForSessionFile(workDir, sessionID, 5*time.Second) {
 				continue
 			}
+
+			emit(evClaudeSessionDetected{Gen: gen, SessionID: sessionID})
 
 			// Stop any previous scanner before starting a new one.
 			scanner := claude.NewScanner(workDir, sessionID, r.debug)

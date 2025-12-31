@@ -214,10 +214,10 @@ func reduceSpawnActor(state spawnActorState, input framework.Input) (spawnActorS
 }
 
 type spawnActorRuntime struct {
-	cfg        *config.Config
-	token      string
-	debug      bool
-	ownerID    string
+	cfg     *config.Config
+	token   string
+	debug   bool
+	ownerID string
 
 	childrenMu sync.Mutex
 	children   map[string]*Manager

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/bhandras/delight/cli/internal/codex"
+	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
 	"github.com/bhandras/delight/cli/pkg/types"
 	"github.com/bhandras/delight/protocol/wire"
 )
@@ -20,13 +22,9 @@ func (m *Manager) startCodex() error {
 	}
 	m.codexClient = client
 
-	m.modeMu.Lock()
-	m.mode = ModeRemote
-	m.modeMu.Unlock()
-	m.stateMu.Lock()
-	m.state.ControlledByUser = false
-	m.stateMu.Unlock()
-	m.requestPersistAgentState()
+	if m.sessionActor != nil {
+		_ = m.sessionActor.Enqueue(sessionactor.SetControlledByUser(false, time.Now().UnixMilli()))
+	}
 
 	go m.runCodexLoop()
 
@@ -158,7 +156,7 @@ func (m *Manager) handleCodexEvent(event map[string]interface{}) {
 		return
 	}
 
-	_ = m.enqueueInbound(func() { m.handleCodexEventInbound(copyEvent) })
+	m.handleCodexEventInbound(copyEvent)
 }
 
 func (m *Manager) handleCodexEventInbound(event map[string]interface{}) {

@@ -41,9 +41,9 @@ func TestReduceRunnerReady_CompletesSwitchReply(t *testing.T) {
 
 	reply := make(chan error, 1)
 	state := State{
-		FSM:               StateRemoteStarting,
-		Mode:              ModeRemote,
-		RunnerGen:         7,
+		FSM:                StateRemoteStarting,
+		Mode:               ModeRemote,
+		RunnerGen:          7,
 		PendingSwitchReply: reply,
 	}
 
@@ -90,11 +90,11 @@ func TestReduceAgentState_VersionMismatchRetriesOnce(t *testing.T) {
 	t.Parallel()
 
 	state := State{
-		FSM:                 StateRemoteStarting,
-		Mode:                ModeRemote,
-		RunnerGen:            1,
-		AgentStateJSON:       `{"controlledByUser":false}`,
-		AgentStateVersion:    1,
+		FSM:                   StateRemoteStarting,
+		Mode:                  ModeRemote,
+		RunnerGen:             1,
+		AgentStateJSON:        `{"controlledByUser":false}`,
+		AgentStateVersion:     1,
 		PersistRetryRemaining: 1,
 	}
 
@@ -119,8 +119,8 @@ func TestReducePersistAgentState_EmitsPersistEffect(t *testing.T) {
 	t.Parallel()
 
 	state := State{
-		FSM:              StateLocalRunning,
-		Mode:             ModeLocal,
+		FSM:               StateLocalRunning,
+		Mode:              ModeLocal,
 		AgentStateVersion: 3,
 	}
 
@@ -194,8 +194,8 @@ func TestReduceSwitchMode_RemoteToLocal_EffectSequence(t *testing.T) {
 	t.Parallel()
 
 	initial := State{
-		FSM:  StateRemoteRunning,
-		Mode: ModeRemote,
+		FSM:       StateRemoteRunning,
+		Mode:      ModeRemote,
 		RunnerGen: 3,
 		AgentState: types.AgentState{
 			ControlledByUser: false,
@@ -322,12 +322,153 @@ func TestReducePermissionDecision_RemovesDurableAndEmitsDecisionEffect(t *testin
 	}
 }
 
+func TestReducePermissionAwait_StoresPromiseAndEmitsEphemeral(t *testing.T) {
+	t.Parallel()
+
+	decisionCh := make(chan PermissionDecision, 1)
+	state := State{
+		SessionID: "s1",
+		FSM:       StateLocalRunning,
+		Mode:      ModeLocal,
+		AgentState: types.AgentState{
+			ControlledByUser: true,
+			Requests:         map[string]types.AgentPendingRequest{},
+		},
+	}
+
+	next, effects := Reduce(state, cmdPermissionAwait{
+		RequestID: "r1",
+		ToolName:  "acp.await",
+		Input:     json.RawMessage(`{"foo":"bar"}`),
+		NowMs:     100,
+		Reply:     decisionCh,
+	})
+
+	if _, ok := next.AgentState.Requests["r1"]; !ok {
+		t.Fatalf("expected request to be stored durably")
+	}
+	if next.PendingPermissionPromises == nil {
+		t.Fatalf("expected PendingPermissionPromises to be initialized")
+	}
+	if got := next.PendingPermissionPromises["r1"]; got == nil {
+		t.Fatalf("expected promise channel to be stored")
+	}
+
+	foundEphemeral := false
+	for _, eff := range effects {
+		if _, ok := eff.(effEmitEphemeral); ok {
+			foundEphemeral = true
+		}
+	}
+	if !foundEphemeral {
+		t.Fatalf("expected effEmitEphemeral, got: %+v", effects)
+	}
+}
+
+func TestReducePermissionDecision_CompletesAwaitPromiseWithoutRemoteEffect(t *testing.T) {
+	t.Parallel()
+
+	decisionCh := make(chan PermissionDecision, 1)
+	state := State{
+		SessionID: "s1",
+		FSM:       StateLocalRunning,
+		Mode:      ModeLocal,
+		AgentState: types.AgentState{
+			ControlledByUser: true,
+			Requests: map[string]types.AgentPendingRequest{
+				"r1": {ToolName: "acp.await", Input: `{"foo":"bar"}`, CreatedAt: 1},
+			},
+		},
+		PendingPermissionPromises: map[string]chan PermissionDecision{
+			"r1": decisionCh,
+		},
+	}
+
+	next, effects := Reduce(state, cmdPermissionDecision{
+		RequestID: "r1",
+		Allow:     true,
+		Message:   "approved",
+		NowMs:     200,
+	})
+
+	select {
+	case got := <-decisionCh:
+		if !got.Allow || got.Message != "approved" {
+			t.Fatalf("decision=%+v, want allow+message", got)
+		}
+	default:
+		t.Fatalf("expected decision to be delivered to promise channel")
+	}
+
+	if next.PendingPermissionPromises != nil {
+		if _, ok := next.PendingPermissionPromises["r1"]; ok {
+			t.Fatalf("expected promise to be removed after decision")
+		}
+	}
+
+	for _, eff := range effects {
+		if _, ok := eff.(effRemotePermissionDecision); ok {
+			t.Fatalf("did not expect effRemotePermissionDecision for non-remote mode")
+		}
+	}
+}
+
+func TestReduceSetControlledByUser_SchedulesPersist(t *testing.T) {
+	t.Parallel()
+
+	state := State{
+		FSM:  StateClosed,
+		Mode: ModeLocal,
+		AgentState: types.AgentState{
+			ControlledByUser: true,
+		},
+	}
+
+	next, effects := Reduce(state, cmdSetControlledByUser{ControlledByUser: false, NowMs: 1})
+	if next.AgentState.ControlledByUser {
+		t.Fatalf("expected ControlledByUser=false")
+	}
+	if len(effects) == 0 {
+		t.Fatalf("expected persist debounce effects")
+	}
+	foundTimer := false
+	for _, eff := range effects {
+		if _, ok := eff.(effStartTimer); ok {
+			foundTimer = true
+		}
+	}
+	if !foundTimer {
+		t.Fatalf("expected effStartTimer, got: %+v", effects)
+	}
+}
+
+func TestReduceRunnerReady_RemoteStartsTakebackWatcher(t *testing.T) {
+	t.Parallel()
+
+	state := State{
+		FSM:       StateRemoteStarting,
+		Mode:      ModeRemote,
+		RunnerGen: 3,
+	}
+
+	_, effects := Reduce(state, evRunnerReady{Gen: 3, Mode: ModeRemote})
+	found := false
+	for _, eff := range effects {
+		if _, ok := eff.(effStartDesktopTakebackWatcher); ok {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected effStartDesktopTakebackWatcher, got: %+v", effects)
+	}
+}
+
 func TestReduceDebouncedPersistence_CoalescesToLatest(t *testing.T) {
 	t.Parallel()
 
 	state := State{
-		FSM:              StateLocalRunning,
-		Mode:             ModeLocal,
+		FSM:               StateLocalRunning,
+		Mode:              ModeLocal,
 		AgentStateVersion: 7,
 	}
 

@@ -40,14 +40,10 @@ func (m *Manager) handleRuntimeCommand(cmd runtime.Command) {
 		return
 	}
 
-	// Execute runtime effects via the inbound queue for serialized access to
-	// websocket clients and shared manager fields.
-	_ = m.enqueueInbound(func() {
-		switch c := cmd.(type) {
-		case runtime.EmitActivityCommand:
-			m.broadcastThinking(c.Thinking)
-		}
-	})
+	switch c := cmd.(type) {
+	case runtime.EmitActivityCommand:
+		m.broadcastThinking(c.Thinking)
+	}
 }
 
 func (m *Manager) setThinking(thinking bool) {

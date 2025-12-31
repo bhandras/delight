@@ -15,61 +15,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bhandras/delight/cli/internal/claude"
-	"github.com/bhandras/delight/cli/internal/crypto"
 	framework "github.com/bhandras/delight/cli/internal/actor"
+	"github.com/bhandras/delight/cli/internal/crypto"
 	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
 	"github.com/bhandras/delight/cli/internal/storage"
 	"github.com/bhandras/delight/cli/internal/websocket"
 	"github.com/bhandras/delight/cli/pkg/types"
 	"github.com/bhandras/delight/protocol/wire"
 )
-
-func (m *Manager) startInboundLoop() {
-	m.inboundOnce.Do(func() {
-		go func() {
-			for {
-				select {
-				case <-m.stopCh:
-					return
-				case fn := <-m.inboundQueue:
-					if fn != nil {
-						fn()
-					}
-				}
-			}
-		}()
-	})
-}
-
-func (m *Manager) enqueueInbound(fn func()) bool {
-	if fn == nil {
-		return false
-	}
-	select {
-	case <-m.stopCh:
-		return false
-	default:
-	}
-
-	select {
-	case m.inboundQueue <- fn:
-		return true
-	default:
-		if m.debug {
-			log.Printf("Inbound queue full; dropping event")
-		}
-		return false
-	}
-}
-
-func (m *Manager) handleUpdateQueued(data map[string]interface{}) {
-	_ = m.enqueueInbound(func() { m.handleUpdate(data) })
-}
-
-func (m *Manager) handleSessionUpdateQueued(data map[string]interface{}) {
-	_ = m.enqueueInbound(func() { m.handleSessionUpdate(data) })
-}
 
 // Start starts a new Delight session
 func (m *Manager) Start(workDir string) error {
@@ -84,9 +37,6 @@ func (m *Manager) Start(workDir string) error {
 
 	// Store working directory for mode switching
 	m.workDir = workDir
-
-	// Ensure inbound processing is serialized.
-	m.startInboundLoop()
 
 	// Get or create stable machine ID
 	machineIDPath := filepath.Join(m.cfg.DelightHome, "machine.id")
@@ -143,6 +93,10 @@ func (m *Manager) Start(workDir string) error {
 
 	m.initRuntime()
 	m.initSpawnActor()
+	// Initialize the session actor early so runner lifecycle and agent-state
+	// transitions are serialized through the FSM even if the websocket connect
+	// is delayed or offline.
+	m.initSessionActor()
 
 	if m.agent == "acp" {
 		if !m.cfg.ACPEnable {
@@ -156,10 +110,23 @@ func (m *Manager) Start(workDir string) error {
 	// Connect WebSocket
 	m.wsClient = websocket.NewClient(m.cfg.ServerURL, m.token, m.sessionID, m.debug)
 
+	// Bridge socket lifecycle into the SessionActor so connection state and
+	// persistence retries are deterministic.
+	m.wsClient.OnConnect(func() {
+		if m.sessionActor != nil {
+			_ = m.sessionActor.Enqueue(sessionactor.WSConnected())
+		}
+	})
+	m.wsClient.OnDisconnect(func(reason string) {
+		if m.sessionActor != nil {
+			_ = m.sessionActor.Enqueue(sessionactor.WSDisconnected(reason))
+		}
+	})
+
 	// Register event handlers
 	// Prefer structured updates; legacy message handler kept for backward compatibility
-	m.wsClient.On(websocket.EventUpdate, m.handleUpdateQueued)
-	m.wsClient.On(websocket.EventSessionUpdate, m.handleSessionUpdateQueued)
+	m.wsClient.On(websocket.EventUpdate, m.handleUpdate)
+	m.wsClient.On(websocket.EventSessionUpdate, m.handleSessionUpdate)
 
 	if err := m.wsClient.Connect(); err != nil {
 		// WebSocket is optional - log the error but don't fail
@@ -176,11 +143,15 @@ func (m *Manager) Start(workDir string) error {
 			log.Println("WebSocket connected")
 			m.rpcManager.RegisterAll()
 			_ = m.wsClient.KeepSessionAlive(m.sessionID, m.thinking)
-			// Initialize the session actor (Phase 4): actor-owned persistence of agentState.
-			m.initSessionActor()
-			// Persist the initial agent state immediately so mobile can derive control mode
-			// deterministically (and to migrate any legacy/invalid agentState on the server).
-			m.requestPersistAgentStateImmediate()
+			// Persist the initial agent state immediately so mobile can derive
+			// control mode deterministically (and to migrate any legacy/invalid
+			// agentState on the server).
+			if m.sessionActor != nil {
+				state := m.sessionActor.State()
+				if state.AgentStateJSON != "" {
+					_ = m.sessionActor.Enqueue(sessionactor.PersistAgentStateImmediate(state.AgentStateJSON))
+				}
+			}
 		} else {
 			log.Printf("Warning: WebSocket connection timeout")
 		}
@@ -189,6 +160,16 @@ func (m *Manager) Start(workDir string) error {
 	// Connect machine-scoped WebSocket (best-effort)
 	if !m.disableMachineSocket {
 		m.machineClient = websocket.NewMachineClient(m.cfg.ServerURL, m.token, m.machineID, m.debug)
+		m.machineClient.OnConnect(func() {
+			if m.sessionActor != nil {
+				_ = m.sessionActor.Enqueue(sessionactor.MachineConnected())
+			}
+		})
+		m.machineClient.OnDisconnect(func(reason string) {
+			if m.sessionActor != nil {
+				_ = m.sessionActor.Enqueue(sessionactor.MachineDisconnected(reason))
+			}
+		})
 		if err := m.machineClient.Connect(); err != nil {
 			log.Printf("Warning: Machine WebSocket connection failed: %v", err)
 			m.machineClient = nil
@@ -246,40 +227,20 @@ func (m *Manager) Start(workDir string) error {
 		return nil
 	}
 
-	// Optionally start Claude in remote mode immediately (before any messages).
-	// This keeps parity with Happy’s "remote runner is ready" behavior and avoids
-	// paying the spawn cost on the first mobile message.
-	if m.agent == "claude" && m.cfg != nil && m.cfg.StartingMode == "remote" {
-		if err := m.SwitchToRemote(); err != nil {
-			return err
+	// Claude agent runner lifecycle is owned by the SessionActor FSM.
+	if m.agent == "claude" {
+		if m.cfg != nil && m.cfg.StartingMode == "remote" {
+			if err := m.SwitchToRemote(); err != nil {
+				return err
+			}
+		} else {
+			if err := m.SwitchToLocal(); err != nil {
+				return err
+			}
 		}
 		go m.keepAliveLoop()
 		return nil
 	}
-
-	// Start Claude process with fd 3 tracking
-	claudeProc, err := claude.NewProcess(workDir, m.debug)
-	if err != nil {
-		return fmt.Errorf("failed to create claude process: %w", err)
-	}
-
-	m.claudeProcess = claudeProc
-
-	if err := claudeProc.Start(); err != nil {
-		return fmt.Errorf("failed to start claude: %w", err)
-	}
-
-	log.Println("Claude Code started (with fd3 tracking)")
-
-	// Start session ID detection handler
-	localCancel := m.beginLocalRun()
-	go m.handleSessionIDDetection(localCancel, claudeProc)
-
-	// Start thinking state handler
-	go m.handleThinkingState(localCancel, claudeProc)
-
-	// Start keep-alive loop
-	go m.keepAliveLoop()
 
 	return nil
 }
@@ -291,7 +252,9 @@ func (m *Manager) initSessionActor() {
 			m.sessionActorRuntime.WithSessionID(m.sessionID)
 			if m.wsClient != nil {
 				m.sessionActorRuntime.WithStateUpdater(m.wsClient)
+				m.sessionActorRuntime.WithSocketEmitter(m.wsClient)
 			}
+			m.sessionActorRuntime.WithEncryptFn(m.encrypt)
 		}
 		return
 	}
@@ -303,28 +266,33 @@ func (m *Manager) initSessionActor() {
 		WithEncryptFn(m.encrypt)
 
 	hooks := framework.Hooks[sessionactor.State]{
-		OnInput: func(input framework.Input) {
-			// Keep Manager.stateDirty aligned with persistence outcomes while we
-			// transition to actor-owned state.
-			switch input.(type) {
-			case sessionactor.EvAgentStatePersisted:
-				m.stateMu.Lock()
-				m.stateDirty = false
-				m.stateMu.Unlock()
-			case sessionactor.EvAgentStateVersionMismatch, sessionactor.EvAgentStatePersistFailed:
-				m.stateMu.Lock()
-				m.stateDirty = true
-				m.stateMu.Unlock()
+		OnTransition: func(prev sessionactor.State, next sessionactor.State, input framework.Input) {
+			_ = input
+			if next.FSM == sessionactor.StateClosed && prev.FSM != sessionactor.StateClosed {
+				m.sessionActorClosedOnce.Do(func() {
+					if m.sessionActorClosed != nil {
+						close(m.sessionActorClosed)
+					}
+				})
 			}
 		},
 	}
 
-	// Initialize with the current agent-state version (usually 0 until first persist).
+	// Initialize agent state in a server-compatible shape (plaintext JSON).
+	agentState := types.AgentState{
+		ControlledByUser:  true,
+		Requests:          make(map[string]types.AgentPendingRequest),
+		CompletedRequests: make(map[string]types.AgentCompletedRequest),
+	}
+	stateData, _ := json.Marshal(agentState)
 	initial := sessionactor.State{
-		FSM:                 sessionactor.StateLocalRunning,
-		Mode:                sessionactor.ModeLocal,
+		SessionID:             m.sessionID,
+		FSM:                   sessionactor.StateClosed,
+		Mode:                  sessionactor.ModeLocal,
+		AgentState:            agentState,
+		AgentStateJSON:        string(stateData),
 		PersistRetryRemaining: 0,
-		AgentStateVersion:    m.stateVersion,
+		AgentStateVersion:     0,
 	}
 
 	m.sessionActorRuntime = rt
@@ -538,12 +506,8 @@ func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 	// Suppress local echoes: when the CLI forwards a user message to the server
 	// (from the Claude session scanner), we can later receive that same message
 	// back via the update stream. Re-injecting would duplicate input.
-	if localID != "" && m.isRecentlySentOutboundUserLocalID(localID) {
-		if m.debug {
-			log.Printf("Skipping echoed local user message: localId=%s", localID)
-		}
-		return
-	}
+	// This suppression is handled inside the SessionActor reducer once it owns
+	// the dedupe window. Leave this check here only for non-Claude agents.
 
 	if m.fakeAgent {
 		m.sendFakeAgentResponse(text)
@@ -574,60 +538,25 @@ func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 	messageContent = strings.TrimRight(messageContent, "\r\n")
 
 	if m.agent == "acp" {
-		m.handleACPMessage(messageContent)
+		select {
+		case m.acpQueue <- messageContent:
+		default:
+			if m.debug {
+				log.Printf("ACP queue full; dropping message")
+			}
+		}
 		return
 	}
 
 	if m.agent == "claude" {
-		// If we're in local mode and we receive an inbound message from the server,
-		// treat that as a mobile handoff request (Happy parity): switch to remote
-		// mode and forward the message to the remote runner.
-		if m.GetMode() == ModeLocal {
-			if err := m.SwitchToRemote(); err != nil {
-				if m.debug {
-					log.Printf("Switch-to-remote failed (falling back to local): %v", err)
-				}
-			} else {
-				if err := m.SendUserMessage(messageContent, meta); err == nil {
-					return
-				} else if m.debug {
-					log.Printf("Remote send failed after switch (falling back to local): %v", err)
-				}
-			}
-		} else {
-			// Remote mode: forward input to the remote bridge.
-			//
-			// If the bridge died but the mode bit is still remote, SwitchToRemote()
-			// reinitializes the bridge.
-			if err := m.SendUserMessage(messageContent, meta); err == nil {
-				return
-			}
+		if m.sessionActor == nil {
 			if m.debug {
-				log.Printf("Remote send failed; attempting to restart remote mode: %v", err)
+				log.Printf("Session actor not initialized; dropping message")
 			}
-			if err := m.SwitchToRemote(); err == nil {
-				if err := m.SendUserMessage(messageContent, meta); err == nil {
-					return
-				}
-				if m.debug {
-					log.Printf("Remote send still failing; falling back to local: %v", err)
-				}
-			}
+			return
 		}
-	}
-
-	// This is a local-mode fallback path (remote bridge could not be started).
-	m.rememberRemoteInput(messageContent)
-
-	if m.claudeProcess == nil {
-		if m.debug {
-			log.Printf("Claude process not running; ignoring message")
-		}
+		_ = m.sessionActor.Enqueue(sessionactor.InboundUserMessage(messageContent, meta, localID, time.Now().UnixMilli()))
 		return
-	}
-
-	if err := m.claudeProcess.SendLine(messageContent); err != nil && m.debug {
-		log.Printf("Failed to send input to Claude TUI: %v", err)
 	}
 }
 
@@ -672,38 +601,31 @@ func (m *Manager) keepAliveLoop() {
 		case <-m.stopCh:
 			return
 		case <-machineTicker.C:
-			_ = m.enqueueInbound(func() {
-				// Send machine keep-alive via machine-scoped socket
-				if m.machineClient != nil && m.machineClient.IsConnected() {
-					if err := m.machineClient.EmitRaw("machine-alive", wire.MachineAlivePayload{
-						MachineID: m.machineID,
-						Time:      time.Now().UnixMilli(),
-					}); err != nil && m.debug {
-						log.Printf("Machine keep-alive error: %v", err)
-					}
-				} else if m.debug {
-					now := time.Now()
-					if m.lastMachineKeepAliveSkipAt.IsZero() || now.Sub(m.lastMachineKeepAliveSkipAt) > 2*time.Minute {
-						m.lastMachineKeepAliveSkipAt = now
-						log.Printf("Machine keep-alive skipped (no machine socket)")
-					}
+			// Send machine keep-alive via machine-scoped socket.
+			if m.machineClient != nil && m.machineClient.IsConnected() {
+				if err := m.machineClient.EmitRaw("machine-alive", wire.MachineAlivePayload{
+					MachineID: m.machineID,
+					Time:      time.Now().UnixMilli(),
+				}); err != nil && m.debug {
+					log.Printf("Machine keep-alive error: %v", err)
 				}
-			})
+			} else if m.debug {
+				now := time.Now()
+				if m.lastMachineKeepAliveSkipAt.IsZero() || now.Sub(m.lastMachineKeepAliveSkipAt) > 2*time.Minute {
+					m.lastMachineKeepAliveSkipAt = now
+					log.Printf("Machine keep-alive skipped (no machine socket)")
+				}
+			}
 
 		case <-sessionTicker.C:
-			_ = m.enqueueInbound(func() {
-				// Send session keep-alive
-				if m.wsClient != nil && m.wsClient.IsConnected() {
-					if err := m.wsClient.KeepSessionAlive(m.sessionID, m.thinking); err != nil && m.debug {
-						log.Printf("Session keep-alive error: %v", err)
-					}
-					// If a previous state update failed due to transient Socket.IO issues,
-					// retry opportunistically once we're connected again.
-					if m.stateDirty {
-						m.requestPersistAgentState()
-					}
+			// Send session keep-alive.
+			if m.wsClient != nil && m.wsClient.IsConnected() {
+				if err := m.wsClient.KeepSessionAlive(m.sessionID, m.thinking); err != nil && m.debug {
+					log.Printf("Session keep-alive error: %v", err)
 				}
-			})
+				// AgentState persistence retries are actor-owned; do not attempt to
+				// repersist from here.
+			}
 		}
 	}
 }
@@ -725,50 +647,22 @@ func (m *Manager) Wait() error {
 		}
 	}
 
-	for {
+	if m.agent == "claude" && m.sessionActorClosed != nil {
 		select {
 		case <-m.stopCh:
 			return nil
-		default:
-		}
-
-		m.modeMu.RLock()
-		mode := m.mode
-		claudeProc := m.claudeProcess
-		bridge := m.remoteBridge
-		m.modeMu.RUnlock()
-
-		switch mode {
-		case ModeLocal:
-			if claudeProc != nil {
-				err := claudeProc.Wait()
-				// If Claude was killed due to mode switch, continue waiting
-				if err != nil && m.GetMode() == ModeRemote {
-					continue
+		case <-m.sessionActorClosed:
+			if m.sessionActor != nil {
+				if errStr := m.sessionActor.State().LastExitErr; errStr != "" {
+					return fmt.Errorf("%s", errStr)
 				}
-				return err
 			}
-		case ModeRemote:
-			if bridge != nil {
-				err := bridge.Wait()
-				// If the bridge exited because we switched back to local mode,
-				// keep the CLI running and wait for the next active runner.
-				if m.GetMode() == ModeLocal {
-					continue
-				}
-				return err
-			}
-		}
-
-		// No active process, wait a bit and check again
-		// This handles the transition period during mode switch
-		select {
-		case <-m.stopCh:
 			return nil
-		case <-time.After(100 * time.Millisecond):
-			continue
 		}
 	}
+
+	<-m.stopCh
+	return nil
 }
 
 // Close cleans up resources
@@ -782,9 +676,7 @@ func (m *Manager) Close() error {
 	}
 
 	// Stop session scanner
-	if m.sessionScanner != nil {
-		m.sessionScanner.Stop()
-	}
+	// Session scanning is owned by the SessionActor runtime.
 
 	// Close WebSocket
 	if m.wsClient != nil {
@@ -796,25 +688,17 @@ func (m *Manager) Close() error {
 
 	m.shutdownSpawnedSessions()
 
-	// Kill Claude process
-	if m.claudeProcess != nil {
-		m.claudeProcess.Kill()
-	}
-
-	// Kill remote bridge
-	if m.remoteBridge != nil {
-		m.remoteBridge.Kill()
-	}
-
-	// Stop any active stdin watcher.
-	m.stopDesktopTakebackWatcher()
-
 	if m.codexClient != nil {
 		m.codexClient.Close()
 	}
 
 	if m.rt != nil {
 		m.rt.Stop()
+	}
+
+	if m.sessionActor != nil {
+		_ = m.sessionActor.Enqueue(sessionactor.Shutdown(nil))
+		m.sessionActor.Stop()
 	}
 
 	return nil

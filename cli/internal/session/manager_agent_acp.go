@@ -7,8 +7,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/bhandras/delight/cli/internal/acp"
+	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
 	"github.com/bhandras/delight/cli/pkg/types"
 	"github.com/bhandras/delight/protocol/wire"
 )
@@ -30,20 +33,31 @@ func (m *Manager) startACP() error {
 
 	m.acpClient = acp.NewClient(m.cfg.ACPURL, m.acpAgent, m.debug)
 
-	m.modeMu.Lock()
-	m.mode = ModeRemote
-	m.modeMu.Unlock()
-
-	m.stateMu.Lock()
-	m.state.ControlledByUser = false
-	m.stateMu.Unlock()
-	m.requestPersistAgentState()
+	if m.sessionActor != nil {
+		_ = m.sessionActor.Enqueue(sessionactor.SetControlledByUser(false, time.Now().UnixMilli()))
+	}
 
 	if m.debug {
 		log.Printf("ACP ready (agent=%s session=%s)", m.acpAgent, m.acpSessionID)
 	}
 
+	go m.runACPQueue()
+
 	return nil
+}
+
+func (m *Manager) runACPQueue() {
+	for {
+		select {
+		case <-m.stopCh:
+			return
+		case content := <-m.acpQueue:
+			if strings.TrimSpace(content) == "" {
+				continue
+			}
+			m.handleACPMessage(content)
+		}
+	}
 }
 
 func (m *Manager) ensureACPSessionID() error {

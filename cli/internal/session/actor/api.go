@@ -16,6 +16,12 @@ func RemoteSend(text string, meta map[string]any, localID string, reply chan err
 	return cmdRemoteSend{Text: text, Meta: meta, LocalID: localID, Reply: reply}
 }
 
+// InboundUserMessage returns a command input representing a user message
+// received from the server (typically originating from a mobile client).
+func InboundUserMessage(text string, meta map[string]any, localID string, nowMs int64) framework.Input {
+	return cmdInboundUserMessage{Text: text, Meta: meta, LocalID: localID, NowMs: nowMs}
+}
+
 // AbortRemote returns a command input that aborts the remote runner.
 func AbortRemote(reply chan error) framework.Input {
 	return cmdAbortRemote{Reply: reply}
@@ -28,6 +34,21 @@ func SubmitPermissionDecision(requestID string, allow bool, message string, nowM
 		RequestID: requestID,
 		Allow:     allow,
 		Message:   message,
+		NowMs:     nowMs,
+		Reply:     reply,
+	}
+}
+
+// AwaitPermission returns a command input that registers a permission request
+// (durably) and returns a decision via the provided reply channel.
+//
+// This is intended for synchronous runners (e.g. ACP/Codex) that must pause
+// until a mobile client responds, without blocking the actor loop.
+func AwaitPermission(requestID string, toolName string, inputJSON []byte, nowMs int64, reply chan PermissionDecision) framework.Input {
+	return cmdPermissionAwait{
+		RequestID: requestID,
+		ToolName:  toolName,
+		Input:     append([]byte(nil), inputJSON...),
 		NowMs:     nowMs,
 		Reply:     reply,
 	}
@@ -50,6 +71,18 @@ func WSDisconnected(reason string) framework.Input {
 	return evWSDisconnected{Reason: reason}
 }
 
+// MachineConnected returns an event input that indicates the machine websocket
+// connected.
+func MachineConnected() framework.Input {
+	return evMachineConnected{}
+}
+
+// MachineDisconnected returns an event input that indicates the machine
+// websocket disconnected.
+func MachineDisconnected(reason string) framework.Input {
+	return evMachineDisconnected{Reason: reason}
+}
+
 // SessionUpdate returns an event input containing an inbound session-update payload.
 func SessionUpdate(data map[string]any) framework.Input {
 	return evSessionUpdate{Data: data}
@@ -63,6 +96,12 @@ func MessageUpdate(data map[string]any) framework.Input {
 // Ephemeral returns an event input containing an inbound ephemeral payload.
 func Ephemeral(data map[string]any) framework.Input {
 	return evEphemeral{Data: data}
+}
+
+// DesktopTakeback returns an event input indicating the desktop requested a
+// takeback (switch remote -> local).
+func DesktopTakeback() framework.Input {
+	return evDesktopTakeback{}
 }
 
 // PersistAgentState returns a command input that requests persisting the given
@@ -79,4 +118,10 @@ func PersistAgentState(agentStateJSON string) framework.Input {
 // the given agentState JSON string immediately (no debounce).
 func PersistAgentStateImmediate(agentStateJSON string) framework.Input {
 	return cmdPersistAgentStateImmediate{AgentStateJSON: agentStateJSON}
+}
+
+// SetControlledByUser returns a command input that updates AgentState's
+// ControlledByUser flag without changing runner lifecycle.
+func SetControlledByUser(controlledByUser bool, nowMs int64) framework.Input {
+	return cmdSetControlledByUser{ControlledByUser: controlledByUser, NowMs: nowMs}
 }

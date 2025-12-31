@@ -20,82 +20,74 @@ func (m *Manager) registerMachineRPCHandlers() {
 	prefix := m.machineID + ":"
 
 	m.machineRPC.RegisterHandler(prefix+"spawn-happy-session", func(params json.RawMessage) (json.RawMessage, error) {
-		return m.runInboundRPC(func() (json.RawMessage, error) {
-			wire.DumpToTestdata("rpc_machine_spawn_happy_session", params)
-			var req wire.SpawnHappySessionRequest
-			if err := json.Unmarshal(params, &req); err != nil {
-				return nil, err
-			}
-			if req.Directory == "" {
-				return nil, fmt.Errorf("directory is required")
-			}
+		wire.DumpToTestdata("rpc_machine_spawn_happy_session", params)
+		var req wire.SpawnHappySessionRequest
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, err
+		}
+		if req.Directory == "" {
+			return nil, fmt.Errorf("directory is required")
+		}
 
-			if _, err := os.Stat(req.Directory); err != nil {
-				if os.IsNotExist(err) {
-					if !req.ApprovedNewDirectoryCreation {
-						return json.Marshal(wire.SpawnHappySessionResponse{
-							Type:      "requestToApproveDirectoryCreation",
-							Directory: req.Directory,
-						})
-					}
-					if err := os.MkdirAll(req.Directory, 0700); err != nil {
-						return nil, fmt.Errorf("failed to create directory: %w", err)
-					}
-				} else {
-					return nil, fmt.Errorf("failed to stat directory: %w", err)
+		if _, err := os.Stat(req.Directory); err != nil {
+			if os.IsNotExist(err) {
+				if !req.ApprovedNewDirectoryCreation {
+					return json.Marshal(wire.SpawnHappySessionResponse{
+						Type:      "requestToApproveDirectoryCreation",
+						Directory: req.Directory,
+					})
 				}
+				if err := os.MkdirAll(req.Directory, 0o700); err != nil {
+					return nil, fmt.Errorf("failed to create directory: %w", err)
+				}
+			} else {
+				return nil, fmt.Errorf("failed to stat directory: %w", err)
 			}
+		}
 
-				sessionID, err := m.spawnChildSession(req.Directory, req.Agent)
-				if err != nil {
-					return nil, err
-				}
-				if sessionID == "" {
-					return nil, fmt.Errorf("session id not assigned")
-				}
+		sessionID, err := m.spawnChildSession(req.Directory, req.Agent)
+		if err != nil {
+			return nil, err
+		}
+		if sessionID == "" {
+			return nil, fmt.Errorf("session id not assigned")
+		}
 
-				return json.Marshal(wire.SpawnHappySessionResponse{
-					Type:      "success",
-					SessionID: sessionID,
-				})
-			})
+		return json.Marshal(wire.SpawnHappySessionResponse{
+			Type:      "success",
+			SessionID: sessionID,
 		})
+	})
 
 	m.machineRPC.RegisterHandler(prefix+"stop-session", func(params json.RawMessage) (json.RawMessage, error) {
-		return m.runInboundRPC(func() (json.RawMessage, error) {
-			wire.DumpToTestdata("rpc_machine_stop_session", params)
-			var req wire.StopSessionRequest
-			if err := json.Unmarshal(params, &req); err != nil {
-				return nil, err
-			}
-			if req.SessionID == "" {
-				return nil, fmt.Errorf("sessionId is required")
-			}
+		wire.DumpToTestdata("rpc_machine_stop_session", params)
+		var req wire.StopSessionRequest
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, err
+		}
+		if req.SessionID == "" {
+			return nil, fmt.Errorf("sessionId is required")
+		}
 
-				if err := m.stopChildSession(req.SessionID); err != nil {
-					return nil, err
-				}
-				return json.Marshal(wire.StopSessionResponse{Message: "Session stopped"})
-			})
-		})
+		if err := m.stopChildSession(req.SessionID); err != nil {
+			return nil, err
+		}
+		return json.Marshal(wire.StopSessionResponse{Message: "Session stopped"})
+	})
 
 	m.machineRPC.RegisterHandler(prefix+"stop-daemon", func(params json.RawMessage) (json.RawMessage, error) {
-		return m.runInboundRPC(func() (json.RawMessage, error) {
-			wire.DumpToTestdata("rpc_machine_stop_daemon", params)
-			log.Printf("Stop-daemon requested")
-			m.scheduleShutdown()
-			m.forceExitAfter(2 * time.Second)
-			return json.Marshal(wire.StopDaemonResponse{
-				Message: "Daemon stop request acknowledged, starting shutdown sequence...",
-			})
+		wire.DumpToTestdata("rpc_machine_stop_daemon", params)
+		log.Printf("Stop-daemon requested")
+		m.scheduleShutdown()
+		m.forceExitAfter(2 * time.Second)
+		return json.Marshal(wire.StopDaemonResponse{
+			Message: "Daemon stop request acknowledged, starting shutdown sequence...",
 		})
 	})
 
 	m.machineRPC.RegisterHandler(prefix+"ping", func(params json.RawMessage) (json.RawMessage, error) {
-		return m.runInboundRPC(func() (json.RawMessage, error) {
-			wire.DumpToTestdata("rpc_machine_ping", params)
-			return json.Marshal(wire.PingResponse{Success: true})
-		})
+		wire.DumpToTestdata("rpc_machine_ping", params)
+		return json.Marshal(wire.PingResponse{Success: true})
 	})
 }
 
