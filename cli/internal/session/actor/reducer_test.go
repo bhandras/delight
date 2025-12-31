@@ -6,6 +6,7 @@ import (
 
 	"github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/pkg/types"
+	"github.com/stretchr/testify/require"
 )
 
 func TestReduceSwitchMode_EmitsStartEffects(t *testing.T) {
@@ -15,15 +16,10 @@ func TestReduceSwitchMode_EmitsStartEffects(t *testing.T) {
 	reply := make(chan error, 1)
 
 	next, effects := Reduce(initial, cmdSwitchMode{Target: ModeRemote, Reply: reply})
-	if next.FSM != StateRemoteStarting || next.Mode != ModeRemote {
-		t.Fatalf("state=%v/%v, want %v/%v", next.FSM, next.Mode, StateRemoteStarting, ModeRemote)
-	}
-	if next.RunnerGen != 1 {
-		t.Fatalf("RunnerGen=%d, want 1", next.RunnerGen)
-	}
-	if len(effects) == 0 {
-		t.Fatalf("expected effects")
-	}
+	require.Equal(t, StateRemoteStarting, next.FSM)
+	require.Equal(t, ModeRemote, next.Mode)
+	require.Equal(t, int64(1), next.RunnerGen)
+	require.NotEmpty(t, effects)
 	// Sanity: expect a start-remote effect.
 	found := false
 	for _, eff := range effects {
@@ -31,9 +27,7 @@ func TestReduceSwitchMode_EmitsStartEffects(t *testing.T) {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatalf("expected effStartRemoteRunner in effects: %+v", effects)
-	}
+	require.True(t, found, "expected effStartRemoteRunner in effects: %+v", effects)
 }
 
 func TestReduceRunnerReady_CompletesSwitchReply(t *testing.T) {
@@ -50,16 +44,12 @@ func TestReduceRunnerReady_CompletesSwitchReply(t *testing.T) {
 	next, effects := Reduce(state, evRunnerReady{Gen: 7, Mode: ModeRemote})
 	_ = effects
 
-	if next.FSM != StateRemoteRunning {
-		t.Fatalf("FSM=%v, want %v", next.FSM, StateRemoteRunning)
-	}
+	require.Equal(t, StateRemoteRunning, next.FSM)
 	select {
 	case err := <-reply:
-		if err != nil {
-			t.Fatalf("reply err=%v, want nil", err)
-		}
+		require.NoError(t, err)
 	default:
-		t.Fatalf("expected reply to be completed")
+		require.Fail(t, "expected reply to be completed")
 	}
 }
 
@@ -70,19 +60,13 @@ func TestReduceRemoteSend_GatedToRemoteRunning(t *testing.T) {
 	reply := make(chan error, 1)
 
 	next, effects := Reduce(state, cmdRemoteSend{Text: "hi", Reply: reply})
-	if next.FSM != StateLocalRunning {
-		t.Fatalf("FSM=%v, want unchanged", next.FSM)
-	}
-	if len(effects) != 0 {
-		t.Fatalf("effects=%d, want 0", len(effects))
-	}
+	require.Equal(t, StateLocalRunning, next.FSM)
+	require.Empty(t, effects)
 	select {
 	case err := <-reply:
-		if err == nil {
-			t.Fatalf("expected error")
-		}
+		require.Error(t, err)
 	default:
-		t.Fatalf("expected reply")
+		require.Fail(t, "expected reply")
 	}
 }
 
@@ -99,15 +83,9 @@ func TestReduceAgentState_VersionMismatchRetriesOnce(t *testing.T) {
 	}
 
 	next, effects := Reduce(state, EvAgentStateVersionMismatch{ServerVersion: 5})
-	if next.AgentStateVersion != 5 {
-		t.Fatalf("AgentStateVersion=%d, want 5", next.AgentStateVersion)
-	}
-	if next.PersistRetryRemaining != 0 {
-		t.Fatalf("PersistRetryRemaining=%d, want 0", next.PersistRetryRemaining)
-	}
-	if len(effects) != 1 {
-		t.Fatalf("effects=%d, want 1", len(effects))
-	}
+	require.Equal(t, int64(5), next.AgentStateVersion)
+	require.Equal(t, 0, next.PersistRetryRemaining)
+	require.Len(t, effects, 1)
 	if eff, ok := effects[0].(effPersistAgentState); !ok {
 		t.Fatalf("effect type=%T, want effPersistAgentState", effects[0])
 	} else if eff.ExpectedVersion != 5 {
@@ -125,12 +103,8 @@ func TestReducePersistAgentState_EmitsPersistEffect(t *testing.T) {
 	}
 
 	next, effects := Reduce(state, cmdPersistAgentState{AgentStateJSON: `{"controlledByUser":true}`})
-	if next.AgentStateJSON == "" {
-		t.Fatalf("AgentStateJSON empty")
-	}
-	if next.PersistRetryRemaining != 1 {
-		t.Fatalf("PersistRetryRemaining=%d, want 1", next.PersistRetryRemaining)
-	}
+	require.NotEmpty(t, next.AgentStateJSON)
+	require.Equal(t, 1, next.PersistRetryRemaining)
 	foundCancel := false
 	foundStart := false
 	for _, eff := range effects {
@@ -141,9 +115,8 @@ func TestReducePersistAgentState_EmitsPersistEffect(t *testing.T) {
 			foundStart = true
 		}
 	}
-	if !foundCancel || !foundStart {
-		t.Fatalf("expected debounce timer effects, got: %+v", effects)
-	}
+	require.True(t, foundCancel, "expected effCancelTimer, got: %+v", effects)
+	require.True(t, foundStart, "expected effStartTimer, got: %+v", effects)
 }
 
 func TestReduceSwitchMode_LocalToRemote_EffectSequence(t *testing.T) {
@@ -159,12 +132,9 @@ func TestReduceSwitchMode_LocalToRemote_EffectSequence(t *testing.T) {
 	reply := make(chan error, 1)
 
 	next, effects := Reduce(initial, cmdSwitchMode{Target: ModeRemote, Reply: reply})
-	if next.FSM != StateRemoteStarting || next.Mode != ModeRemote {
-		t.Fatalf("state=%v/%v, want %v/%v", next.FSM, next.Mode, StateRemoteStarting, ModeRemote)
-	}
-	if next.AgentState.ControlledByUser {
-		t.Fatalf("ControlledByUser=%v, want false", next.AgentState.ControlledByUser)
-	}
+	require.Equal(t, StateRemoteStarting, next.FSM)
+	require.Equal(t, ModeRemote, next.Mode)
+	require.False(t, next.AgentState.ControlledByUser)
 
 	var stopLocal effStopLocalRunner
 	var startRemote effStartRemoteRunner
@@ -179,15 +149,10 @@ func TestReduceSwitchMode_LocalToRemote_EffectSequence(t *testing.T) {
 			foundStart = true
 		}
 	}
-	if !foundStop || !foundStart {
-		t.Fatalf("expected stop/start effects, got: %+v", effects)
-	}
-	if stopLocal.Gen != 0 {
-		t.Fatalf("stopLocal.Gen=%d, want 0", stopLocal.Gen)
-	}
-	if startRemote.Gen != 1 {
-		t.Fatalf("startRemote.Gen=%d, want 1", startRemote.Gen)
-	}
+	require.True(t, foundStop, "expected effStopLocalRunner, got: %+v", effects)
+	require.True(t, foundStart, "expected effStartRemoteRunner, got: %+v", effects)
+	require.Equal(t, int64(0), stopLocal.Gen)
+	require.Equal(t, int64(1), startRemote.Gen)
 }
 
 func TestReduceSwitchMode_RemoteToLocal_EffectSequence(t *testing.T) {
@@ -204,12 +169,9 @@ func TestReduceSwitchMode_RemoteToLocal_EffectSequence(t *testing.T) {
 	reply := make(chan error, 1)
 
 	next, effects := Reduce(initial, cmdSwitchMode{Target: ModeLocal, Reply: reply})
-	if next.FSM != StateLocalStarting || next.Mode != ModeLocal {
-		t.Fatalf("state=%v/%v, want %v/%v", next.FSM, next.Mode, StateLocalStarting, ModeLocal)
-	}
-	if !next.AgentState.ControlledByUser {
-		t.Fatalf("ControlledByUser=%v, want true", next.AgentState.ControlledByUser)
-	}
+	require.Equal(t, StateLocalStarting, next.FSM)
+	require.Equal(t, ModeLocal, next.Mode)
+	require.True(t, next.AgentState.ControlledByUser)
 
 	var stopRemote effStopRemoteRunner
 	var startLocal effStartLocalRunner
@@ -224,15 +186,10 @@ func TestReduceSwitchMode_RemoteToLocal_EffectSequence(t *testing.T) {
 			foundStart = true
 		}
 	}
-	if !foundStop || !foundStart {
-		t.Fatalf("expected stop/start effects, got: %+v", effects)
-	}
-	if stopRemote.Gen != 3 {
-		t.Fatalf("stopRemote.Gen=%d, want 3", stopRemote.Gen)
-	}
-	if startLocal.Gen != 4 {
-		t.Fatalf("startLocal.Gen=%d, want 4", startLocal.Gen)
-	}
+	require.True(t, foundStop, "expected effStopRemoteRunner, got: %+v", effects)
+	require.True(t, foundStart, "expected effStartLocalRunner, got: %+v", effects)
+	require.Equal(t, int64(3), stopRemote.Gen)
+	require.Equal(t, int64(4), startLocal.Gen)
 }
 
 func TestReducePermissionRequested_AddsDurableRequest(t *testing.T) {
@@ -256,18 +213,15 @@ func TestReducePermissionRequested_AddsDurableRequest(t *testing.T) {
 		NowMs:     123,
 	})
 
-	if _, ok := next.AgentState.Requests["r1"]; !ok {
-		t.Fatalf("expected request to be stored")
-	}
+	_, ok := next.AgentState.Requests["r1"]
+	require.True(t, ok)
 	foundEphemeral := false
 	for _, eff := range effects {
 		if _, ok := eff.(effEmitEphemeral); ok {
 			foundEphemeral = true
 		}
 	}
-	if !foundEphemeral {
-		t.Fatalf("expected effEmitEphemeral, got: %+v", effects)
-	}
+	require.True(t, foundEphemeral, "expected effEmitEphemeral, got: %+v", effects)
 }
 
 func TestReducePermissionDecision_RemovesDurableAndEmitsDecisionEffect(t *testing.T) {
@@ -294,31 +248,23 @@ func TestReducePermissionDecision_RemovesDurableAndEmitsDecisionEffect(t *testin
 		NowMs:     456,
 		Reply:     reply,
 	})
-	if _, ok := next.AgentState.Requests["r1"]; ok {
-		t.Fatalf("expected request to be removed")
-	}
-	if _, ok := next.AgentState.CompletedRequests["r1"]; !ok {
-		t.Fatalf("expected completed request to be stored")
-	}
+	_, ok := next.AgentState.Requests["r1"]
+	require.False(t, ok)
+	_, ok = next.AgentState.CompletedRequests["r1"]
+	require.True(t, ok)
 	foundDecision := false
 	for _, eff := range effects {
 		if d, ok := eff.(effRemotePermissionDecision); ok {
 			foundDecision = true
-			if d.Gen != 9 {
-				t.Fatalf("decision gen=%d, want 9", d.Gen)
-			}
+			require.Equal(t, int64(9), d.Gen)
 		}
 	}
-	if !foundDecision {
-		t.Fatalf("expected effRemotePermissionDecision, got: %+v", effects)
-	}
+	require.True(t, foundDecision, "expected effRemotePermissionDecision, got: %+v", effects)
 	select {
 	case err := <-reply:
-		if err != nil {
-			t.Fatalf("reply err=%v, want nil", err)
-		}
+		require.NoError(t, err)
 	default:
-		t.Fatalf("expected reply to be completed")
+		require.Fail(t, "expected reply to be completed")
 	}
 }
 
@@ -344,15 +290,10 @@ func TestReducePermissionAwait_StoresPromiseAndEmitsEphemeral(t *testing.T) {
 		Reply:     decisionCh,
 	})
 
-	if _, ok := next.AgentState.Requests["r1"]; !ok {
-		t.Fatalf("expected request to be stored durably")
-	}
-	if next.PendingPermissionPromises == nil {
-		t.Fatalf("expected PendingPermissionPromises to be initialized")
-	}
-	if got := next.PendingPermissionPromises["r1"]; got == nil {
-		t.Fatalf("expected promise channel to be stored")
-	}
+	_, ok := next.AgentState.Requests["r1"]
+	require.True(t, ok)
+	require.NotNil(t, next.PendingPermissionPromises)
+	require.NotNil(t, next.PendingPermissionPromises["r1"])
 
 	foundEphemeral := false
 	for _, eff := range effects {
@@ -360,9 +301,7 @@ func TestReducePermissionAwait_StoresPromiseAndEmitsEphemeral(t *testing.T) {
 			foundEphemeral = true
 		}
 	}
-	if !foundEphemeral {
-		t.Fatalf("expected effEmitEphemeral, got: %+v", effects)
-	}
+	require.True(t, foundEphemeral, "expected effEmitEphemeral, got: %+v", effects)
 }
 
 func TestReducePermissionDecision_CompletesAwaitPromiseWithoutRemoteEffect(t *testing.T) {
@@ -393,16 +332,15 @@ func TestReducePermissionDecision_CompletesAwaitPromiseWithoutRemoteEffect(t *te
 
 	select {
 	case got := <-decisionCh:
-		if !got.Allow || got.Message != "approved" {
-			t.Fatalf("decision=%+v, want allow+message", got)
-		}
+		require.True(t, got.Allow)
+		require.Equal(t, "approved", got.Message)
 	default:
-		t.Fatalf("expected decision to be delivered to promise channel")
+		require.Fail(t, "expected decision to be delivered to promise channel")
 	}
 
 	if next.PendingPermissionPromises != nil {
 		if _, ok := next.PendingPermissionPromises["r1"]; ok {
-			t.Fatalf("expected promise to be removed after decision")
+			require.Fail(t, "expected promise to be removed after decision")
 		}
 	}
 
@@ -425,21 +363,15 @@ func TestReduceSetControlledByUser_SchedulesPersist(t *testing.T) {
 	}
 
 	next, effects := Reduce(state, cmdSetControlledByUser{ControlledByUser: false, NowMs: 1})
-	if next.AgentState.ControlledByUser {
-		t.Fatalf("expected ControlledByUser=false")
-	}
-	if len(effects) == 0 {
-		t.Fatalf("expected persist debounce effects")
-	}
+	require.False(t, next.AgentState.ControlledByUser)
+	require.NotEmpty(t, effects)
 	foundTimer := false
 	for _, eff := range effects {
 		if _, ok := eff.(effStartTimer); ok {
 			foundTimer = true
 		}
 	}
-	if !foundTimer {
-		t.Fatalf("expected effStartTimer, got: %+v", effects)
-	}
+	require.True(t, foundTimer, "expected effStartTimer, got: %+v", effects)
 }
 
 func TestReduceRunnerReady_RemoteStartsTakebackWatcher(t *testing.T) {
@@ -458,9 +390,7 @@ func TestReduceRunnerReady_RemoteStartsTakebackWatcher(t *testing.T) {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatalf("expected effStartDesktopTakebackWatcher, got: %+v", effects)
-	}
+	require.True(t, found, "expected effStartDesktopTakebackWatcher, got: %+v", effects)
 }
 
 func TestReduceDebouncedPersistence_CoalescesToLatest(t *testing.T) {
@@ -475,9 +405,7 @@ func TestReduceDebouncedPersistence_CoalescesToLatest(t *testing.T) {
 	state, _ = Reduce(state, cmdPersistAgentState{AgentStateJSON: `{"a":1}`})
 	state, _ = Reduce(state, cmdPersistAgentState{AgentStateJSON: `{"a":2}`})
 
-	if state.AgentStateJSON != `{"a":2}` {
-		t.Fatalf("AgentStateJSON=%s, want latest", state.AgentStateJSON)
-	}
+	require.Equal(t, `{"a":2}`, state.AgentStateJSON)
 
 	next, effects := Reduce(state, evTimerFired{Name: persistDebounceTimerName, NowMs: 1})
 	_ = next
@@ -485,17 +413,11 @@ func TestReduceDebouncedPersistence_CoalescesToLatest(t *testing.T) {
 	for _, eff := range effects {
 		if p, ok := eff.(effPersistAgentState); ok {
 			foundPersist = true
-			if p.AgentStateJSON != `{"a":2}` {
-				t.Fatalf("persist json=%s, want latest", p.AgentStateJSON)
-			}
-			if p.ExpectedVersion != 7 {
-				t.Fatalf("ExpectedVersion=%d, want 7", p.ExpectedVersion)
-			}
+			require.Equal(t, `{"a":2}`, p.AgentStateJSON)
+			require.Equal(t, int64(7), p.ExpectedVersion)
 		}
 	}
-	if !foundPersist {
-		t.Fatalf("expected effPersistAgentState on timer fired, got: %+v", effects)
-	}
+	require.True(t, foundPersist, "expected effPersistAgentState on timer fired, got: %+v", effects)
 }
 
 func TestStepHelper(t *testing.T) {
@@ -505,9 +427,7 @@ func TestStepHelper(t *testing.T) {
 	next, _ := actor.Step(41, testEvent{n: 1}, func(state int, input actor.Input) (int, []actor.Effect) {
 		return reducer(state, input)
 	})
-	if next != 42 {
-		t.Fatalf("next=%d, want 42", next)
-	}
+	require.Equal(t, 42, next)
 }
 
 type testEvent struct {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
+	"github.com/stretchr/testify/require"
 )
 
 // scenarioRuntime is a deterministic runtime for scenario tests.
@@ -60,36 +61,29 @@ func TestActorScenario_SwitchLoopDoesNotDeadlock(t *testing.T) {
 
 	for i := 0; i < 50; i++ {
 		toRemote := make(chan error, 1)
-		if ok := a.Enqueue(cmdSwitchMode{Target: ModeRemote, Reply: toRemote}); !ok {
-			t.Fatalf("enqueue switch to remote failed at iter %d", i)
-		}
+		ok := a.Enqueue(cmdSwitchMode{Target: ModeRemote, Reply: toRemote})
+		require.True(t, ok, "enqueue switch to remote failed at iter %d", i)
 		select {
 		case err := <-toRemote:
-			if err != nil {
-				t.Fatalf("switch remote err=%v", err)
-			}
+			require.NoError(t, err)
 		case <-time.After(2 * time.Second):
-			t.Fatalf("timeout switching to remote at iter %d", i)
+			require.Fail(t, "timeout switching to remote", "iter=%d", i)
 		}
 
 		toLocal := make(chan error, 1)
-		if ok := a.Enqueue(cmdSwitchMode{Target: ModeLocal, Reply: toLocal}); !ok {
-			t.Fatalf("enqueue switch to local failed at iter %d", i)
-		}
+		ok = a.Enqueue(cmdSwitchMode{Target: ModeLocal, Reply: toLocal})
+		require.True(t, ok, "enqueue switch to local failed at iter %d", i)
 		select {
 		case err := <-toLocal:
-			if err != nil {
-				t.Fatalf("switch local err=%v", err)
-			}
+			require.NoError(t, err)
 		case <-time.After(2 * time.Second):
-			t.Fatalf("timeout switching to local at iter %d", i)
+			require.Fail(t, "timeout switching to local", "iter=%d", i)
 		}
 	}
 
 	final := a.State()
-	if final.Mode != ModeLocal || final.FSM != StateLocalRunning {
-		t.Fatalf("final=%v/%v, want %v/%v", final.FSM, final.Mode, StateLocalRunning, ModeLocal)
-	}
+	require.Equal(t, ModeLocal, final.Mode)
+	require.Equal(t, StateLocalRunning, final.FSM)
 }
 
 func TestActorScenario_StaleRunnerExitIgnored(t *testing.T) {
@@ -105,20 +99,16 @@ func TestActorScenario_StaleRunnerExitIgnored(t *testing.T) {
 	_ = a.Enqueue(cmdSwitchMode{Target: ModeRemote, Reply: toRemote})
 	select {
 	case err := <-toRemote:
-		if err != nil {
-			t.Fatalf("switch remote err=%v", err)
-		}
+		require.NoError(t, err)
 	case <-time.After(2 * time.Second):
-		t.Fatalf("timeout switching to remote")
+		require.Fail(t, "timeout switching to remote")
 	}
 
 	// Inject a stale exit for gen 0; should have no effect.
 	_ = a.Enqueue(evRunnerExited{Gen: 0, Mode: ModeRemote, Err: context.Canceled})
 	time.Sleep(20 * time.Millisecond)
 
-	if got := a.State().FSM; got != StateRemoteRunning {
-		t.Fatalf("FSM=%v, want %v", got, StateRemoteRunning)
-	}
+	require.Equal(t, StateRemoteRunning, a.State().FSM)
 }
 
 func TestActorScenario_RemoteSendRecorded(t *testing.T) {
@@ -135,7 +125,7 @@ func TestActorScenario_RemoteSendRecorded(t *testing.T) {
 	select {
 	case <-toRemote:
 	case <-time.After(2 * time.Second):
-		t.Fatalf("timeout switching to remote")
+		require.Fail(t, "timeout switching to remote")
 	}
 
 	reply := make(chan error, 1)
@@ -157,7 +147,7 @@ func TestActorScenario_RemoteSendRecorded(t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("sent=%v, want [Hello]", sent)
+			require.Fail(t, "timeout waiting for remote send to be recorded", "sent=%v", sent)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
