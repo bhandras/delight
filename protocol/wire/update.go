@@ -21,6 +21,8 @@ type UpdateBody struct {
 
 // UpdateMessage is the message payload inside an update event.
 type UpdateMessage struct {
+	// LocalID is the sender-supplied idempotency key (when available).
+	LocalID *string `json:"localId,omitempty"`
 	// Content is the encrypted content payload.
 	Content *EncryptedContent `json:"content,omitempty"`
 }
@@ -47,15 +49,25 @@ func ParseUpdateEnvelope(v any) (*UpdateEnvelope, error) {
 // ExtractNewMessageCipher extracts the ciphertext from an update event when
 // `body.t == "new-message"`.
 func ExtractNewMessageCipher(v any) (string, bool, error) {
+	cipher, _, ok, err := ExtractNewMessageCipherAndLocalID(v)
+	return cipher, ok, err
+}
+
+// ExtractNewMessageCipherAndLocalID extracts the ciphertext and local id from an
+// update event when `body.t == "new-message"`.
+func ExtractNewMessageCipherAndLocalID(v any) (cipher string, localID string, ok bool, err error) {
 	env, err := ParseUpdateEnvelope(v)
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	if env.Body.T != "new-message" {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	if env.Body.Message == nil || env.Body.Message.Content == nil || env.Body.Message.Content.C == "" {
-		return "", false, fmt.Errorf("new-message missing message.content.c")
+		return "", "", false, fmt.Errorf("new-message missing message.content.c")
 	}
-	return env.Body.Message.Content.C, true, nil
+	if env.Body.Message.LocalID != nil {
+		localID = *env.Body.Message.LocalID
+	}
+	return env.Body.Message.Content.C, localID, true, nil
 }

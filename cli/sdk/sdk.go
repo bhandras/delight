@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +37,8 @@ type Client struct {
 	mu           sync.Mutex
 	masterSecret []byte
 	dataKeys     map[string][]byte
+	sessionFSM   map[string]sessionFSMState
+	lastSessionHydrateAt int64
 	listener     Listener
 	userSocket   *websocket.Client
 	httpClient   *http.Client
@@ -51,10 +54,101 @@ func NewClient(serverURL string) *Client {
 	return &Client{
 		serverURL:  serverURL,
 		dataKeys:   make(map[string][]byte),
+		sessionFSM: make(map[string]sessionFSMState),
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 		dispatch:   newDispatcher(256),
 		callbacks:  newDispatcher(256),
 	}
+}
+
+type sessionFSMState struct {
+	state            string
+	active           bool
+	controlledByUser bool
+	connected        bool
+	updatedAt        int64
+	fetchedAt        int64
+}
+
+func controlledByUserFromAgentStateJSON(agentState string) (value bool, ok bool) {
+	if agentState == "" {
+		return true, false
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(agentState), &decoded); err != nil {
+		return true, false
+	}
+	if v, ok := decoded["controlledByUser"].(bool); ok {
+		return v, true
+	}
+	return true, false
+}
+
+func computeSessionFSM(connected bool, active bool, controlledByUser bool) sessionFSMState {
+	switch {
+	case !connected:
+		return sessionFSMState{state: "disconnected", connected: false, active: active, controlledByUser: controlledByUser}
+	case !active:
+		return sessionFSMState{state: "offline", connected: true, active: false, controlledByUser: controlledByUser}
+	case controlledByUser:
+		return sessionFSMState{state: "local", connected: true, active: true, controlledByUser: true}
+	default:
+		return sessionFSMState{state: "remote", connected: true, active: true, controlledByUser: false}
+	}
+}
+
+func deriveSessionUI(
+	now int64,
+	connected bool,
+	active bool,
+	agentState string,
+	cached *sessionFSMState,
+) (sessionFSMState, map[string]any) {
+	controlledByUser, ok := controlledByUserFromAgentStateJSON(agentState)
+	if !ok && cached != nil {
+		controlledByUser = cached.controlledByUser
+	}
+
+	fsm := computeSessionFSM(connected, active, controlledByUser)
+	fsm.fetchedAt = now
+
+	ui := map[string]any{
+		"state":            fsm.state, // disconnected|offline|local|remote
+		"connected":        fsm.connected,
+		"active":           fsm.active,
+		"controlledByUser": fsm.controlledByUser,
+		"canTakeControl":   fsm.state == "local",
+		"canSend":          fsm.state == "remote",
+	}
+
+	return fsm, ui
+}
+
+func (c *Client) refreshSessionsForFSM() error {
+	_, err := c.listSessions()
+	return err
+}
+
+func (c *Client) ensureSessionFSM(sessionID string) (sessionFSMState, bool, error) {
+	now := time.Now().UnixMilli()
+
+	c.mu.Lock()
+	state, ok := c.sessionFSM[sessionID]
+	c.mu.Unlock()
+
+	// If we've never seen this session (or we haven't refreshed recently), pull sessions
+	// once. This makes control and send gating deterministic even when the caller hasn't
+	// polled recently.
+	const staleAfterMs = 2_000
+	if !ok || state.fetchedAt == 0 || now-state.fetchedAt > staleAfterMs {
+		if err := c.refreshSessionsForFSM(); err != nil {
+			return sessionFSMState{}, false, err
+		}
+		c.mu.Lock()
+		state, ok = c.sessionFSM[sessionID]
+		c.mu.Unlock()
+	}
+	return state, ok, nil
 }
 
 // SetServerURL updates the server base URL.
@@ -469,6 +563,10 @@ func (c *Client) connect() error {
 	if listener != nil {
 		_ = c.callbacks.do(func() { listener.OnConnected() })
 	}
+
+	// Proactively hydrate per-session data keys so encrypted message updates can be
+	// decrypted immediately, even if the app hasn't called ListSessions yet.
+	_ = c.dispatch.do(func() { _, _ = c.listSessions() })
 	return nil
 }
 
@@ -558,6 +656,29 @@ func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
 		return "", fmt.Errorf("not connected")
 	}
 
+	// Enforce control FSM for the control-switch RPC and keep the mobile UI dumb.
+	// Phone can only take control if the CLI is online and currently in local mode.
+	if strings.HasSuffix(method, ":switch") {
+		sessionID := strings.TrimSuffix(method, ":switch")
+		var params map[string]any
+		_ = json.Unmarshal([]byte(paramsJSON), &params)
+		mode, _ := params["mode"].(string)
+		if mode == "remote" {
+			state, ok, err := c.ensureSessionFSM(sessionID)
+			if err != nil {
+				return "", err
+			}
+			if ok {
+				// Allow idempotent "take control" when already remote.
+				if state.state == "remote" {
+					// ok
+				} else if state.state != "local" {
+					return "", fmt.Errorf("cannot take control: session %s", state.state)
+				}
+			}
+		}
+	}
+
 	resp, err := socket.EmitWithAck("rpc-call", wire.RPCCallPayload{
 		Method: method,
 		Params: paramsJSON,
@@ -580,6 +701,34 @@ func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
 	if err != nil {
 		return "{}", nil
 	}
+
+	// Update cached control FSM after a successful switch call so the UI can reflect
+	// control immediately, even if agentState propagation is delayed or legacy-encrypted.
+	if strings.HasSuffix(method, ":switch") {
+		sessionID := strings.TrimSuffix(method, ":switch")
+		mode := ""
+		if result, _ := resp["result"].(map[string]any); result != nil {
+			mode, _ = result["mode"].(string)
+		}
+		if mode == "local" || mode == "remote" {
+			// Preserve active/connected bits if we have them, defaulting to optimistic "online".
+			c.mu.Lock()
+			prev := c.sessionFSM[sessionID]
+			active := prev.active
+			connected := prev.connected
+			if prev.state == "" {
+				active = true
+				connected = true
+			}
+			controlledByUser := mode == "local"
+			next := computeSessionFSM(connected, active, controlledByUser)
+			next.updatedAt = prev.updatedAt
+			next.fetchedAt = time.Now().UnixMilli()
+			c.sessionFSM[sessionID] = next
+			c.mu.Unlock()
+		}
+	}
+
 	return string(encoded), nil
 }
 
@@ -591,10 +740,27 @@ func (c *Client) sendMessageWithLocalID(sessionID string, localID string, rawRec
 	}()
 	c.mu.Lock()
 	socket := c.userSocket
+	state := c.sessionFSM[sessionID]
 	c.mu.Unlock()
 
 	if socket == nil {
 		return fmt.Errorf("not connected")
+	}
+
+	// Enforce phone-send rules:
+	// - phone can only send while the session is online and phone-controlled (remote mode)
+	if state.state != "remote" {
+		// Refresh state once if we don't have a current snapshot.
+		refreshed, ok, err := c.ensureSessionFSM(sessionID)
+		if err != nil {
+			return err
+		}
+		if ok && refreshed.state != "remote" {
+			return fmt.Errorf("cannot send: session %s", refreshed.state)
+		}
+		if !ok {
+			return fmt.Errorf("cannot send: unknown session")
+		}
 	}
 
 	encrypted, err := c.encryptPayload(sessionID, []byte(rawRecordJSON))
@@ -644,6 +810,16 @@ func (c *Client) listSessions() (resp string, err error) {
 	var decoded map[string]interface{}
 	if err := json.Unmarshal(respBody, &decoded); err == nil {
 		if sessions, ok := decoded["sessions"].([]interface{}); ok {
+			c.mu.Lock()
+			socket := c.userSocket
+			cachedFSM := make(map[string]sessionFSMState, len(c.sessionFSM))
+			for k, v := range c.sessionFSM {
+				cachedFSM[k] = v
+			}
+			c.mu.Unlock()
+			connected := socket != nil && socket.IsConnected()
+			now := time.Now().UnixMilli()
+
 			for _, item := range sessions {
 				session, ok := item.(map[string]interface{})
 				if !ok {
@@ -659,6 +835,34 @@ func (c *Client) listSessions() (resp string, err error) {
 					if decrypted, err := c.decryptLegacyString(metadataB64); err == nil {
 						session["metadata"] = decrypted
 					}
+				}
+
+				agentState, _ := session["agentState"].(string)
+				active, _ := session["active"].(bool)
+				updatedAt := int64(0)
+				switch v := session["updatedAt"].(type) {
+				case float64:
+					updatedAt = int64(v)
+				case int64:
+					updatedAt = v
+				case int:
+					updatedAt = int64(v)
+				}
+				var cached *sessionFSMState
+				if prev, ok := cachedFSM[sessionID]; ok {
+					tmp := prev
+					cached = &tmp
+				}
+				fsm, ui := deriveSessionUI(now, connected, active, agentState, cached)
+				fsm.updatedAt = updatedAt
+
+				// Inject a derived UI state so the iOS app can be a pure view layer.
+				session["ui"] = ui
+
+				if sessionID != "" {
+					c.mu.Lock()
+					c.sessionFSM[sessionID] = fsm
+					c.mu.Unlock()
 				}
 			}
 		}
@@ -912,7 +1116,14 @@ func (c *Client) handleUpdate(data map[string]interface{}) {
 		if msg, ok := body["message"].(map[string]interface{}); ok {
 			if content, ok := msg["content"].(map[string]interface{}); ok {
 				decrypted, err := c.decryptEnvelope(sessionID, content)
-				if err == nil && decrypted != nil {
+				if err != nil {
+					// Likely missing the per-session data key (race with initial ListSessions).
+					// Refresh sessions (debounced) and retry once.
+					c.maybeHydrateSessionKeys()
+					if retry, retryErr := c.decryptEnvelope(sessionID, content); retryErr == nil && retry != nil {
+						msg["content"] = retry
+					}
+				} else if decrypted != nil {
 					msg["content"] = decrypted
 				}
 			}
@@ -927,6 +1138,24 @@ func (c *Client) handleUpdate(data map[string]interface{}) {
 	}
 
 	c.emitUpdate(sessionID, data)
+}
+
+func (c *Client) maybeHydrateSessionKeys() {
+	now := time.Now().UnixMilli()
+	const minIntervalMs = 2_000
+
+	c.mu.Lock()
+	last := c.lastSessionHydrateAt
+	if last != 0 && now-last < minIntervalMs {
+		c.mu.Unlock()
+		return
+	}
+	c.lastSessionHydrateAt = now
+	c.mu.Unlock()
+
+	// We are already executing on the SDK dispatch queue when called from handleUpdate.
+	// Calling listSessions directly avoids re-entrancy into the dispatcher.
+	_, _ = c.listSessions()
 }
 
 func (c *Client) emitUpdate(sessionID string, payload map[string]interface{}) {
