@@ -240,7 +240,7 @@ Rationale:
 
 ### 6.3 Race detector
 
-- [ ] `go test -race ./...` (at least `internal/session`)
+- [x] `go test -race ./...` (at least `internal/session`)
 
 ---
 
