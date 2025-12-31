@@ -63,7 +63,7 @@ Rationale:
   - [x] `Actor[S]` loop harness (mailbox, done channel, stop)
 - [ ] Add minimal utilities:
   - [x] typed logger hooks (`OnInput`, `OnEffect`, `OnStateChange`) (optional but recommended)
-  - [ ] `Clock` abstraction for deterministic timers (or explicit timer effects)
+  - [x] `Clock` abstraction for deterministic timers (or explicit timer effects)
 
 ### 1.2 Testing harness utilities
 
@@ -72,7 +72,7 @@ Rationale:
   - [x] can be scripted to emit events
 - [x] Add a reducer test helper:
   - [x] `Step(state, input) -> (state, effects)`
-  - [ ] snapshot-friendly state printing (if needed)
+  - [x] snapshot-friendly state printing (if needed)
 
 ---
 
@@ -227,7 +227,7 @@ Rationale:
 
 - [ ] local→remote switch emits correct effect sequence
 - [ ] remote→local switch emits correct effect sequence
-- [ ] stale `evRunnerExited{oldGen}` ignored
+- [x] stale `evRunnerExited{oldGen}` ignored
 - [ ] permission request adds durable `agentState.requests`
 - [ ] permission decision removes durable request and emits control response effect
 - [ ] debounced persistence coalesces multiple updates
