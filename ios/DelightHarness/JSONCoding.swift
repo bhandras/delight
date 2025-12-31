@@ -37,12 +37,13 @@ enum JSONCoding {
 
     /// prettyPrint returns a pretty-printed JSON string for display, or nil if parsing fails.
     static func prettyPrint(json: String) -> String? {
-        guard let data = json.data(using: .utf8) else { return nil }
-        guard let object = try? JSONSerialization.jsonObject(with: data) else { return nil }
-        guard let prettyData = try? JSONSerialization.data(
-            withJSONObject: object,
-            options: [.prettyPrinted, .withoutEscapingSlashes]
-        ) else { return nil }
+        // Prefer our Codable-based parsing so callers don't need to handle
+        // Foundation's dynamically-typed JSONSerialization trees.
+        guard let value = try? decode(JSONValue.self, from: json) else { return nil }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        guard let prettyData = try? encoder.encode(value) else { return nil }
         guard let pretty = String(data: prettyData, encoding: .utf8) else { return nil }
         // Some tool payloads contain shell-escaped paths like "\/Users\/...".
         // They're valid, but visually noisy. Clean up common path-only escapes for display.
@@ -157,4 +158,3 @@ enum JSONValue: Codable, Equatable {
         }
     }
 }
-

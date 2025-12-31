@@ -85,4 +85,41 @@ final class SDKBridgeTests: XCTestCase {
         }
         waitForExpectations(timeout: 1.0)
     }
+
+    func testHandlePermissionRequestUpdateBodyEnvelope() {
+        let model = HarnessViewModel()
+        let json = """
+        {"body":{"type":"permission-request","id":"s1","requestId":"r1","toolName":"bash","input":"{\\"command\\":\\"ls\\"}"}}
+        """
+
+        let expectation = expectation(description: "permission request queued")
+        model.onUpdate(nil, updateJSON: json)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(model.permissionQueue.count, 1)
+            XCTAssertEqual(model.permissionQueue.first?.sessionID, "s1")
+            XCTAssertEqual(model.permissionQueue.first?.requestID, "r1")
+            XCTAssertEqual(model.permissionQueue.first?.toolName, "bash")
+            XCTAssertEqual(model.activePermissionRequest?.requestID, "r1")
+            XCTAssertTrue(model.showPermissionPrompt)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
+
+    func testHandlePermissionRequestUpdateRootEnvelope() {
+        let model = HarnessViewModel()
+        let json = """
+        {"type":"permission-request","id":"s1","requestId":"r1","toolName":"bash","input":"{\\"command\\":\\"ls\\"}"}
+        """
+
+        let expectation = expectation(description: "permission request queued")
+        model.onUpdate(nil, updateJSON: json)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(model.permissionQueue.count, 1)
+            XCTAssertEqual(model.permissionQueue.first?.requestID, "r1")
+            XCTAssertTrue(model.showPermissionPrompt)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
 }

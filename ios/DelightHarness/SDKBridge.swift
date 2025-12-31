@@ -36,6 +36,61 @@ private struct RawUserMessageRecord: Encodable {
     let content: Content
 }
 
+/// UpdateEnvelope is the outer JSON envelope delivered to `onUpdate`.
+///
+/// The server/SDK emits multiple shapes:
+/// - root-level fields (`type`, `t`, `sid`, `message`, ...)
+/// - nested `body` with `t`/`type` + payload fields
+///
+/// We decode a superset here and then interpret it in the higher-level helpers.
+private struct UpdateEnvelope: Decodable {
+    let body: UpdateBody?
+
+    // Some sources include these at the root level.
+    let sid: String?
+    let id: String?
+    let t: String?
+    let type: String?
+    let message: JSONValue?
+
+    // Root-level activity payload (best-effort).
+    let active: Bool?
+    let activeAt: Int64?
+    let thinking: Bool?
+    let time: Int64?
+
+    // Root-level permission request payload (best-effort).
+    let requestId: String?
+    let toolName: String?
+    let input: String?
+}
+
+/// UpdateBody is the nested payload for many update messages.
+private struct UpdateBody: Decodable {
+    // Discriminants: older updates use `t`, newer may use `type`.
+    let t: String?
+    let type: String?
+
+    // Session identifiers appear as either `sid` or `id`.
+    let sid: String?
+    let id: String?
+
+    // Common payload fields (present depending on `t`/`type`).
+    let ui: JSONValue?
+    let message: JSONValue?
+
+    // Permission request payload.
+    let requestId: String?
+    let toolName: String?
+    let input: String?
+
+    // Activity payload.
+    let active: Bool?
+    let activeAt: Int64?
+    let thinking: Bool?
+    let time: Int64?
+}
+
 final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var serverURL: String = "http://localhost:3005" {
         didSet { persistSettings() }
@@ -139,6 +194,23 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         sdkCallAsync {
             self.client.setListener(self)
         }
+    }
+
+    /// decodeJSONAny decodes an arbitrary JSON document into Foundation JSON containers.
+    ///
+    /// This intentionally keeps the dynamic parts of the wire protocol out of UI code.
+    /// `SDKBridge` is in the middle of a migration from `[String: Any]` parsing to
+    /// strongly typed DTOs; this helper provides a safe bridge during that transition.
+    private func decodeJSONAny(_ json: String) -> Any? {
+        guard let value = try? JSONCoding.decode(JSONValue.self, from: json) else {
+            return nil
+        }
+        return value.toAny()
+    }
+
+    /// decodeUpdateEnvelope decodes the best-effort update envelope used by `onUpdate`.
+    private func decodeUpdateEnvelope(_ json: String) -> UpdateEnvelope? {
+        try? JSONCoding.decode(UpdateEnvelope.self, from: json)
     }
 
     private func stringFromBuffer(_ buffer: SdkBuffer?) -> String? {
@@ -787,12 +859,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     private func handleSessionUIUpdate(_ json: String) -> Bool {
-        guard let data = json.data(using: .utf8),
-              let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let body = decoded["body"] as? [String: Any],
-              let type = body["t"] as? String, type == "session-ui",
-              let sessionID = body["sid"] as? String,
-              let uiDict = body["ui"] as? [String: Any],
+        guard let update = decodeUpdateEnvelope(json),
+              let body = update.body,
+              body.t == "session-ui",
+              let sessionID = body.sid,
+              let uiValue = body.ui,
+              let uiDict = uiValue.toAny() as? [String: Any],
               let ui = SessionUIState.fromJSONDict(uiDict) else {
             return false
         }
@@ -818,11 +890,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     private func tryAppendMessageFromUpdate(_ updateJSON: String, sessionID: String) -> Bool {
-        guard let data = updateJSON.data(using: .utf8),
-              let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let body = decoded["body"] as? [String: Any],
-              let type = body["t"] as? String, type == "new-message",
-              let message = body["message"] as? [String: Any] else {
+        guard let update = decodeUpdateEnvelope(updateJSON),
+              let body = update.body,
+              body.t == "new-message",
+              let messageValue = body.message,
+              let message = messageValue.toAny() as? [String: Any] else {
             return false
         }
 
@@ -910,13 +982,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     private func shouldFetchMessages(fromUpdateJSON json: String) -> Bool {
-        guard let data = json.data(using: .utf8),
-              let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return true
-        }
-        guard let body = decoded["body"] as? [String: Any],
-              let type = body["t"] as? String, type == "new-message",
-              let message = body["message"] as? [String: Any] else {
+        guard let update = decodeUpdateEnvelope(json),
+              let body = update.body,
+              body.t == "new-message",
+              let messageValue = body.message,
+              let message = messageValue.toAny() as? [String: Any] else {
             return true
         }
         let content = normalizeContent(firstNonNull(message["content"], message["data"]))
@@ -954,13 +1024,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func handleActivityUpdate(_ json: String) {
-        guard let data = json.data(using: .utf8) else {
+        guard let update = decodeUpdateEnvelope(json) else {
             return
         }
-        guard let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return
-        }
-        if let payload = extractActivityPayload(from: decoded) {
+        if let payload = extractActivityPayload(from: update) {
             DispatchQueue.main.async {
                 if let index = self.sessions.firstIndex(where: { $0.id == payload.id }) {
                     let updated = self.sessions[index].updatingActivity(
@@ -996,11 +1063,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     private func handlePermissionRequestUpdate(_ json: String) {
-        guard let data = json.data(using: .utf8),
-              let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard let update = decodeUpdateEnvelope(json) else {
             return
         }
-        guard let payload = extractPermissionRequestPayload(from: decoded) else {
+        guard let payload = extractPermissionRequestPayload(from: update) else {
             return
         }
 
@@ -1029,78 +1095,66 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
-    private func extractPermissionRequestPayload(from decoded: [String: Any]) -> (sessionID: String, requestID: String, toolName: String, input: String)? {
-        if let type = decoded["type"] as? String, type == "permission-request" {
-            return readPermissionFields(from: decoded)
+    private func extractPermissionRequestPayload(from update: UpdateEnvelope) -> (sessionID: String, requestID: String, toolName: String, input: String)? {
+        if update.type == "permission-request" || update.t == "permission-request" {
+            let sessionID = update.id ?? update.sid
+            let requestID = update.requestId
+            let toolName = update.toolName
+            let input = update.input
+            if let sessionID, !sessionID.isEmpty,
+               let requestID, !requestID.isEmpty,
+               let toolName, !toolName.isEmpty,
+               let input, !input.isEmpty {
+                return (sessionID: sessionID, requestID: requestID, toolName: toolName, input: input)
+            }
         }
-        if let body = decoded["body"] as? [String: Any],
-           let type = body["type"] as? String, type == "permission-request" {
-            return readPermissionFields(from: body)
-        }
-        if let type = decoded["t"] as? String, type == "permission-request" {
-            return readPermissionFields(from: decoded)
+
+        if let body = update.body, (body.type == "permission-request" || body.t == "permission-request") {
+            let sessionID = body.id ?? body.sid
+            guard let sessionID, !sessionID.isEmpty,
+                  let requestID = body.requestId, !requestID.isEmpty,
+                  let toolName = body.toolName, !toolName.isEmpty,
+                  let input = body.input, !input.isEmpty else {
+                return nil
+            }
+            return (sessionID: sessionID, requestID: requestID, toolName: toolName, input: input)
         }
         return nil
     }
 
-    private func readPermissionFields(from payload: [String: Any]) -> (sessionID: String, requestID: String, toolName: String, input: String)? {
-        guard let sessionID = payload["id"] as? String,
-              let requestID = payload["requestId"] as? String,
-              let toolName = payload["toolName"] as? String,
-              let input = payload["input"] as? String else {
-            return nil
+    private func extractActivityPayload(from update: UpdateEnvelope) -> (id: String, active: Bool?, activeAt: Int64?, thinking: Bool?)? {
+        // Root-level activity messages.
+        if update.type == "activity" || update.t == "activity" {
+            let id = update.id ?? update.sid
+            guard let id, !id.isEmpty else { return nil }
+            return (id: id, active: update.active, activeAt: update.activeAt, thinking: update.thinking)
         }
-        return (sessionID: sessionID, requestID: requestID, toolName: toolName, input: input)
-    }
+        if update.type == "session-alive" || update.t == "session-alive" {
+            let id = update.id ?? update.sid
+            guard let id, !id.isEmpty else { return nil }
+            let activeAt = update.activeAt ?? update.time
+            return (id: id, active: true, activeAt: activeAt, thinking: nil)
+        }
 
-    private func extractActivityPayload(from decoded: [String: Any]) -> (id: String, active: Bool?, activeAt: Int64?, thinking: Bool?)? {
-        if let type = decoded["type"] as? String, type == "activity" {
-            return readActivityFields(from: decoded)
+        guard let body = update.body else { return nil }
+        let bodyType = body.t ?? body.type
+        guard let bodyType else { return nil }
+
+        if bodyType == "activity" {
+            let id = body.id ?? body.sid
+            guard let id, !id.isEmpty else { return nil }
+            return (id: id, active: body.active, activeAt: body.activeAt, thinking: body.thinking)
         }
-        if let type = decoded["type"] as? String, type == "session-alive" {
-            return readSessionAliveFields(from: decoded)
+
+        if bodyType == "session-alive" {
+            let id = body.id ?? body.sid
+            guard let id, !id.isEmpty else { return nil }
+            // Session alive implies the session is active.
+            let activeAt = body.activeAt ?? body.time
+            return (id: id, active: true, activeAt: activeAt, thinking: nil)
         }
-        if let body = decoded["body"] as? [String: Any],
-           let type = body["t"] as? String {
-            if type == "activity" {
-                return readActivityFields(from: body)
-            }
-            if type == "session-alive" {
-                return readSessionAliveFields(from: body)
-            }
-        }
-        if let type = decoded["t"] as? String, type == "activity" {
-            return readActivityFields(from: decoded)
-        }
-        if let type = decoded["t"] as? String, type == "session-alive" {
-            return readSessionAliveFields(from: decoded)
-        }
+
         return nil
-    }
-
-    private func readActivityFields(from payload: [String: Any]) -> (id: String, active: Bool?, activeAt: Int64?, thinking: Bool?)? {
-        let id = payload["id"] as? String ?? payload["sid"] as? String
-        guard let id else {
-            return nil
-        }
-        let active = payload["active"] as? Bool
-        let activeAt = payload["activeAt"] as? Int64 ?? (payload["activeAt"] as? NSNumber)?.int64Value
-        let thinking = payload["thinking"] as? Bool
-        return (id: id, active: active, activeAt: activeAt, thinking: thinking)
-    }
-
-    private func readSessionAliveFields(from payload: [String: Any]) -> (id: String, active: Bool?, activeAt: Int64?, thinking: Bool?)? {
-        let id = payload["id"] as? String ?? payload["sid"] as? String
-        guard let id else {
-            return nil
-        }
-        // Session alive implies the session is active.
-        let activeAt =
-            payload["activeAt"] as? Int64
-            ?? (payload["activeAt"] as? NSNumber)?.int64Value
-            ?? payload["time"] as? Int64
-            ?? (payload["time"] as? NSNumber)?.int64Value
-        return (id: id, active: true, activeAt: activeAt, thinking: nil)
     }
 
     private func log(_ message: String) {
@@ -1213,9 +1267,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func parseSessions(_ json: String) {
-        guard let data = json.data(using: .utf8) else {
-            return
-        }
         struct SessionsResponse: Decodable {
             struct Session: Decodable {
                 let id: String
@@ -1228,111 +1279,124 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             }
             let sessions: [Session]
         }
-        if let decoded = try? JSONDecoder().decode(SessionsResponse.self, from: data) {
-            DispatchQueue.main.async { [self] in
-                // Decode UI state from the SDK-enriched JSON response.
-                let rawRoot = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
-                let uiByID: [String: SessionUIState] = {
-                    guard let rawSessions = rawRoot["sessions"] as? [[String: Any]] else { return [:] }
-                    var out: [String: SessionUIState] = [:]
-                    out.reserveCapacity(rawSessions.count)
-                    for raw in rawSessions {
-                        guard let id = raw["id"] as? String else { continue }
-                        if let ui = SessionUIState.fromJSONDict(raw["ui"] as? [String: Any]) {
-                            out[id] = ui
-                        }
-                    }
-                    return out
-                }()
+        struct SessionsUIResponse: Decodable {
+            struct Session: Decodable {
+                let id: String
+                let ui: JSONValue?
+            }
+            let sessions: [Session]
+        }
 
-                let parsedSessions: [SessionSummary] = decoded.sessions.map {
-                    let metadata = SessionMetadata.fromJSON($0.metadata)
-                    let agentState = SessionAgentState.fromJSON($0.agentState)
-                    let uiState = uiByID[$0.id]
-                    let title = metadata?.agent
-                        ?? metadata?.summaryText
-                        ?? $0.machineId
-                    return SessionSummary(
-                        id: $0.id,
-                        updatedAt: $0.updatedAt,
-                        active: $0.active,
-                        activeAt: $0.activeAt,
-                        title: title,
-                        subtitle: metadata?.host
-                            ?? $0.machineId,
-                        metadata: metadata,
-                        agentState: agentState,
-                        uiState: uiState,
-                        thinking: false
-                    )
+        guard let decoded = try? JSONCoding.decode(SessionsResponse.self, from: json) else {
+            return
+        }
+        // Decode UI state from the SDK-enriched JSON response.
+        let uiByID: [String: SessionUIState] = {
+            guard let uiDecoded = try? JSONCoding.decode(SessionsUIResponse.self, from: json) else { return [:] }
+            var out: [String: SessionUIState] = [:]
+            out.reserveCapacity(uiDecoded.sessions.count)
+            for raw in uiDecoded.sessions {
+                guard let uiValue = raw.ui,
+                      let uiDict = uiValue.toAny() as? [String: Any],
+                      let uiState = SessionUIState.fromJSONDict(uiDict) else {
+                    continue
                 }
-                self.sessions = parsedSessions
+                out[raw.id] = uiState
+            }
+            return out
+        }()
 
-                // Hydrate pending permission prompts from durable agent state.
-                let now = Int64(Date().timeIntervalSince1970 * 1000)
-                for session in parsedSessions {
-                    // Only hydrate/show permission prompts when the phone is actively
-                    // controlling the session (remote mode). For offline/disconnected
-                    // sessions, we keep the UI quiet and require the user to take control
-                    // again once the CLI is online.
-                    guard session.uiState?.state == "remote" else {
-                        self.permissionQueue.removeAll(where: { $0.sessionID == session.id })
+        DispatchQueue.main.async { [self] in
+            let parsedSessions: [SessionSummary] = decoded.sessions.map { session in
+                let metadata = SessionMetadata.fromJSON(session.metadata)
+                let agentState = SessionAgentState.fromJSON(session.agentState)
+                let uiState = uiByID[session.id]
+                let title = metadata?.agent
+                    ?? metadata?.summaryText
+                    ?? session.machineId
+                return SessionSummary(
+                    id: session.id,
+                    updatedAt: session.updatedAt,
+                    active: session.active,
+                    activeAt: session.activeAt,
+                    title: title,
+                    subtitle: metadata?.host
+                        ?? session.machineId,
+                    metadata: metadata,
+                    agentState: agentState,
+                    uiState: uiState,
+                    thinking: false
+                )
+            }
+            self.sessions = parsedSessions
+
+            // Hydrate pending permission prompts from durable agent state.
+            let now = Int64(Date().timeIntervalSince1970 * 1000)
+            for session in parsedSessions {
+                // Only hydrate/show permission prompts when the phone is actively
+                // controlling the session (remote mode). For offline/disconnected
+                // sessions, we keep the UI quiet and require the user to take control
+                // again once the CLI is online.
+                guard session.uiState?.state == "remote" else {
+                    self.permissionQueue.removeAll(where: { $0.sessionID == session.id })
+                    continue
+                }
+                for (requestID, req) in session.agentState?.requests ?? [:] {
+                    if self.permissionQueue.contains(where: { $0.requestID == requestID }) {
                         continue
                     }
-                    for (requestID, req) in session.agentState?.requests ?? [:] {
-                        if self.permissionQueue.contains(where: { $0.requestID == requestID }) {
-                            continue
-                        }
-                        self.permissionQueue.append(
-                            PendingPermissionRequest(
-                                sessionID: session.id,
-                                requestID: requestID,
-                                toolName: req.toolName,
-                                input: req.input,
-                                receivedAt: req.createdAt ?? now
-                            )
+                    self.permissionQueue.append(
+                        PendingPermissionRequest(
+                            sessionID: session.id,
+                            requestID: requestID,
+                            toolName: req.toolName,
+                            input: req.input,
+                            receivedAt: req.createdAt ?? now
                         )
-                    }
+                    )
                 }
+            }
 
-                if self.activePermissionRequest == nil, let next = self.permissionQueue.first {
-                    self.activePermissionRequest = next
-                    self.showPermissionPrompt = true
-                }
-                if let current = self.sessions.first(where: { $0.id == self.sessionID }) {
-                    self.selectedMetadata = current.metadata
-                }
+            if self.activePermissionRequest == nil, let next = self.permissionQueue.first {
+                self.activePermissionRequest = next
+                self.showPermissionPrompt = true
+            }
+            if let current = self.sessions.first(where: { $0.id == self.sessionID }) {
+                self.selectedMetadata = current.metadata
             }
         }
     }
 
     func parseMachines(_ json: String) {
-        guard let data = json.data(using: .utf8) else {
-            return
+        struct MachinePayload: Decodable {
+            let id: String?
+            let metadata: String?
+            let daemonState: String?
+            let daemonStateVersion: Int64?
+            let active: Bool?
+            let activeAt: Int64?
         }
-        let parsed: Any
-        do {
-            parsed = try JSONSerialization.jsonObject(with: data, options: [])
-        } catch {
-            log("Parse machines error: \(error)")
-            return
+        struct MachinesResponse: Decodable {
+            let machines: [MachinePayload]
         }
-        let items: [Any]
-        if let array = parsed as? [Any] {
-            items = array
-        } else if let dict = parsed as? [String: Any], let dataArray = dict["machines"] as? [Any] {
-            items = dataArray
+
+        let payloads: [MachinePayload]
+        if let decoded = try? JSONCoding.decode([MachinePayload].self, from: json) {
+            payloads = decoded
+        } else if let decoded = try? JSONCoding.decode(MachinesResponse.self, from: json) {
+            payloads = decoded.machines
         } else {
-            items = []
+            log("Parse machines error: invalid JSON payload")
+            return
         }
-        let machines: [MachineInfo] = items.compactMap { item in
-            guard let dict = item as? [String: Any] else { return nil }
-            let id = dict["id"] as? String ?? UUID().uuidString
-            let metadata = MachineMetadata.fromJSON(dict["metadata"] as? String)
-            let daemonState = DaemonState.fromJSON(dict["daemonState"] as? String)
-            let daemonStateVersion = dict["daemonStateVersion"] as? Int64 ?? (dict["daemonStateVersion"] as? NSNumber)?.int64Value ?? 0
-            let active = dict["active"] as? Bool ?? false
-            let activeAt = dict["activeAt"] as? Int64 ?? (dict["activeAt"] as? NSNumber)?.int64Value
+
+        let machines: [MachineInfo] = payloads.map { item in
+            let id = item.id ?? UUID().uuidString
+            let metadata = MachineMetadata.fromJSON(item.metadata)
+            let daemonState = DaemonState.fromJSON(item.daemonState)
+            let daemonStateVersion = item.daemonStateVersion ?? 0
+            let active = item.active ?? false
+            let activeAt = item.activeAt
             return MachineInfo(
                 id: id,
                 metadata: metadata,
@@ -1584,14 +1648,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     private func decodeMessagesPage(_ json: String) -> MessagesPage {
-        guard let data = json.data(using: .utf8) else {
-            return MessagesPage(messages: [], hasMore: false, nextBeforeSeq: nil)
-        }
-        let parsed: Any
-        do {
-            parsed = try JSONSerialization.jsonObject(with: data, options: [])
-        } catch {
-            log("Parse messages error: \(error)")
+        guard let parsed = decodeJSONAny(json) else {
+            log("Parse messages error: invalid JSON payload")
             return MessagesPage(messages: [], hasMore: false, nextBeforeSeq: nil)
         }
 
@@ -1716,25 +1774,15 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     private func extractUpdateSessionID(from json: String) -> String? {
-        guard let data = json.data(using: .utf8),
-              let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-        if let body = decoded["body"] as? [String: Any],
-           let sid = body["sid"] as? String,
-           !sid.isEmpty {
-            return sid
-        }
-        if let body = decoded["body"] as? [String: Any],
-           let message = body["message"] as? [String: Any],
-           let sessionID = message["sessionId"] as? String {
+        guard let update = decodeUpdateEnvelope(json) else { return nil }
+        if let sid = update.body?.sid, !sid.isEmpty { return sid }
+        if let sid = update.sid, !sid.isEmpty { return sid }
+        if let messageValue = update.body?.message, let message = messageValue.toAny() as? [String: Any],
+           let sessionID = message["sessionId"] as? String, !sessionID.isEmpty {
             return sessionID
         }
-        if let sid = decoded["sid"] as? String, !sid.isEmpty {
-            return sid
-        }
-        if let message = decoded["message"] as? [String: Any],
-           let sessionID = message["sessionId"] as? String {
+        if let messageValue = update.message, let message = messageValue.toAny() as? [String: Any],
+           let sessionID = message["sessionId"] as? String, !sessionID.isEmpty {
             return sessionID
         }
         return nil
@@ -1748,12 +1796,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         guard let targetSessionID, !targetSessionID.isEmpty else {
             return
         }
-        guard let data = json.data(using: .utf8),
-              let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return
-        }
-        guard let body = decoded["body"] as? [String: Any],
-              let message = body["message"] as? [String: Any] else {
+        guard let update = decodeUpdateEnvelope(json),
+              let messageValue = update.body?.message,
+              let message = messageValue.toAny() as? [String: Any] else {
             return
         }
         let content = normalizeContent(firstNonNull(message["content"], message["data"]))
@@ -2065,10 +2110,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         guard trimmed.first == "{" || trimmed.first == "[" else {
             return nil
         }
-        guard let data = trimmed.data(using: .utf8) else {
+        guard let value = try? JSONCoding.decode(JSONValue.self, from: trimmed) else {
             return nil
         }
-        return try? JSONSerialization.jsonObject(with: data, options: [])
+        return value.toAny()
     }
 
     private func isProbablyBase64(_ value: String) -> Bool {
@@ -2095,12 +2140,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     private func describeContent(_ content: Any?) -> String {
         if let content {
-            if let jsonData = try? JSONSerialization.data(withJSONObject: content, options: []),
-               let jsonString = String(data: jsonData, encoding: .utf8) {
-                return truncate(jsonString)
-            }
             if let text = content as? String {
                 return truncate(text)
+            }
+            if let value = content as? JSONValue, let json = try? JSONCoding.encode(value) {
+                return truncate(json)
             }
             return truncate(String(describing: content))
         }
