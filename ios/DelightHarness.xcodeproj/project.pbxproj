@@ -13,6 +13,7 @@
 				C3FE8F34FE09490ABD2F1C69 /* ContentSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 047687D0D1204AF3921160A5 /* ContentSheets.swift */; };
 				7CF91A1E8C5E4F128C0B77D6 /* MessageRendering.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54C7D18DBB244B6B9A0EA66E /* MessageRendering.swift */; };
 				E9E0F2A1BAA849A9A76A0C2B /* TerminalUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D3CBACD9E4F4A7C9E9A9F33 /* TerminalUI.swift */; };
+				30C677B406304F89BBA370D9 /* JSONCoding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A8B3A1F1BA44D15A4C89327 /* JSONCoding.swift */; };
 				A1B2C3D4E5F60718293A4B73 /* DelightSDK.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6E /* DelightSDK.xcframework */; };
 				A1B2C3D4E5F60718293A4B74 /* DelightSDK.xcframework in CopyFiles */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6E /* DelightSDK.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 				A1B2C3D4E5F60718293A4B82 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B81 /* QRScannerView.swift */; };
@@ -21,6 +22,7 @@
 				A1B2C3D4E5F60718293A4B94 /* TerminalMessagesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B93 /* TerminalMessagesView.swift */; };
 				B1C2D3E4F5A60718293B4C10 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A60718293B4C0F /* KeychainStore.swift */; };
 				C1D2E3F4A5B60718293C4D63 /* SDKBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1D2E3F4A5B60718293C4D62 /* SDKBridgeTests.swift */; };
+				8A3ACB21607749A0A1D4C06F /* JSONCodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B8C03DCA2C64CF0A61B8D02 /* JSONCodingTests.swift */; };
 				C1D2E3F4A5B60718293C4D6B /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C1D2E3F4A5B60718293C4D6A /* XCTest.framework */; };
 		/* End PBXBuildFile section */
 
@@ -56,6 +58,7 @@
 				047687D0D1204AF3921160A5 /* ContentSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentSheets.swift; sourceTree = "<group>"; };
 				54C7D18DBB244B6B9A0EA66E /* MessageRendering.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageRendering.swift; sourceTree = "<group>"; };
 				2D3CBACD9E4F4A7C9E9A9F33 /* TerminalUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalUI.swift; sourceTree = "<group>"; };
+				1A8B3A1F1BA44D15A4C89327 /* JSONCoding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONCoding.swift; sourceTree = "<group>"; };
 				A1B2C3D4E5F60718293A4B6E /* DelightSDK.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = DelightSDK.xcframework; path = ../cli/build/DelightSDK.xcframework; sourceTree = "<group>"; };
 				A1B2C3D4E5F60718293A4B6F /* DelightHarness.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = DelightHarness.app; sourceTree = BUILT_PRODUCTS_DIR; };
 				A1B2C3D4E5F60718293A4B81 /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
@@ -65,6 +68,7 @@
 			C1D2E3F4A5B60718293C4D5F /* DelightHarnessTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = DelightHarnessTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 			C1D2E3F4A5B60718293C4D61 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 			C1D2E3F4A5B60718293C4D62 /* SDKBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SDKBridgeTests.swift; sourceTree = "<group>"; };
+			3B8C03DCA2C64CF0A61B8D02 /* JSONCodingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONCodingTests.swift; sourceTree = "<group>"; };
 			C1D2E3F4A5B60718293C4D6A /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
 	/* End PBXFileReference section */
 
@@ -116,6 +120,7 @@
 						A1B2C3D4E5F60718293A4B93 /* TerminalMessagesView.swift */,
 						54C7D18DBB244B6B9A0EA66E /* MessageRendering.swift */,
 						2D3CBACD9E4F4A7C9E9A9F33 /* TerminalUI.swift */,
+						1A8B3A1F1BA44D15A4C89327 /* JSONCoding.swift */,
 						A1B2C3D4E5F60718293A4B6D /* SDKBridge.swift */,
 						64924F32D0C743FD8F15207C /* BridgeModels.swift */,
 						047687D0D1204AF3921160A5 /* ContentSheets.swift */,
@@ -131,6 +136,7 @@
 			isa = PBXGroup;
 			children = (
 				C1D2E3F4A5B60718293C4D62 /* SDKBridgeTests.swift */,
+				3B8C03DCA2C64CF0A61B8D02 /* JSONCodingTests.swift */,
 				C1D2E3F4A5B60718293C4D61 /* Info.plist */,
 			);
 			path = DelightHarnessTests;
@@ -259,6 +265,7 @@
 					C3FE8F34FE09490ABD2F1C69 /* ContentSheets.swift in Sources */,
 					7CF91A1E8C5E4F128C0B77D6 /* MessageRendering.swift in Sources */,
 					E9E0F2A1BAA849A9A76A0C2B /* TerminalUI.swift in Sources */,
+					30C677B406304F89BBA370D9 /* JSONCoding.swift in Sources */,
 					A1B2C3D4E5F60718293A4B92 /* CrashLogger.swift in Sources */,
 					B1C2D3E4F5A60718293B4C10 /* KeychainStore.swift in Sources */,
 					A1B2C3D4E5F60718293A4B82 /* QRScannerView.swift in Sources */,
@@ -270,6 +277,7 @@
 		buildActionMask = 2147483647;
 		files = (
 			C1D2E3F4A5B60718293C4D63 /* SDKBridgeTests.swift in Sources */,
+			8A3ACB21607749A0A1D4C06F /* JSONCodingTests.swift in Sources */,
 		);
 		runOnlyForDeploymentPostprocessing = 0;
 	};
