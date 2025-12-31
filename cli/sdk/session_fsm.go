@@ -1,0 +1,127 @@
+package sdk
+
+import (
+	"encoding/json"
+	"time"
+)
+
+const (
+	// sessionFSMStaleAfter defines how long cached session FSM snapshots remain
+	// valid before the SDK refreshes them via ListSessions.
+	sessionFSMStaleAfter = 2 * time.Second
+
+	// sessionSwitchingTTL defines the maximum time the UI should display a
+	// "switching" state before expiring it (to avoid stuck spinners).
+	sessionSwitchingTTL = 15 * time.Second
+)
+
+// sessionFSMState is the SDK-owned, derived per-session control state.
+//
+// It is computed from:
+// - connectivity (socket connected)
+// - session activity (CLI online)
+// - agentState.controlledByUser (desktop vs phone control)
+//
+// UI layers should treat this as the source of truth.
+type sessionFSMState struct {
+	state            string
+	active           bool
+	controlledByUser bool
+	connected        bool
+	switching        bool
+	transition       string
+	switchingAt      int64
+	uiJSON           string
+	updatedAt        int64
+	fetchedAt        int64
+}
+
+// controlledByUserFromAgentStateJSON extracts controlledByUser from the
+// plaintext agentState JSON string.
+func controlledByUserFromAgentStateJSON(agentState string) (value bool, ok bool) {
+	if agentState == "" {
+		return true, false
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(agentState), &decoded); err != nil {
+		return true, false
+	}
+	if v, ok := decoded["controlledByUser"].(bool); ok {
+		return v, true
+	}
+	return true, false
+}
+
+// computeSessionFSM derives a stable UI state string from connectivity and
+// control ownership.
+func computeSessionFSM(connected bool, active bool, controlledByUser bool) sessionFSMState {
+	switch {
+	case !connected:
+		return sessionFSMState{state: "disconnected", connected: false, active: active, controlledByUser: controlledByUser}
+	case !active:
+		return sessionFSMState{state: "offline", connected: true, active: false, controlledByUser: controlledByUser}
+	case controlledByUser:
+		return sessionFSMState{state: "local", connected: true, active: true, controlledByUser: true}
+	default:
+		return sessionFSMState{state: "remote", connected: true, active: true, controlledByUser: false}
+	}
+}
+
+// deriveSessionUI computes the SDK-derived session FSM snapshot and a JSON-ish
+// UI map for clients.
+//
+// The returned ui map is intentionally view-friendly and avoids requiring UIs
+// to re-implement control logic.
+func deriveSessionUI(
+	now int64,
+	connected bool,
+	active bool,
+	agentState string,
+	cached *sessionFSMState,
+) (sessionFSMState, map[string]any) {
+	controlledByUser, ok := controlledByUserFromAgentStateJSON(agentState)
+	if !ok && cached != nil {
+		controlledByUser = cached.controlledByUser
+	}
+
+	fsm := computeSessionFSM(connected, active, controlledByUser)
+	fsm.fetchedAt = now
+	if cached != nil {
+		fsm.updatedAt = cached.updatedAt
+		fsm.switching = cached.switching
+		fsm.transition = cached.transition
+		fsm.switchingAt = cached.switchingAt
+	}
+
+	uiState := fsm.state
+
+	// Transition UX: keep a stable ui.state value (local/remote/offline/etc) and
+	// expose switching/transition flags orthogonally. This makes UI layers pure
+	// views: they can show spinners/disable actions without re-implementing the
+	// control FSM.
+	switching := false
+	transition := ""
+	if cached != nil && cached.switching {
+		switchingAt := time.UnixMilli(cached.switchingAt)
+		if cached.switchingAt <= 0 || time.UnixMilli(now).Sub(switchingAt) <= sessionSwitchingTTL {
+			switching = true
+			transition = cached.transition
+			if cached.state != "" {
+				uiState = cached.state
+			}
+		}
+	}
+
+	ui := map[string]any{
+		"state":            uiState, // disconnected|offline|local|remote
+		"connected":        fsm.connected,
+		"active":           fsm.active,
+		"controlledByUser": fsm.controlledByUser,
+		"switching":        switching,
+		"transition":       transition,
+		"canTakeControl":   !switching && uiState == "local",
+		"canSend":          !switching && uiState == "remote",
+	}
+
+	return fsm, ui
+}

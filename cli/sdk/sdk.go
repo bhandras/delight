@@ -2,8 +2,6 @@ package sdk
 
 import (
 	"bytes"
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -12,7 +10,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bhandras/delight/cli/internal/crypto"
@@ -20,405 +17,35 @@ import (
 	"github.com/bhandras/delight/protocol/wire"
 )
 
-// Listener receives SDK events. Methods must be safe to call from any goroutine.
-type Listener interface {
-	OnConnected()
-	OnDisconnected(reason string)
-	OnUpdate(sessionID string, updateJSON string)
-	OnError(message string)
-}
+const (
+	// userSocketConnectTimeout is the maximum time we wait for the user-scoped
+	// Socket.IO connection to be established.
+	userSocketConnectTimeout = 10 * time.Second
 
-// Client is a minimal mobile SDK client suitable for gomobile.
-type Client struct {
-	serverURL string
-	token     string
-	debug     bool
+	// rpcAckTimeout is the maximum time we wait for a Socket.IO RPC ACK.
+	rpcAckTimeout = 10 * time.Second
 
-	mu                   sync.Mutex
-	masterSecret         []byte
-	dataKeys             map[string][]byte
-	sessionFSM           map[string]sessionFSMState
-	lastSessionHydrateAt int64
-	listener             Listener
-	userSocket           *websocket.Client
-	httpClient           *http.Client
-	logServer            *http.Server
-	logServerURL         string
+	// sessionKeyHydrateMinInterval is a throttle window that prevents repeated
+	// ListSessions calls from hot update streams.
+	sessionKeyHydrateMinInterval = 2 * time.Second
 
-	dispatch  *dispatcher
-	callbacks *dispatcher
-}
+	// httpSuccessMin and httpSuccessMaxExclusive define the inclusive/exclusive
+	// range for successful HTTP status codes.
+	httpSuccessMin          = 200
+	httpSuccessMaxExclusive = 300
 
-// NewClient creates a new SDK client.
-func NewClient(serverURL string) *Client {
-	return &Client{
-		serverURL:  serverURL,
-		dataKeys:   make(map[string][]byte),
-		sessionFSM: make(map[string]sessionFSMState),
-		httpClient: &http.Client{Timeout: 15 * time.Second},
-		dispatch:   newDispatcher(256),
-		callbacks:  newDispatcher(256),
-	}
-}
+	// encryptedPayloadFormatV0 is the version byte used for the current AES-GCM
+	// message envelope format.
+	encryptedPayloadFormatV0 = 0
 
-type sessionFSMState struct {
-	state            string
-	active           bool
-	controlledByUser bool
-	connected        bool
-	switching        bool
-	transition       string
-	switchingAt      int64
-	uiJSON           string
-	updatedAt        int64
-	fetchedAt        int64
-}
+	// AES-GCM wire framing constants: [version(1)][nonce(12)][ciphertext+tag].
+	aesGCMVersionBytes = 1
+	aesGCMNonceBytes   = 12
+	aesGCMTagBytes     = 16
 
-func controlledByUserFromAgentStateJSON(agentState string) (value bool, ok bool) {
-	if agentState == "" {
-		return true, false
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(agentState), &decoded); err != nil {
-		return true, false
-	}
-	if v, ok := decoded["controlledByUser"].(bool); ok {
-		return v, true
-	}
-	return true, false
-}
-
-func computeSessionFSM(connected bool, active bool, controlledByUser bool) sessionFSMState {
-	switch {
-	case !connected:
-		return sessionFSMState{state: "disconnected", connected: false, active: active, controlledByUser: controlledByUser}
-	case !active:
-		return sessionFSMState{state: "offline", connected: true, active: false, controlledByUser: controlledByUser}
-	case controlledByUser:
-		return sessionFSMState{state: "local", connected: true, active: true, controlledByUser: true}
-	default:
-		return sessionFSMState{state: "remote", connected: true, active: true, controlledByUser: false}
-	}
-}
-
-func deriveSessionUI(
-	now int64,
-	connected bool,
-	active bool,
-	agentState string,
-	cached *sessionFSMState,
-) (sessionFSMState, map[string]any) {
-	controlledByUser, ok := controlledByUserFromAgentStateJSON(agentState)
-	if !ok && cached != nil {
-		controlledByUser = cached.controlledByUser
-	}
-
-	fsm := computeSessionFSM(connected, active, controlledByUser)
-	fsm.fetchedAt = now
-	if cached != nil {
-		fsm.updatedAt = cached.updatedAt
-		fsm.switching = cached.switching
-		fsm.transition = cached.transition
-		fsm.switchingAt = cached.switchingAt
-	}
-
-	uiState := fsm.state
-
-	// Transition UX: keep a simple stable UI state (local/remote/etc) and expose
-	// switching/transition flags orthogonally, so clients can show spinners and
-	// disable actions without implementing control logic themselves.
-	//
-	// If switching is set (by a switch RPC in-flight), keep the visible state at
-	// the previous value and disable send/take-control until the switch
-	// completes.
-	switching := false
-	transition := ""
-	if cached != nil && cached.switching {
-		const switchTTLms = int64(15_000)
-		if cached.switchingAt <= 0 || now-cached.switchingAt <= switchTTLms {
-			switching = true
-			transition = cached.transition
-			if cached.state != "" {
-				uiState = cached.state
-			}
-		}
-	}
-
-	ui := map[string]any{
-		"state":            uiState, // disconnected|offline|local|remote
-		"connected":        fsm.connected,
-		"active":           fsm.active,
-		"controlledByUser": fsm.controlledByUser,
-		"switching":        switching,
-		"transition":       transition,
-		"canTakeControl":   !switching && uiState == "local",
-		"canSend":          !switching && uiState == "remote",
-	}
-
-	return fsm, ui
-}
-
-func sessionUIJSON(ui map[string]any) string {
-	if ui == nil {
-		return ""
-	}
-	encoded, err := json.Marshal(ui)
-	if err != nil {
-		return ""
-	}
-	return string(encoded)
-}
-
-func buildSessionUIUpdate(nowMs int64, sessionID string, ui map[string]any) map[string]any {
-	return map[string]any{
-		"createdAt": nowMs,
-		"body": map[string]any{
-			"t":   "session-ui",
-			"sid": sessionID,
-			"ui":  ui,
-		},
-	}
-}
-
-func (c *Client) refreshSessionsForFSM() error {
-	_, err := c.listSessions()
-	return err
-}
-
-func (c *Client) ensureSessionFSM(sessionID string) (sessionFSMState, bool, error) {
-	now := time.Now().UnixMilli()
-
-	c.mu.Lock()
-	state, ok := c.sessionFSM[sessionID]
-	c.mu.Unlock()
-
-	// If we've never seen this session (or we haven't refreshed recently), pull sessions
-	// once. This makes control and send gating deterministic even when the caller hasn't
-	// polled recently.
-	const staleAfterMs = 2_000
-	if !ok || state.fetchedAt == 0 || now-state.fetchedAt > staleAfterMs {
-		if err := c.refreshSessionsForFSM(); err != nil {
-			return sessionFSMState{}, false, err
-		}
-		c.mu.Lock()
-		state, ok = c.sessionFSM[sessionID]
-		c.mu.Unlock()
-	}
-	return state, ok, nil
-}
-
-// SetServerURL updates the server base URL.
-func (c *Client) SetServerURL(serverURL string) {
-	_, _ = c.dispatch.call(func() (interface{}, error) {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.serverURL = serverURL
-		return nil, nil
-	})
-}
-
-func generateMasterKeyBase64() (string, error) {
-	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
-		return "", fmt.Errorf("generate master key: %w", err)
-	}
-	return base64.StdEncoding.EncodeToString(secret), nil
-}
-
-// GenerateMasterKeyBase64Buffer returns a gomobile-safe Buffer containing a new
-// 32-byte master key (base64).
-func GenerateMasterKeyBase64Buffer() (*Buffer, error) {
-	key, err := generateMasterKeyBase64()
-	if err != nil {
-		return nil, err
-	}
-	return newBufferFromString(key), nil
-}
-
-func generateEd25519KeyPairBase64() (publicKeyB64 string, privateKeyB64 string, err error) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return "", "", fmt.Errorf("generate ed25519 keypair: %w", err)
-	}
-	return base64.StdEncoding.EncodeToString(pub), base64.StdEncoding.EncodeToString(priv), nil
-}
-
-// GenerateEd25519KeyPairBuffers returns a new keypair as base64 Buffers
-// (gomobile-safe).
-func GenerateEd25519KeyPairBuffers() (*KeyPairBuffers, error) {
-	pub, priv, err := generateEd25519KeyPairBase64()
-	if err != nil {
-		return nil, err
-	}
-	return newKeyPairBuffers(pub, priv), nil
-}
-
-// SetListener registers the listener for SDK events.
-func (c *Client) SetListener(listener Listener) {
-	_, _ = c.dispatch.call(func() (interface{}, error) {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.listener = listener
-		return nil, nil
-	})
-}
-
-// AuthWithKeyPairBuffer is a gomobile-safe wrapper that returns the token in a
-// Buffer.
-func (c *Client) AuthWithKeyPairBuffer(publicKeyB64, privateKeyB64 string) (*Buffer, error) {
-	token, err := c.authWithKeyPairDispatch(publicKeyB64, privateKeyB64)
-	if err != nil {
-		return nil, err
-	}
-	return newBufferFromString(token), nil
-}
-
-func (c *Client) authWithKeyPairDispatch(publicKeyB64, privateKeyB64 string) (string, error) {
-	value, err := c.dispatch.call(func() (interface{}, error) {
-		return c.authWithKeyPair(publicKeyB64, privateKeyB64)
-	})
-	if err != nil {
-		return "", err
-	}
-	if value == nil {
-		return "", nil
-	}
-	token, _ := value.(string)
-	return token, nil
-}
-
-func (c *Client) authWithKeyPair(publicKeyB64, privateKeyB64 string) (string, error) {
-	defer func() {
-		if r := recover(); r != nil {
-			logPanic("AuthWithKeyPair", r)
-		}
-	}()
-	priv, err := base64.StdEncoding.DecodeString(privateKeyB64)
-	if err != nil {
-		return "", fmt.Errorf("decode private key: %w", err)
-	}
-	if len(priv) != ed25519.PrivateKeySize {
-		return "", fmt.Errorf("invalid private key length")
-	}
-
-	challenge := []byte("delight-auth-challenge")
-	signature := ed25519.Sign(ed25519.PrivateKey(priv), challenge)
-
-	reqBody := map[string]string{
-		"publicKey": publicKeyB64,
-		"challenge": base64.StdEncoding.EncodeToString(challenge),
-		"signature": base64.StdEncoding.EncodeToString(signature),
-	}
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("marshal auth request: %w", err)
-	}
-
-	respBody, err := c.doRequest("POST", "/v1/auth", body)
-	if err != nil {
-		return "", err
-	}
-
-	var resp struct {
-		Success bool   `json:"success"`
-		Token   string `json:"token"`
-	}
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return "", fmt.Errorf("parse auth response: %w", err)
-	}
-	if !resp.Success || resp.Token == "" {
-		return "", fmt.Errorf("auth failed")
-	}
-	c.setToken(resp.Token)
-	return resp.Token, nil
-}
-
-func parseTerminalURL(qrURL string) (string, error) {
-	defer func() {
-		if r := recover(); r != nil {
-			logPanic("ParseTerminalURL", r)
-		}
-	}()
-	parsed, err := url.Parse(qrURL)
-	if err != nil {
-		return "", fmt.Errorf("parse url: %w", err)
-	}
-	if parsed.Scheme != "delight" && parsed.Scheme != "happy" {
-		return "", fmt.Errorf("unsupported scheme: %s", parsed.Scheme)
-	}
-	if parsed.Host != "terminal" {
-		return "", fmt.Errorf("unsupported host: %s", parsed.Host)
-	}
-	raw := parsed.RawQuery
-	if raw == "" {
-		return "", fmt.Errorf("missing public key in URL")
-	}
-	pubBytes, err := decodeBase64URL(raw)
-	if err != nil {
-		return "", fmt.Errorf("decode public key: %w", err)
-	}
-	return base64.StdEncoding.EncodeToString(pubBytes), nil
-}
-
-// ParseTerminalURLBuffer is a gomobile-safe wrapper that returns the extracted
-// terminal public key as a Buffer.
-func ParseTerminalURLBuffer(qrURL string) (*Buffer, error) {
-	value, err := parseTerminalURL(qrURL)
-	if err != nil {
-		return nil, err
-	}
-	return newBufferFromString(value), nil
-}
-
-// ApproveTerminalAuth encrypts the master key and posts /v1/auth/response.
-func (c *Client) ApproveTerminalAuth(terminalPublicKeyB64 string, masterKeyB64 string) error {
-	_, err := c.dispatch.call(func() (interface{}, error) {
-		return nil, c.approveTerminalAuth(terminalPublicKeyB64, masterKeyB64)
-	})
-	return err
-}
-
-func (c *Client) approveTerminalAuth(terminalPublicKeyB64 string, masterKeyB64 string) error {
-	defer func() {
-		if r := recover(); r != nil {
-			logPanic("ApproveTerminalAuth", r)
-		}
-	}()
-	terminalPub, err := decodeBase64Any(terminalPublicKeyB64)
-	if err != nil {
-		return fmt.Errorf("decode terminal public key: %w", err)
-	}
-	if len(terminalPub) != 32 {
-		return fmt.Errorf("invalid terminal public key length")
-	}
-	masterKey, err := base64.StdEncoding.DecodeString(masterKeyB64)
-	if err != nil {
-		return fmt.Errorf("decode master key: %w", err)
-	}
-	if len(masterKey) != 32 {
-		return fmt.Errorf("master key must be 32 bytes")
-	}
-
-	var terminalPubKey [32]byte
-	copy(terminalPubKey[:], terminalPub)
-
-	encrypted, err := crypto.EncryptBox(masterKey, &terminalPubKey)
-	if err != nil {
-		return fmt.Errorf("encrypt response: %w", err)
-	}
-
-	reqBody := map[string]string{
-		"publicKey": terminalPublicKeyB64,
-		"response":  base64.StdEncoding.EncodeToString(encrypted),
-	}
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return fmt.Errorf("marshal response: %w", err)
-	}
-
-	_, err = c.doRequest("POST", "/v1/auth/response", body)
-	return err
-}
+	// secretBoxNonceBytes is the nonce size for NaCl SecretBox.
+	secretBoxNonceBytes = 24
+)
 
 // SetDebug enables debug logging for underlying sockets.
 func (c *Client) SetDebug(enabled bool) {
@@ -441,6 +68,7 @@ func (c *Client) SetToken(token string) {
 	})
 }
 
+// setToken updates the auth token without leaving the SDK dispatch queue.
 func (c *Client) setToken(token string) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -460,6 +88,7 @@ func (c *Client) SetLogDirectory(path string) error {
 	return err
 }
 
+// setLogDirectory configures the SDK log directory without leaving the dispatch queue.
 func (c *Client) setLogDirectory(path string) error {
 	defer func() {
 		if r := recover(); r != nil {
@@ -474,6 +103,7 @@ func (c *Client) LogLine(line string) {
 	_ = c.dispatch.do(func() { c.logLine(line) })
 }
 
+// logLine writes a log line without leaving the dispatch queue.
 func (c *Client) logLine(line string) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -483,7 +113,7 @@ func (c *Client) logLine(line string) {
 	logLine(line)
 }
 
-// SetMasterKeyBase64 sets the 32-byte master key from base64.
+// SetMasterKeyBase64 sets the master key from base64.
 func (c *Client) SetMasterKeyBase64(keyB64 string) error {
 	_, err := c.dispatch.call(func() (interface{}, error) {
 		return nil, c.setMasterKeyBase64(keyB64)
@@ -491,6 +121,7 @@ func (c *Client) SetMasterKeyBase64(keyB64 string) error {
 	return err
 }
 
+// setMasterKeyBase64 stores the master key without leaving the dispatch queue.
 func (c *Client) setMasterKeyBase64(keyB64 string) error {
 	defer func() {
 		if r := recover(); r != nil {
@@ -501,8 +132,8 @@ func (c *Client) setMasterKeyBase64(keyB64 string) error {
 	if err != nil {
 		return fmt.Errorf("decode master key: %w", err)
 	}
-	if len(raw) != 32 {
-		return fmt.Errorf("master key must be 32 bytes, got %d", len(raw))
+	if len(raw) != masterKeyBytes {
+		return fmt.Errorf("master key must be %d bytes, got %d", masterKeyBytes, len(raw))
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -510,7 +141,7 @@ func (c *Client) setMasterKeyBase64(keyB64 string) error {
 	return nil
 }
 
-// SetSessionDataKey stores a raw 32-byte data encryption key (base64).
+// SetSessionDataKey stores a raw data encryption key (base64).
 func (c *Client) SetSessionDataKey(sessionID, keyB64 string) error {
 	_, err := c.dispatch.call(func() (interface{}, error) {
 		return nil, c.setSessionDataKey(sessionID, keyB64)
@@ -518,6 +149,7 @@ func (c *Client) SetSessionDataKey(sessionID, keyB64 string) error {
 	return err
 }
 
+// setSessionDataKey stores the session data key without leaving the dispatch queue.
 func (c *Client) setSessionDataKey(sessionID, keyB64 string) error {
 	defer func() {
 		if r := recover(); r != nil {
@@ -528,8 +160,8 @@ func (c *Client) setSessionDataKey(sessionID, keyB64 string) error {
 	if err != nil {
 		return fmt.Errorf("decode data key: %w", err)
 	}
-	if len(raw) != 32 {
-		return fmt.Errorf("data key must be 32 bytes, got %d", len(raw))
+	if len(raw) != masterKeyBytes {
+		return fmt.Errorf("data key must be %d bytes, got %d", masterKeyBytes, len(raw))
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -545,6 +177,8 @@ func (c *Client) SetEncryptedSessionDataKey(sessionID, encryptedB64 string) erro
 	return err
 }
 
+// setEncryptedSessionDataKey decrypts and stores a session data key without
+// leaving the dispatch queue.
 func (c *Client) setEncryptedSessionDataKey(sessionID, encryptedB64 string) error {
 	defer func() {
 		if r := recover(); r != nil {
@@ -562,10 +196,10 @@ func (c *Client) setEncryptedSessionDataKey(sessionID, encryptedB64 string) erro
 	decrypted, err := crypto.DecryptDataEncryptionKey(encryptedB64, master)
 	if err != nil {
 		// Fallback: accept raw base64 data keys (legacy server behavior).
-		raw, decodeErr := base64.StdEncoding.DecodeString(encryptedB64)
-		if decodeErr != nil || len(raw) != 32 {
-			return fmt.Errorf("decrypt data key: %w", err)
-		}
+			raw, decodeErr := base64.StdEncoding.DecodeString(encryptedB64)
+			if decodeErr != nil || len(raw) != masterKeyBytes {
+				return fmt.Errorf("decrypt data key: %w", err)
+			}
 		decrypted = raw
 	}
 	c.mu.Lock()
@@ -582,6 +216,7 @@ func (c *Client) Connect() error {
 	return err
 }
 
+// connect establishes the websocket connection without leaving the dispatch queue.
 func (c *Client) connect() error {
 	defer func() {
 		if r := recover(); r != nil {
@@ -605,7 +240,7 @@ func (c *Client) connect() error {
 		c.emitError(fmt.Sprintf("connect failed: %v", err))
 		return err
 	}
-	if !socket.WaitForConnect(10 * time.Second) {
+	if !socket.WaitForConnect(userSocketConnectTimeout) {
 		err := fmt.Errorf("connect timeout")
 		c.emitError(err.Error())
 		return err
@@ -634,6 +269,7 @@ func (c *Client) Disconnect() {
 	})
 }
 
+// disconnect closes the websocket connection without leaving the dispatch queue.
 func (c *Client) disconnect() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -682,6 +318,7 @@ func (c *Client) CallRPCBuffer(method string, paramsJSON string) (*Buffer, error
 	return newBufferFromString(resp), nil
 }
 
+// callRPCDispatch runs callRPC on the SDK dispatch queue.
 func (c *Client) callRPCDispatch(method string, paramsJSON string) (string, error) {
 	value, err := c.dispatch.call(func() (interface{}, error) {
 		return c.callRPC(method, paramsJSON)
@@ -698,6 +335,7 @@ func (c *Client) callRPCDispatch(method string, paramsJSON string) (string, erro
 	return "{}", nil
 }
 
+// callRPC emits an RPC call over Socket.IO and returns the ACK as JSON.
 func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -770,7 +408,7 @@ func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
 	resp, err := socket.EmitWithAck("rpc-call", wire.RPCCallPayload{
 		Method: method,
 		Params: paramsJSON,
-	}, 10*time.Second)
+	}, rpcAckTimeout)
 	if err != nil {
 		// Clear switching on failure so UI doesn't get stuck.
 		if strings.HasSuffix(method, ":switch") {
@@ -841,23 +479,8 @@ func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
 	return string(encoded), nil
 }
 
-func (c *Client) clearSessionSwitching(sessionID string) {
-	if sessionID == "" {
-		return
-	}
-	c.mu.Lock()
-	prev := c.sessionFSM[sessionID]
-	prev.switching = false
-	prev.transition = ""
-	prev.switchingAt = 0
-	_, ui := deriveSessionUI(time.Now().UnixMilli(), prev.connected, prev.active, "", &prev)
-	prev.uiJSON = sessionUIJSON(ui)
-	c.sessionFSM[sessionID] = prev
-	c.mu.Unlock()
-
-	c.emitUpdate(sessionID, buildSessionUIUpdate(time.Now().UnixMilli(), sessionID, ui))
-}
-
+// sendMessageWithLocalID is the underlying implementation for SendMessage and
+// SendMessageWithLocalID.
 func (c *Client) sendMessageWithLocalID(sessionID string, localID string, rawRecordJSON string) error {
 	defer func() {
 		if r := recover(); r != nil {
@@ -908,6 +531,7 @@ func (c *Client) ListSessionsBuffer() (*Buffer, error) {
 	return newBufferFromString(resp), nil
 }
 
+// listSessionsDispatch runs listSessions on the SDK dispatch queue.
 func (c *Client) listSessionsDispatch() (resp string, err error) {
 	value, err := c.dispatch.call(func() (interface{}, error) {
 		return c.listSessions()
@@ -921,6 +545,7 @@ func (c *Client) listSessionsDispatch() (resp string, err error) {
 	return value.(string), nil
 }
 
+// listSessions fetches the current session list, caches keys, and injects UI state.
 func (c *Client) listSessions() (resp string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1010,6 +635,7 @@ func (c *Client) ListMachinesBuffer() (*Buffer, error) {
 	return newBufferFromString(resp), nil
 }
 
+// listMachinesDispatch runs listMachines on the SDK dispatch queue.
 func (c *Client) listMachinesDispatch() (resp string, err error) {
 	value, err := c.dispatch.call(func() (interface{}, error) {
 		return c.listMachines()
@@ -1023,6 +649,7 @@ func (c *Client) listMachinesDispatch() (resp string, err error) {
 	return value.(string), nil
 }
 
+// listMachines fetches machines and best-effort decrypts legacy fields.
 func (c *Client) listMachines() (resp string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1066,19 +693,20 @@ func (c *Client) listMachines() (resp string, err error) {
 	return string(encoded), nil
 }
 
+// decryptLegacyString decrypts a legacy-encrypted JSON payload using the master key.
 func (c *Client) decryptLegacyString(payload string) (string, error) {
 	c.mu.Lock()
 	secret := make([]byte, len(c.masterSecret))
 	copy(secret, c.masterSecret)
 	c.mu.Unlock()
-	if len(secret) != 32 {
+	if len(secret) != masterKeyBytes {
 		return "", fmt.Errorf("master key not configured")
 	}
 	raw, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {
 		return "", fmt.Errorf("decode payload: %w", err)
 	}
-	var key [32]byte
+	var key [masterKeyBytes]byte
 	copy(key[:], secret)
 	var decoded map[string]interface{}
 	if err := crypto.DecryptLegacy(raw, &key, &decoded); err != nil {
@@ -1112,6 +740,7 @@ func (c *Client) GetSessionMessagesPageBuffer(sessionID string, limit int, befor
 	return newBufferFromString(resp), nil
 }
 
+// getSessionMessagesDispatch runs getSessionMessages on the SDK dispatch queue.
 func (c *Client) getSessionMessagesDispatch(sessionID string, limit int) (resp string, err error) {
 	value, err := c.dispatch.call(func() (interface{}, error) {
 		return c.getSessionMessages(sessionID, limit)
@@ -1125,6 +754,7 @@ func (c *Client) getSessionMessagesDispatch(sessionID string, limit int) (resp s
 	return value.(string), nil
 }
 
+// getSessionMessagesPageDispatch runs getSessionMessagesPage on the SDK dispatch queue.
 func (c *Client) getSessionMessagesPageDispatch(sessionID string, limit int, beforeSeq int64) (resp string, err error) {
 	value, err := c.dispatch.call(func() (interface{}, error) {
 		return c.getSessionMessagesPage(sessionID, limit, beforeSeq)
@@ -1138,10 +768,12 @@ func (c *Client) getSessionMessagesPageDispatch(sessionID string, limit int, bef
 	return value.(string), nil
 }
 
+// getSessionMessages returns the newest page of messages for a session.
 func (c *Client) getSessionMessages(sessionID string, limit int) (resp string, err error) {
 	return c.getSessionMessagesPage(sessionID, limit, 0)
 }
 
+// getSessionMessagesPage returns a paginated slice of messages for a session.
 func (c *Client) getSessionMessagesPage(sessionID string, limit int, beforeSeq int64) (resp string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1205,14 +837,17 @@ func (c *Client) getSessionMessagesPage(sessionID string, limit int, beforeSeq i
 	return string(encoded), nil
 }
 
+// handleEphemeralQueued enqueues a websocket ephemeral event onto the dispatch queue.
 func (c *Client) handleEphemeralQueued(data map[string]interface{}) {
 	_ = c.dispatch.do(func() { c.handleEphemeral(data) })
 }
 
+// handleUpdateQueued enqueues a websocket update event onto the dispatch queue.
 func (c *Client) handleUpdateQueued(data map[string]interface{}) {
 	_ = c.dispatch.do(func() { c.handleUpdate(data) })
 }
 
+// handleEphemeral forwards an ephemeral payload to listeners.
 func (c *Client) handleEphemeral(data map[string]interface{}) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1222,6 +857,7 @@ func (c *Client) handleEphemeral(data map[string]interface{}) {
 	c.emitUpdate("", data)
 }
 
+// handleUpdate decrypts message payloads and maintains derived UI state before emitting.
 func (c *Client) handleUpdate(data map[string]interface{}) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1279,6 +915,7 @@ func (c *Client) handleUpdate(data map[string]interface{}) {
 	c.emitUpdate(sessionID, data)
 }
 
+// applyAgentStateToSessionFSM updates the cached session FSM from agentState.
 func (c *Client) applyAgentStateToSessionFSM(sessionID string, agentState string) {
 	now := time.Now().UnixMilli()
 
@@ -1316,13 +953,14 @@ func (c *Client) applyAgentStateToSessionFSM(sessionID string, agentState string
 	}
 }
 
+// maybeHydrateSessionKeys refreshes the session list to hydrate data keys, but
+// throttles the refresh to avoid spamming the server.
 func (c *Client) maybeHydrateSessionKeys() {
 	now := time.Now().UnixMilli()
-	const minIntervalMs = 2_000
 
 	c.mu.Lock()
 	last := c.lastSessionHydrateAt
-	if last != 0 && now-last < minIntervalMs {
+	if last != 0 && time.Duration(now-last)*time.Millisecond < sessionKeyHydrateMinInterval {
 		c.mu.Unlock()
 		return
 	}
@@ -1334,6 +972,7 @@ func (c *Client) maybeHydrateSessionKeys() {
 	_, _ = c.listSessions()
 }
 
+// emitUpdate sends a server (or synthetic) update payload to the listener.
 func (c *Client) emitUpdate(sessionID string, payload map[string]interface{}) {
 	listener := c.getListener()
 	if listener == nil {
@@ -1347,6 +986,7 @@ func (c *Client) emitUpdate(sessionID string, payload map[string]interface{}) {
 	_ = c.callbacks.do(func() { listener.OnUpdate(sessionID, string(encoded)) })
 }
 
+// emitError sends an error string to the listener.
 func (c *Client) emitError(message string) {
 	listener := c.getListener()
 	if listener != nil {
@@ -1354,12 +994,14 @@ func (c *Client) emitError(message string) {
 	}
 }
 
+// getListener reads the current listener under lock.
 func (c *Client) getListener() Listener {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.listener
 }
 
+// encryptPayload encrypts a raw record JSON string for sending over the wire.
 func (c *Client) encryptPayload(sessionID string, data []byte) (string, error) {
 	c.mu.Lock()
 	dataKey := c.dataKeys[sessionID]
@@ -1369,13 +1011,13 @@ func (c *Client) encryptPayload(sessionID string, data []byte) (string, error) {
 	var encrypted []byte
 	var err error
 
-	if len(dataKey) == 32 {
+	if len(dataKey) == masterKeyBytes {
 		encrypted, err = crypto.EncryptWithDataKey(json.RawMessage(data), dataKey)
 	} else {
-		if len(master) != 32 {
+		if len(master) != masterKeyBytes {
 			return "", fmt.Errorf("master key not set")
 		}
-		var secretKey [32]byte
+		var secretKey [masterKeyBytes]byte
 		copy(secretKey[:], master)
 		encrypted, err = crypto.EncryptLegacy(json.RawMessage(data), &secretKey)
 	}
@@ -1386,6 +1028,7 @@ func (c *Client) encryptPayload(sessionID string, data []byte) (string, error) {
 	return base64.StdEncoding.EncodeToString(encrypted), nil
 }
 
+// decryptEnvelope decrypts a content envelope in-place if it is encrypted.
 func (c *Client) decryptEnvelope(sessionID string, content map[string]interface{}) (map[string]interface{}, error) {
 	if content == nil {
 		return nil, nil
@@ -1411,6 +1054,8 @@ func (c *Client) decryptEnvelope(sessionID string, content map[string]interface{
 	return decoded, nil
 }
 
+// decryptPayload decrypts an encrypted wire payload using the session data key
+// (preferred) and falls back to legacy decrypts using the master key.
 func (c *Client) decryptPayload(sessionID, dataB64 string) ([]byte, error) {
 	encrypted, err := base64.StdEncoding.DecodeString(dataB64)
 	if err != nil {
@@ -1426,11 +1071,11 @@ func (c *Client) decryptPayload(sessionID, dataB64 string) ([]byte, error) {
 	c.mu.Unlock()
 
 	// AES-GCM format has version byte 0 and 12-byte nonce.
-	if encrypted[0] == 0 && len(encrypted) >= 1+12+16 {
+	if encrypted[0] == encryptedPayloadFormatV0 && len(encrypted) >= aesGCMVersionBytes+aesGCMNonceBytes+aesGCMTagBytes {
 		var aesErr error
 		key := dataKey
-		if len(key) != 32 {
-			if len(master) == 32 {
+		if len(key) != masterKeyBytes {
+			if len(master) == masterKeyBytes {
 				key = master
 			} else {
 				return nil, fmt.Errorf("AES-GCM data but no key available")
@@ -1456,13 +1101,15 @@ func (c *Client) decryptPayload(sessionID, dataB64 string) ([]byte, error) {
 	return decryptLegacyPayload(encrypted, dataKey, master)
 }
 
+// decryptLegacyPayload decrypts legacy-encrypted payloads using either the
+// session data key or the master key.
 func decryptLegacyPayload(encrypted, dataKey, master []byte) ([]byte, error) {
 	// Legacy SecretBox format: [nonce(24)][ciphertext]
-	var secretKey [32]byte
+	var secretKey [masterKeyBytes]byte
 	switch {
-	case len(dataKey) == 32:
+	case len(dataKey) == masterKeyBytes:
 		copy(secretKey[:], dataKey)
-	case len(master) == 32:
+	case len(master) == masterKeyBytes:
 		copy(secretKey[:], master)
 	default:
 		return nil, fmt.Errorf("secret key not set")
@@ -1475,6 +1122,7 @@ func decryptLegacyPayload(encrypted, dataKey, master []byte) ([]byte, error) {
 	return []byte(result), nil
 }
 
+// decodeBase64URL decodes base64 in URL-safe variants and tolerates padding.
 func decodeBase64URL(input string) ([]byte, error) {
 	if input == "" {
 		return nil, fmt.Errorf("empty base64url")
@@ -1491,6 +1139,7 @@ func decodeBase64URL(input string) ([]byte, error) {
 	return base64.RawStdEncoding.DecodeString(input)
 }
 
+// decodeBase64Any decodes base64 in either standard or URL-safe variants.
 func decodeBase64Any(input string) ([]byte, error) {
 	if data, err := base64.StdEncoding.DecodeString(input); err == nil {
 		return data, nil
@@ -1504,6 +1153,7 @@ func decodeBase64Any(input string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(input)
 }
 
+// doRequest performs a single HTTP request against the configured server URL.
 func (c *Client) doRequest(method, path string, body []byte) (resp []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1548,7 +1198,7 @@ func (c *Client) doRequest(method, path string, body []byte) (resp []byte, err e
 	if err != nil {
 		return nil, err
 	}
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+	if httpResp.StatusCode < httpSuccessMin || httpResp.StatusCode >= httpSuccessMaxExclusive {
 		return nil, fmt.Errorf("request failed: %s", string(respBody))
 	}
 	return respBody, nil
