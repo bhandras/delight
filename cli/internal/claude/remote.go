@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // RemoteMessage represents a message to/from the bridge script
@@ -219,6 +220,8 @@ func (b *RemoteBridge) Start() error {
 		}
 	case err := <-b.errors:
 		return fmt.Errorf("bridge error: %w", err)
+	case <-time.After(15 * time.Second):
+		return fmt.Errorf("bridge ready timeout")
 	case <-b.stopCh:
 		return fmt.Errorf("bridge stopped")
 	}
@@ -260,9 +263,20 @@ func (b *RemoteBridge) readMessages() {
 			log.Printf("Bridge stdout error: %v", err)
 		}
 		select {
+		case <-b.stopCh:
+			return
 		case b.errors <- err:
 		default:
 		}
+		return
+	}
+
+	// EOF without an explicit "ready" or "error" message can deadlock Start().
+	select {
+	case <-b.stopCh:
+		return
+	case b.errors <- io.EOF:
+	default:
 	}
 }
 

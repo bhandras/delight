@@ -66,13 +66,46 @@ func extractClaudeUserText(raw json.RawMessage) string {
 	return normalizeRemoteInputText(walk(value))
 }
 
+func (m *Manager) beginLocalRun() chan struct{} {
+	m.localRunMu.Lock()
+	defer m.localRunMu.Unlock()
+	if m.localRunCancel != nil {
+		select {
+		case <-m.localRunCancel:
+		default:
+			close(m.localRunCancel)
+		}
+	}
+	m.localRunCancel = make(chan struct{})
+	return m.localRunCancel
+}
+
+func (m *Manager) endLocalRun() {
+	m.localRunMu.Lock()
+	defer m.localRunMu.Unlock()
+	if m.localRunCancel == nil {
+		return
+	}
+	select {
+	case <-m.localRunCancel:
+	default:
+		close(m.localRunCancel)
+	}
+	m.localRunCancel = nil
+}
+
 // handleSessionIDDetection uses dual verification to detect Claude session ID
-func (m *Manager) handleSessionIDDetection() {
+func (m *Manager) handleSessionIDDetection(localCancel chan struct{}, proc *claude.Process) {
+	if proc == nil {
+		return
+	}
 	// Wait for UUID from fd 3
 	select {
 	case <-m.stopCh:
 		return
-	case claudeSessionID := <-m.claudeProcess.SessionID():
+	case <-localCancel:
+		return
+	case claudeSessionID := <-proc.SessionID():
 		if m.debug {
 			log.Printf("Received Claude session ID from fd3: %s", claudeSessionID)
 		}
@@ -80,6 +113,10 @@ func (m *Manager) handleSessionIDDetection() {
 		// Dual verification: also check that the session file exists
 		if claude.WaitForSessionFile(m.metadata.Path, claudeSessionID, 5*time.Second) {
 			if !m.enqueueInbound(func() {
+				// Ignore stale events from a previous local run.
+				if m.claudeProcess != proc || m.GetMode() != ModeLocal {
+					return
+				}
 				m.claudeSessionID = claudeSessionID
 				log.Printf("Claude session verified: %s", claudeSessionID)
 
@@ -97,22 +134,31 @@ func (m *Manager) handleSessionIDDetection() {
 				log.Printf("Session file not found for UUID: %s (may be a different UUID)", claudeSessionID)
 			}
 			// Continue listening for more UUIDs
-			go m.handleSessionIDDetection()
+			go m.handleSessionIDDetection(localCancel, proc)
 		}
 	}
 }
 
 // handleThinkingState broadcasts thinking state changes to the server
-func (m *Manager) handleThinkingState() {
+func (m *Manager) handleThinkingState(localCancel chan struct{}, proc *claude.Process) {
+	if proc == nil {
+		return
+	}
 	for {
 		select {
 		case <-m.stopCh:
 			return
-		case thinking, ok := <-m.claudeProcess.Thinking():
+		case <-localCancel:
+			return
+		case thinking, ok := <-proc.Thinking():
 			if !ok {
 				return
 			}
 			if !m.enqueueInbound(func() {
+				// Ignore stale events from a previous local run.
+				if m.claudeProcess != proc || m.GetMode() != ModeLocal {
+					return
+				}
 				m.setThinking(thinking)
 				if m.debug {
 					log.Printf("Thinking state changed: %v", thinking)
@@ -179,6 +225,7 @@ func (m *Manager) forwardSessionMessageInbound(msg *claude.SessionMessage) {
 	// session file will contain a copy which we would otherwise forward back and
 	// cause duplicates in the UI.
 	if msg.Type == "user" {
+		m.rememberOutboundUserLocalID(msg.UUID)
 		userText := extractClaudeUserText(msg.Message)
 		if m.isRecentlyInjectedRemoteInput(userText) {
 			if m.debug {

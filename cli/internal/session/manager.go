@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/websocket"
 	"github.com/bhandras/delight/cli/pkg/types"
 	"github.com/bhandras/delight/protocol/wire"
+	"golang.org/x/term"
 )
 
 // Mode represents the current operation mode.
@@ -50,6 +52,8 @@ type Manager struct {
 	metaVersion          int64
 	state                *types.AgentState
 	stateVersion         int64
+	stateMu              sync.Mutex
+	stateDirty           bool
 	machineMetadata      *types.MachineMetadata
 	machineState         *types.DaemonState
 	debug                bool
@@ -76,9 +80,11 @@ type Manager struct {
 	sessionScanner  *claude.Scanner
 	thinking        bool
 	stopCh          chan struct{}
+	localRunMu      sync.Mutex
+	localRunCancel  chan struct{}
 
 	// Pending permission requests (for remote mode)
-	pendingPermissions map[string]chan *claude.PermissionResponse
+	pendingPermissions map[string]*pendingPermission
 	permissionMu       sync.Mutex
 
 	spawnMu         sync.Mutex
@@ -104,11 +110,32 @@ type Manager struct {
 	// persisted (and displayed) twice.
 	recentRemoteInputsMu sync.Mutex
 	recentRemoteInputs   []remoteInputRecord
+
+	// recentOutboundUserLocalIDs tracks local idempotency keys used when this
+	// session forwards user messages up to the server (typically from the Claude
+	// session scanner). These messages can later be echoed back through the
+	// server's update stream; we suppress re-injecting them into the local agent.
+	recentOutboundUserLocalIDsMu sync.Mutex
+	recentOutboundUserLocalIDs   []outboundLocalIDRecord
+
+	// desktopTakebackCancel is used to stop the "press any key to take back control"
+	// watcher while the session is in remote mode.
+	desktopTakebackMu     sync.Mutex
+	desktopTakebackCancel chan struct{}
+	desktopTakebackTTY    *os.File
+	desktopTakebackDone   chan struct{}
+	desktopTakebackState  *term.State
 }
 
 type codexMessage struct {
 	text string
 	meta map[string]interface{}
+}
+
+type pendingPermission struct {
+	ch       chan *claude.PermissionResponse
+	toolName string
+	input    json.RawMessage
 }
 
 // NewManager creates a new session manager.
@@ -133,10 +160,12 @@ func NewManager(cfg *config.Config, token string, debug bool) (*Manager, error) 
 		inboundQueue:       make(chan func(), 256),
 		switchCh:           make(chan Mode, 1),
 		mode:               ModeLocal,
-		pendingPermissions: make(map[string]chan *claude.PermissionResponse),
+		pendingPermissions: make(map[string]*pendingPermission),
 		spawnedSessions:    make(map[string]*Manager),
 		state: &types.AgentState{
-			ControlledByUser: true,
+			ControlledByUser:  true,
+			Requests:          make(map[string]types.AgentPendingRequest),
+			CompletedRequests: make(map[string]types.AgentCompletedRequest),
 		},
 	}, nil
 }
@@ -160,8 +189,26 @@ func (m *Manager) handlePermissionRequest(requestID string, toolName string, inp
 	// Store the request and wait for response
 	responseCh := make(chan *claude.PermissionResponse, 1)
 	m.permissionMu.Lock()
-	m.pendingPermissions[requestID] = responseCh
+	m.pendingPermissions[requestID] = &pendingPermission{
+		ch:       responseCh,
+		toolName: toolName,
+		// Detach from caller-owned bytes.
+		input: append(json.RawMessage(nil), input...),
+	}
 	m.permissionMu.Unlock()
+
+	// Persist the request for reconnect durability and terminal list indicators.
+	m.stateMu.Lock()
+	if m.state.Requests == nil {
+		m.state.Requests = make(map[string]types.AgentPendingRequest)
+	}
+	m.state.Requests[requestID] = types.AgentPendingRequest{
+		ToolName:  toolName,
+		Input:     string(input),
+		CreatedAt: time.Now().UnixMilli(),
+	}
+	m.stateMu.Unlock()
+	go m.updateState()
 
 	// Send permission request to mobile app via RPC.
 	//
@@ -187,11 +234,13 @@ func (m *Manager) handlePermissionRequest(requestID string, toolName string, inp
 		m.permissionMu.Lock()
 		delete(m.pendingPermissions, requestID)
 		m.permissionMu.Unlock()
+		m.clearPendingRequestState(requestID, false, "Permission request timed out")
 		return &claude.PermissionResponse{
 			Behavior: "deny",
 			Message:  "Permission request timed out",
 		}, nil
 	case <-m.stopCh:
+		m.clearPendingRequestState(requestID, false, "Session closed")
 		return &claude.PermissionResponse{
 			Behavior: "deny",
 			Message:  "Session closed",
@@ -202,7 +251,7 @@ func (m *Manager) handlePermissionRequest(requestID string, toolName string, inp
 // HandlePermissionResponse handles a permission response from the mobile app.
 func (m *Manager) HandlePermissionResponse(requestID string, allow bool, message string) {
 	m.permissionMu.Lock()
-	responseCh, ok := m.pendingPermissions[requestID]
+	pending, ok := m.pendingPermissions[requestID]
 	if ok {
 		delete(m.pendingPermissions, requestID)
 	}
@@ -215,19 +264,63 @@ func (m *Manager) HandlePermissionResponse(requestID string, allow bool, message
 		return
 	}
 
-	behavior := "deny"
-	if allow {
-		behavior = "allow"
-	}
-
-	responseCh <- &claude.PermissionResponse{
-		Behavior: behavior,
+	response := &claude.PermissionResponse{
+		Behavior: "deny",
 		Message:  message,
 	}
+	if allow {
+		// Claude Code SDK expects allow responses to include `updatedInput` (even
+		// when unmodified). Mirror Happy’s behavior by echoing the requested input.
+		response.Behavior = "allow"
+		response.UpdatedInput = pending.input
+		// Only Claude tool permissions require the strict allow schema. Other
+		// agents (e.g. ACP) want to preserve the user message for downstream
+		// acknowledgements.
+		if m.agent == "claude" {
+			response.Message = ""
+		}
+	}
+
+	pending.ch <- response
+
+	m.clearPendingRequestState(requestID, allow, message)
 
 	if m.debug {
 		log.Printf("Permission response delivered: %s allow=%v", requestID, allow)
 	}
+}
+
+func (m *Manager) clearPendingRequestState(requestID string, allow bool, message string) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+
+	toolName := ""
+	input := ""
+	if m.state.Requests != nil {
+		if prev, ok := m.state.Requests[requestID]; ok {
+			toolName = prev.ToolName
+			input = prev.Input
+		}
+	}
+
+	if m.state.Requests != nil {
+		delete(m.state.Requests, requestID)
+	}
+	if m.state.CompletedRequests == nil {
+		m.state.CompletedRequests = make(map[string]types.AgentCompletedRequest)
+	}
+	if len(m.state.CompletedRequests) > 200 {
+		m.state.CompletedRequests = make(map[string]types.AgentCompletedRequest)
+	}
+
+	m.state.CompletedRequests[requestID] = types.AgentCompletedRequest{
+		ToolName:   toolName,
+		Input:      input,
+		Allow:      allow,
+		Message:    message,
+		ResolvedAt: time.Now().UnixMilli(),
+	}
+	go m.updateState()
 }
 
 // broadcastThinking broadcasts thinking state to connected clients.
@@ -245,38 +338,50 @@ func (m *Manager) broadcastThinking(thinking bool) {
 
 // updateState sends state update to server.
 func (m *Manager) updateState() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+
 	if m.wsClient == nil || !m.wsClient.IsConnected() {
+		m.stateDirty = true
 		return
 	}
 
-	// Encrypt state
+	// Persist agent state as plaintext JSON.
+	//
+	// The server stores `agentState` as an opaque string and clients (including the
+	// iOS harness) parse it as JSON. Encrypting it here breaks parity because the
+	// phone cannot derive `controlledByUser` and other UI-critical fields.
 	stateData, err := json.Marshal(m.state)
 	if err != nil {
 		return
 	}
 
-	encrypted, err := m.encrypt(stateData)
-	if err != nil {
-		return
-	}
+	agentState := string(stateData)
 
-	expectedVersion := m.stateVersion
-	newVersion, err := m.wsClient.UpdateState(m.sessionID, encrypted, expectedVersion)
-	if err != nil {
-		if errors.Is(err, websocket.ErrVersionMismatch) {
-			if newVersion > 0 {
-				m.stateVersion = newVersion
+	// Try once, and retry a version mismatch once with the server-provided version.
+	for attempt := 0; attempt < 2; attempt++ {
+		expectedVersion := m.stateVersion
+		newVersion, err := m.wsClient.UpdateState(m.sessionID, agentState, expectedVersion)
+		if err != nil {
+			if errors.Is(err, websocket.ErrVersionMismatch) {
+				if newVersion > 0 {
+					m.stateVersion = newVersion
+				}
+				m.stateDirty = true
+				continue
+			}
+			m.stateDirty = true
+			if m.debug {
+				log.Printf("Update state error: %v", err)
 			}
 			return
 		}
-		if m.debug {
-			log.Printf("Update state error: %v", err)
+		if newVersion > 0 {
+			m.stateVersion = newVersion
+		} else {
+			m.stateVersion = expectedVersion + 1
 		}
+		m.stateDirty = false
 		return
-	}
-	if newVersion > 0 {
-		m.stateVersion = newVersion
-	} else {
-		m.stateVersion = expectedVersion + 1
 	}
 }

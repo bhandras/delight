@@ -13,6 +13,7 @@ require (
 	github.com/zishang520/socket.io/v3 v3.0.0-rc.9
 	golang.org/x/crypto v0.46.0
 	golang.org/x/mobile v0.0.0-20251209145715-2553ed8ce294
+	golang.org/x/term v0.38.0
 )
 
 require (

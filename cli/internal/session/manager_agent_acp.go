@@ -34,7 +34,10 @@ func (m *Manager) startACP() error {
 	m.mode = ModeRemote
 	m.modeMu.Unlock()
 
+	m.stateMu.Lock()
 	m.state.ControlledByUser = false
+	m.stateMu.Unlock()
+	go m.updateState()
 
 	if m.debug {
 		log.Printf("ACP ready (agent=%s session=%s)", m.acpAgent, m.acpSessionID)

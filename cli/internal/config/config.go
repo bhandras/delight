@@ -29,6 +29,10 @@ type Config struct {
 	FakeAgent bool
 	// ForceNewSession forces creating a new session tag on every run.
 	ForceNewSession bool
+
+	// StartingMode controls the initial Claude control mode ("local" or "remote").
+	// When set to "remote", the CLI starts the remote Claude bridge immediately.
+	StartingMode string
 }
 
 // Load loads configuration from environment and defaults
@@ -77,16 +81,25 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid DELIGHT_AGENT %q (expected acp, claude, or codex)", agent)
 	}
 
+	startingMode := getenvFirst("DELIGHT_STARTING_MODE", "HAPPY_STARTING_MODE")
+	if startingMode == "" {
+		startingMode = "local"
+	}
+	if startingMode != "local" && startingMode != "remote" {
+		return nil, fmt.Errorf("invalid DELIGHT_STARTING_MODE %q (expected local or remote)", startingMode)
+	}
+
 	return &Config{
-		ServerURL:   serverURL,
-		ACPURL:      acpURL,
-		ACPAgent:    acpAgent,
-		ACPEnable:   acpEnable,
-		DelightHome: delightHome,
-		AccessKey:   filepath.Join(delightHome, "access.key"),
-		Debug:       debug,
-		Agent:       agent,
-		FakeAgent:   fakeAgent,
+		ServerURL:    serverURL,
+		ACPURL:       acpURL,
+		ACPAgent:     acpAgent,
+		ACPEnable:    acpEnable,
+		DelightHome:  delightHome,
+		AccessKey:    filepath.Join(delightHome, "access.key"),
+		Debug:        debug,
+		Agent:        agent,
+		FakeAgent:    fakeAgent,
+		StartingMode: startingMode,
 	}, nil
 }
 

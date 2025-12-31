@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/term"
 )
 
 // LauncherMessage represents a message from the launcher script via fd 3
@@ -40,6 +41,10 @@ type Process struct {
 	fd3Reader *os.File
 	fd3Writer *os.File
 	ptyFile   *os.File
+	ttyFile   *os.File
+	ownsTTY   bool
+	ttyState  *term.State
+	ttyFD     int
 
 	// Session tracking
 	claudeSessionID string
@@ -52,6 +57,17 @@ type Process struct {
 
 	// Stop channel for cleanup
 	stopCh chan struct{}
+}
+
+func (p *Process) restoreTTYLocked() {
+	if p.ttyState == nil {
+		return
+	}
+	if p.ttyFD >= 0 {
+		_ = term.Restore(p.ttyFD, p.ttyState)
+	}
+	p.ttyState = nil
+	p.ttyFD = -1
 }
 
 // NewProcess creates a new Claude process wrapper with fd 3 tracking
@@ -95,6 +111,7 @@ func NewProcess(workDir string, debug bool) (*Process, error) {
 		thinkingCh:    make(chan bool, 10),
 		activeFetches: make(map[int]bool),
 		stopCh:        make(chan struct{}),
+		ttyFD:         -1,
 	}, nil
 }
 
@@ -185,13 +202,40 @@ func (p *Process) Start() error {
 		return fmt.Errorf("failed to start claude: %w", err)
 	}
 	p.ptyFile = ptyFile
-	_ = pty.InheritSize(os.Stdin, ptyFile)
+
+	// Avoid reading directly from os.Stdin so we can reliably stop consuming terminal
+	// input when switching to remote mode. Using /dev/tty provides a handle we can
+	// close on Kill(), unblocking the copy goroutine immediately.
+	tty := os.Stdin
+	ownsTTY := false
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		ttyFile, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+		if err == nil {
+			tty = ttyFile
+			p.ttyFile = ttyFile
+			ownsTTY = true
+		}
+	}
+	p.ownsTTY = ownsTTY
+
+	// Put the user's terminal in raw mode so the Claude interactive UI gets
+	// keystrokes immediately (enter, arrows, ctrl keys, etc.).
+	p.ttyFD = -1
+	if term.IsTerminal(int(tty.Fd())) {
+		fd := int(tty.Fd())
+		if state, err := term.MakeRaw(fd); err == nil {
+			p.ttyState = state
+			p.ttyFD = fd
+		}
+	}
+
+	_ = pty.InheritSize(tty, ptyFile)
 
 	go func() {
 		_, _ = io.Copy(os.Stdout, ptyFile)
 	}()
 	go func() {
-		_, _ = io.Copy(ptyFile, os.Stdin)
+		_, _ = io.Copy(ptyFile, tty)
 	}()
 	go p.watchWindowSize()
 
@@ -218,7 +262,11 @@ func (p *Process) watchWindowSize() {
 			return
 		case <-ch:
 			if p.ptyFile != nil {
-				_ = pty.InheritSize(os.Stdin, p.ptyFile)
+				tty := os.Stdin
+				if p.ttyFile != nil {
+					tty = p.ttyFile
+				}
+				_ = pty.InheritSize(tty, p.ptyFile)
 			}
 		}
 	}
@@ -385,7 +433,11 @@ func (p *Process) Wait() error {
 	if p.cmd == nil || p.cmd.Process == nil {
 		return fmt.Errorf("process not started")
 	}
-	return p.cmd.Wait()
+	err := p.cmd.Wait()
+	p.mu.Lock()
+	p.restoreTTYLocked()
+	p.mu.Unlock()
+	return err
 }
 
 // Kill terminates the Claude process
@@ -404,6 +456,13 @@ func (p *Process) Kill() error {
 	// Close fd3 reader
 	if p.fd3Reader != nil {
 		p.fd3Reader.Close()
+	}
+	// Close our TTY handle to stop stdin->PTY copying goroutines immediately.
+	p.restoreTTYLocked()
+	if p.ownsTTY && p.ttyFile != nil {
+		_ = p.ttyFile.Close()
+		p.ttyFile = nil
+		p.ownsTTY = false
 	}
 	if p.ptyFile != nil {
 		_ = p.ptyFile.Close()

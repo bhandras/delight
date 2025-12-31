@@ -25,7 +25,45 @@ type Metadata struct {
 
 // AgentState represents agent state (decrypted)
 type AgentState struct {
+	// ControlledByUser reports whether the desktop currently controls the
+	// session's agent loop.
 	ControlledByUser bool `json:"controlledByUser"`
+
+	// Requests contains pending permission requests keyed by request id.
+	Requests map[string]AgentPendingRequest `json:"requests,omitempty"`
+
+	// CompletedRequests contains a best-effort history of resolved permission
+	// requests keyed by request id.
+	CompletedRequests map[string]AgentCompletedRequest `json:"completedRequests,omitempty"`
+}
+
+// AgentPendingRequest stores a permission prompt that is awaiting a user
+// decision. This is persisted in agent state so mobile clients can recover
+// after reconnect.
+type AgentPendingRequest struct {
+	// ToolName is the tool being requested (e.g. "can_use_tool").
+	ToolName string `json:"toolName"`
+	// Input is the JSON-encoded tool input string.
+	Input string `json:"input"`
+	// CreatedAt is the wall-clock timestamp (ms since epoch) when the request
+	// was first observed.
+	CreatedAt int64 `json:"createdAt"`
+}
+
+// AgentCompletedRequest stores a resolved permission request for debugging and
+// UI reconciliation.
+type AgentCompletedRequest struct {
+	// ToolName is the tool that was requested.
+	ToolName string `json:"toolName"`
+	// Input is the JSON-encoded tool input string.
+	Input string `json:"input"`
+	// Allow reports whether the request was approved.
+	Allow bool `json:"allow"`
+	// Message is an optional user-supplied note.
+	Message string `json:"message,omitempty"`
+	// ResolvedAt is the wall-clock timestamp (ms since epoch) when the request
+	// was resolved.
+	ResolvedAt int64 `json:"resolvedAt"`
 }
 
 // UserMessage represents a message from the user

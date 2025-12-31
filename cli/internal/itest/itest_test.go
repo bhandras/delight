@@ -444,7 +444,9 @@ func TestUpdateStateAckMismatch(t *testing.T) {
 	resp := emitAck(t, sock, "update-state", map[string]interface{}{
 		"sid":             env.sessionID,
 		"agentState":      "itest-state",
-		"expectedVersion": int64(1),
+		// CLI now persists an initial agentState on connect, so version starts at >=1.
+		// Use an obviously stale version to force a mismatch.
+		"expectedVersion": int64(0),
 	})
 	if result, _ := resp["result"].(string); result != "version-mismatch" {
 		t.Fatalf("expected version-mismatch, got: %+v", resp)

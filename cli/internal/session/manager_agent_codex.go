@@ -23,8 +23,10 @@ func (m *Manager) startCodex() error {
 	m.modeMu.Lock()
 	m.mode = ModeRemote
 	m.modeMu.Unlock()
+	m.stateMu.Lock()
 	m.state.ControlledByUser = false
-	m.updateState()
+	m.stateMu.Unlock()
+	go m.updateState()
 
 	go m.runCodexLoop()
 

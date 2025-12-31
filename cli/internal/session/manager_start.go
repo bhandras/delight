@@ -173,9 +173,9 @@ func (m *Manager) Start(workDir string) error {
 			log.Println("WebSocket connected")
 			m.rpcManager.RegisterAll()
 			_ = m.wsClient.KeepSessionAlive(m.sessionID, m.thinking)
-			if m.agent == "acp" {
-				m.updateState()
-			}
+			// Persist the initial agent state immediately so mobile can derive control mode
+			// deterministically (and to migrate any legacy/invalid agentState on the server).
+			go m.updateState()
 		} else {
 			log.Printf("Warning: WebSocket connection timeout")
 		}
@@ -241,6 +241,17 @@ func (m *Manager) Start(workDir string) error {
 		return nil
 	}
 
+	// Optionally start Claude in remote mode immediately (before any messages).
+	// This keeps parity with Happy’s "remote runner is ready" behavior and avoids
+	// paying the spawn cost on the first mobile message.
+	if m.agent == "claude" && m.cfg != nil && m.cfg.StartingMode == "remote" {
+		if err := m.SwitchToRemote(); err != nil {
+			return err
+		}
+		go m.keepAliveLoop()
+		return nil
+	}
+
 	// Start Claude process with fd 3 tracking
 	claudeProc, err := claude.NewProcess(workDir, m.debug)
 	if err != nil {
@@ -256,10 +267,11 @@ func (m *Manager) Start(workDir string) error {
 	log.Println("Claude Code started (with fd3 tracking)")
 
 	// Start session ID detection handler
-	go m.handleSessionIDDetection()
+	localCancel := m.beginLocalRun()
+	go m.handleSessionIDDetection(localCancel, claudeProc)
 
 	// Start thinking state handler
-	go m.handleThinkingState()
+	go m.handleThinkingState(localCancel, claudeProc)
 
 	// Start keep-alive loop
 	go m.keepAliveLoop()
@@ -470,6 +482,16 @@ func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 		return
 	}
 
+	// Suppress local echoes: when the CLI forwards a user message to the server
+	// (from the Claude session scanner), we can later receive that same message
+	// back via the update stream. Re-injecting would duplicate input.
+	if localID != "" && m.isRecentlySentOutboundUserLocalID(localID) {
+		if m.debug {
+			log.Printf("Skipping echoed local user message: localId=%s", localID)
+		}
+		return
+	}
+
 	if m.fakeAgent {
 		m.sendFakeAgentResponse(text)
 		return
@@ -497,23 +519,52 @@ func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 		return
 	}
 	messageContent = strings.TrimRight(messageContent, "\r\n")
-	m.rememberRemoteInput(messageContent)
-
-	// In remote mode, prefer forwarding input to the remote bridge. If the bridge
-	// isn't available for some reason, fall back to the local path so we don't
-	// drop messages.
-	if m.GetMode() == ModeRemote {
-		if err := m.SendUserMessage(messageContent, meta); err == nil {
-			return
-		} else if m.debug {
-			log.Printf("Remote mode send failed (falling back): %v", err)
-		}
-	}
 
 	if m.agent == "acp" {
 		m.handleACPMessage(messageContent)
 		return
 	}
+
+	if m.agent == "claude" {
+		// If we're in local mode and we receive an inbound message from the server,
+		// treat that as a mobile handoff request (Happy parity): switch to remote
+		// mode and forward the message to the remote runner.
+		if m.GetMode() == ModeLocal {
+			if err := m.SwitchToRemote(); err != nil {
+				if m.debug {
+					log.Printf("Switch-to-remote failed (falling back to local): %v", err)
+				}
+			} else {
+				if err := m.SendUserMessage(messageContent, meta); err == nil {
+					return
+				} else if m.debug {
+					log.Printf("Remote send failed after switch (falling back to local): %v", err)
+				}
+			}
+		} else {
+			// Remote mode: forward input to the remote bridge.
+			//
+			// If the bridge died but the mode bit is still remote, SwitchToRemote()
+			// reinitializes the bridge.
+			if err := m.SendUserMessage(messageContent, meta); err == nil {
+				return
+			}
+			if m.debug {
+				log.Printf("Remote send failed; attempting to restart remote mode: %v", err)
+			}
+			if err := m.SwitchToRemote(); err == nil {
+				if err := m.SendUserMessage(messageContent, meta); err == nil {
+					return
+				}
+				if m.debug {
+					log.Printf("Remote send still failing; falling back to local: %v", err)
+				}
+			}
+		}
+	}
+
+	// This is a local-mode fallback path (remote bridge could not be started).
+	m.rememberRemoteInput(messageContent)
 
 	if m.claudeProcess == nil {
 		if m.debug {
@@ -535,7 +586,7 @@ func (m *Manager) handleUpdate(data map[string]interface{}) {
 
 	wire.DumpToTestdata("session_update_event", data)
 
-	cipher, ok, err := wire.ExtractNewMessageCipher(data)
+	cipher, localID, ok, err := wire.ExtractNewMessageCipherAndLocalID(data)
 	if err != nil {
 		if m.debug {
 			log.Printf("Update parse error: %v", err)
@@ -546,7 +597,7 @@ func (m *Manager) handleUpdate(data map[string]interface{}) {
 		return
 	}
 
-	m.handleEncryptedUserMessage(cipher, "")
+	m.handleEncryptedUserMessage(cipher, localID)
 }
 
 // handleSessionUpdate handles session update events
@@ -592,6 +643,11 @@ func (m *Manager) keepAliveLoop() {
 				if m.wsClient != nil && m.wsClient.IsConnected() {
 					if err := m.wsClient.KeepSessionAlive(m.sessionID, m.thinking); err != nil && m.debug {
 						log.Printf("Session keep-alive error: %v", err)
+					}
+					// If a previous state update failed due to transient Socket.IO issues,
+					// retry opportunistically once we're connected again.
+					if m.stateDirty {
+						go m.updateState()
 					}
 				}
 			})
@@ -641,7 +697,13 @@ func (m *Manager) Wait() error {
 			}
 		case ModeRemote:
 			if bridge != nil {
-				return bridge.Wait()
+				err := bridge.Wait()
+				// If the bridge exited because we switched back to local mode,
+				// keep the CLI running and wait for the next active runner.
+				if m.GetMode() == ModeLocal {
+					continue
+				}
+				return err
 			}
 		}
 
@@ -695,6 +757,9 @@ func (m *Manager) Close() error {
 	if m.remoteBridge != nil {
 		m.remoteBridge.Kill()
 	}
+
+	// Stop any active stdin watcher.
+	m.stopDesktopTakebackWatcher()
 
 	if m.codexClient != nil {
 		m.codexClient.Close()
