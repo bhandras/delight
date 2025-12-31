@@ -2,23 +2,20 @@ package actor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/claude"
 	"github.com/bhandras/delight/cli/internal/websocket"
+	"github.com/bhandras/delight/cli/pkg/types"
+	"github.com/bhandras/delight/protocol/wire"
 )
 
 // Runtime interprets SessionActor effects for the Delight CLI.
-//
-// Phase 3 scope:
-// - runner lifecycle effects (start/stop local and remote runners)
-// - remote send/abort effects
-//
-// Permission request/decision plumbing and agentState persistence are handled
-// in later phases and are intentionally not implemented here yet.
 //
 // IMPORTANT: Runtime must never mutate SessionActor state directly. It only
 // emits events back into the actor mailbox via the provided emit function.
@@ -26,13 +23,19 @@ type Runtime struct {
 	mu sync.Mutex
 
 	sessionID string
-	workDir string
+	workDir  string
 	debug   bool
 
 	stateUpdater StateUpdater
+	socketEmitter SocketEmitter
+
+	encryptFn func([]byte) (string, error)
+
+	timers map[string]*time.Timer
 
 	localProc    *claude.Process
 	localGen     int64
+	localScanner *claude.Scanner
 	remoteBridge *claude.RemoteBridge
 	remoteGen    int64
 }
@@ -40,6 +43,13 @@ type Runtime struct {
 // StateUpdater persists session agent state to a server.
 type StateUpdater interface {
 	UpdateState(sessionID string, agentState string, version int64) (int64, error)
+}
+
+// SocketEmitter emits session-scoped messages + ephemerals to the server.
+type SocketEmitter interface {
+	EmitEphemeral(data any) error
+	EmitMessage(data any) error
+	EmitRaw(event string, data any) error
 }
 
 // NewRuntime returns a Runtime that executes runner effects in the given workDir.
@@ -60,6 +70,24 @@ func (r *Runtime) WithStateUpdater(updater StateUpdater) *Runtime {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.stateUpdater = updater
+	return r
+}
+
+// WithSocketEmitter configures the socket emitter used for emit-message and
+// emit-ephemeral effects.
+func (r *Runtime) WithSocketEmitter(emitter SocketEmitter) *Runtime {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.socketEmitter = emitter
+	return r
+}
+
+// WithEncryptFn configures the encryption function used for outbound session
+// messages (plaintext JSON -> ciphertext string).
+func (r *Runtime) WithEncryptFn(fn func([]byte) (string, error)) *Runtime {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.encryptFn = fn
 	return r
 }
 
@@ -85,8 +113,18 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 			r.remoteSend(e)
 		case effRemoteAbort:
 			r.remoteAbort(e)
+		case effRemotePermissionDecision:
+			r.remotePermissionDecision(e)
 		case effPersistAgentState:
 			r.persistAgentState(ctx, e, emit)
+		case effStartTimer:
+			r.startTimer(ctx, e, emit)
+		case effCancelTimer:
+			r.cancelTimer(e)
+		case effEmitEphemeral:
+			r.emitEphemeral(e)
+		case effEmitMessage:
+			r.emitMessage(e)
 		default:
 			// Unknown effect: ignore.
 		}
@@ -97,6 +135,10 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 func (r *Runtime) Stop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for _, timer := range r.timers {
+		timer.Stop()
+	}
+	r.timers = nil
 	if r.remoteBridge != nil {
 		r.remoteBridge.Kill()
 		r.remoteBridge = nil
@@ -142,6 +184,8 @@ func (r *Runtime) startLocal(ctx context.Context, eff effStartLocalRunner, emit 
 		err := p.Wait()
 		emit(evRunnerExited{Gen: gen, Mode: ModeLocal, Err: err})
 	}(eff.Gen, proc)
+
+	go r.watchLocalSession(ctx, eff.Gen, workDir, proc, emit)
 }
 
 func (r *Runtime) stopLocal(eff effStopLocalRunner) {
@@ -157,6 +201,10 @@ func (r *Runtime) stopLocal(eff effStopLocalRunner) {
 	r.localProc.Kill()
 	r.localProc = nil
 	r.localGen = 0
+	if r.localScanner != nil {
+		r.localScanner.Stop()
+		r.localScanner = nil
+	}
 }
 
 func (r *Runtime) startRemote(ctx context.Context, eff effStartRemoteRunner, emit func(framework.Input)) {
@@ -170,9 +218,65 @@ func (r *Runtime) startRemote(ctx context.Context, eff effStartRemoteRunner, emi
 		return
 	}
 
-	// Phase 5: permission handler should route through actor promises.
-	// For now we keep the default behavior (nil handler => auto-allow) so this
-	// runtime is safe to integrate incrementally.
+	bridge.SetMessageHandler(func(msg *claude.RemoteMessage) error {
+		if msg == nil {
+			return nil
+		}
+		// Detach from bridge-owned buffers.
+		raw, err := json.Marshal(msg)
+		if err != nil {
+			return err
+		}
+		var copyMsg claude.RemoteMessage
+		if err := json.Unmarshal(raw, &copyMsg); err != nil {
+			return err
+		}
+
+		nowMs := time.Now().UnixMilli()
+
+		if copyMsg.Type == "control_request" {
+			var req claude.PermissionRequest
+			if len(copyMsg.Request) > 0 && json.Unmarshal(copyMsg.Request, &req) == nil && req.ToolName != "" {
+				emit(evPermissionRequested{
+					RequestID: copyMsg.RequestID,
+					ToolName:  req.ToolName,
+					Input:     req.Input,
+					NowMs:     nowMs,
+				})
+			} else {
+				emit(evPermissionRequested{
+					RequestID: copyMsg.RequestID,
+					ToolName:  "unknown",
+					Input:     json.RawMessage("null"),
+					NowMs:     nowMs,
+				})
+			}
+			return nil
+		}
+
+		plaintext, ok := buildRawRecordBytesFromRemote(&copyMsg)
+		if !ok {
+			return nil
+		}
+
+		r.mu.Lock()
+		encryptFn := r.encryptFn
+		r.mu.Unlock()
+		if encryptFn == nil {
+			return nil
+		}
+		ciphertext, err := encryptFn(plaintext)
+		if err != nil {
+			return nil
+		}
+		emit(evOutboundMessageReady{
+			Gen:        eff.Gen,
+			LocalID:    "",
+			Ciphertext: ciphertext,
+			NowMs:      nowMs,
+		})
+		return nil
+	})
 
 	if err := bridge.Start(); err != nil {
 		emit(evRunnerExited{Gen: eff.Gen, Mode: ModeRemote, Err: err})
@@ -237,6 +341,299 @@ func (r *Runtime) remoteAbort(eff effRemoteAbort) {
 	_ = bridge.Abort()
 }
 
+func (r *Runtime) remotePermissionDecision(eff effRemotePermissionDecision) {
+	r.mu.Lock()
+	bridge := r.remoteBridge
+	gen := r.remoteGen
+	r.mu.Unlock()
+	if bridge == nil {
+		return
+	}
+	if gen != 0 && eff.Gen != 0 && eff.Gen != gen {
+		return
+	}
+	behavior := "deny"
+	if eff.Allow {
+		behavior = "allow"
+	}
+	_ = bridge.SendPermissionResponse(eff.RequestID, &claude.PermissionResponse{
+		Behavior: behavior,
+		Message:  eff.Message,
+	})
+}
+
+func (r *Runtime) watchLocalSession(ctx context.Context, gen int64, workDir string, proc *claude.Process, emit func(framework.Input)) {
+	if proc == nil {
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case sessionID, ok := <-proc.SessionID():
+			if !ok || sessionID == "" {
+				return
+			}
+			if !claude.WaitForSessionFile(workDir, sessionID, 5*time.Second) {
+				continue
+			}
+
+			// Stop any previous scanner before starting a new one.
+			scanner := claude.NewScanner(workDir, sessionID, r.debug)
+			scanner.Start()
+
+			r.mu.Lock()
+			if r.localGen != gen || r.localProc != proc {
+				r.mu.Unlock()
+				scanner.Stop()
+				return
+			}
+			if r.localScanner != nil {
+				r.localScanner.Stop()
+			}
+			r.localScanner = scanner
+			encryptFn := r.encryptFn
+			r.mu.Unlock()
+
+			if encryptFn == nil {
+				return
+			}
+
+			go func() {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case msg, ok := <-scanner.Messages():
+						if !ok || msg == nil {
+							return
+						}
+
+						// Deep-copy the message to detach from scanner buffers.
+						raw, err := json.Marshal(msg)
+						if err != nil {
+							continue
+						}
+						var copyMsg claude.SessionMessage
+						if err := json.Unmarshal(raw, &copyMsg); err != nil {
+							continue
+						}
+
+						nowMs := time.Now().UnixMilli()
+						plaintext, err := json.Marshal(copyMsg)
+						if err != nil {
+							continue
+						}
+						ciphertext, err := encryptFn(plaintext)
+						if err != nil {
+							continue
+						}
+
+						userText := ""
+						if copyMsg.Type == "user" {
+							userText = extractClaudeUserText(copyMsg.Message)
+						}
+
+						emit(evOutboundMessageReady{
+							Gen:                gen,
+							LocalID:            copyMsg.UUID,
+							Ciphertext:         ciphertext,
+							NowMs:              nowMs,
+							UserTextNormalized: userText,
+						})
+					}
+				}
+			}()
+
+			return
+		case thinking, ok := <-proc.Thinking():
+			if !ok {
+				return
+			}
+			_ = thinking
+			// Phase 3/4: thinking is still Manager-owned. Once the actor owns the
+			// keep-alive loop, we can emit thinking change events here.
+		}
+	}
+}
+
+func extractClaudeUserText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+
+	var walk func(any) string
+	walk = func(v any) string {
+		switch t := v.(type) {
+		case string:
+			return t
+		case map[string]any:
+			if content, ok := t["content"]; ok {
+				if s := walk(content); s != "" {
+					return s
+				}
+			}
+			if text, ok := t["text"]; ok {
+				if s := walk(text); s != "" {
+					return s
+				}
+			}
+			if message, ok := t["message"]; ok {
+				if s := walk(message); s != "" {
+					return s
+				}
+			}
+			if data, ok := t["data"]; ok {
+				if s := walk(data); s != "" {
+					return s
+				}
+			}
+			return ""
+		case []any:
+			for _, part := range t {
+				if s := walk(part); s != "" {
+					return s
+				}
+			}
+			return ""
+		default:
+			return ""
+		}
+	}
+
+	return normalizeRemoteInputText(walk(value))
+}
+
+func buildRawRecordBytesFromRemote(msg *claude.RemoteMessage) ([]byte, bool) {
+	if msg == nil {
+		return nil, false
+	}
+
+	// Prefer already-structured payloads.
+	if len(msg.Message) > 0 && msg.Type != "raw" {
+		raw := json.RawMessage(msg.Message)
+		// If it already looks like a wire record, forward as-is.
+		var probe struct {
+			Role    string `json:"role"`
+			Content struct {
+				Type string `json:"type"`
+			} `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &probe); err == nil && probe.Role != "" && probe.Content.Type != "" {
+			return []byte(raw), true
+		}
+	}
+
+	switch msg.Type {
+	case "raw":
+		if len(msg.Message) == 0 {
+			return nil, false
+		}
+		return []byte(msg.Message), true
+	case "message":
+		role := msg.Role
+		contentBlocks, err := wire.DecodeContentBlocks(msg.Content)
+		if err != nil {
+			return nil, false
+		}
+		if role == "" || len(contentBlocks) == 0 {
+			return nil, false
+		}
+
+		model := msg.Model
+		if model == "" {
+			model = "unknown"
+		}
+		outType := role
+		uuid := types.NewCUID()
+
+		rec := wire.AgentOutputRecord{
+			Role: "agent",
+			Content: wire.AgentOutputContent{
+				Type: "output",
+				Data: wire.AgentOutputData{
+					Type:             outType,
+					IsSidechain:      false,
+					IsCompactSummary: false,
+					IsMeta:           false,
+					UUID:             uuid,
+					ParentUUID:       nil,
+					Message: wire.AgentMessage{
+						Role:    role,
+						Model:   model,
+						Content: contentBlocks,
+					},
+				},
+			},
+		}
+		data, err := json.Marshal(rec)
+		if err != nil {
+			return nil, false
+		}
+		return data, true
+	case "assistant":
+		text := ""
+		switch v := msg.Content.(type) {
+		case string:
+			text = v
+		default:
+			blocks, err := wire.DecodeContentBlocks(v)
+			if err == nil {
+				for _, block := range blocks {
+					if block.Type == "text" && block.Text != "" {
+						text = block.Text
+						break
+					}
+				}
+			}
+		}
+		if text == "" && msg.Result != "" {
+			text = msg.Result
+		}
+		if text == "" {
+			return nil, false
+		}
+		model := msg.Model
+		if model == "" {
+			model = "unknown"
+		}
+		rec := wire.AgentOutputRecord{
+			Role: "agent",
+			Content: wire.AgentOutputContent{
+				Type: "output",
+				Data: wire.AgentOutputData{
+					Type:             "assistant",
+					IsSidechain:      false,
+					IsCompactSummary: false,
+					IsMeta:           false,
+					UUID:             types.NewCUID(),
+					ParentUUID:       nil,
+					Message: wire.AgentMessage{
+						Role:  "assistant",
+						Model: model,
+						Content: []wire.ContentBlock{
+							{Type: "text", Text: text},
+						},
+					},
+				},
+			},
+		}
+		data, err := json.Marshal(rec)
+		if err != nil {
+			return nil, false
+		}
+		return data, true
+	default:
+		return nil, false
+	}
+}
+
 func (r *Runtime) persistAgentState(ctx context.Context, eff effPersistAgentState, emit func(framework.Input)) {
 	r.mu.Lock()
 	updater := r.stateUpdater
@@ -274,4 +671,71 @@ func (r *Runtime) persistAgentState(ctx context.Context, eff effPersistAgentStat
 		}
 		emit(EvAgentStatePersistFailed{Err: err})
 	}()
+}
+
+func (r *Runtime) startTimer(ctx context.Context, eff effStartTimer, emit func(framework.Input)) {
+	if eff.Name == "" || eff.AfterMs <= 0 {
+		return
+	}
+
+	r.mu.Lock()
+	if r.timers == nil {
+		r.timers = make(map[string]*time.Timer)
+	}
+	if prev := r.timers[eff.Name]; prev != nil {
+		prev.Stop()
+	}
+	after := time.Duration(eff.AfterMs) * time.Millisecond
+	r.timers[eff.Name] = time.AfterFunc(after, func() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		emit(evTimerFired{Name: eff.Name, NowMs: time.Now().UnixMilli()})
+	})
+	r.mu.Unlock()
+}
+
+func (r *Runtime) cancelTimer(eff effCancelTimer) {
+	if eff.Name == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.timers == nil {
+		return
+	}
+	if t := r.timers[eff.Name]; t != nil {
+		t.Stop()
+	}
+	delete(r.timers, eff.Name)
+}
+
+func (r *Runtime) emitEphemeral(eff effEmitEphemeral) {
+	r.mu.Lock()
+	emitter := r.socketEmitter
+	r.mu.Unlock()
+	if emitter == nil {
+		return
+	}
+	_ = emitter.EmitEphemeral(eff.Payload)
+}
+
+func (r *Runtime) emitMessage(eff effEmitMessage) {
+	r.mu.Lock()
+	emitter := r.socketEmitter
+	sessionID := r.sessionID
+	r.mu.Unlock()
+	if emitter == nil {
+		return
+	}
+	if sessionID == "" || eff.Ciphertext == "" {
+		return
+	}
+	_ = emitter.EmitMessage(wire.OutboundMessagePayload{
+		SID:     sessionID,
+		LocalID: eff.LocalID,
+		Message: eff.Ciphertext,
+	})
 }

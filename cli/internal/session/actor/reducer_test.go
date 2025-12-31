@@ -1,9 +1,11 @@
 package actor
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/bhandras/delight/cli/internal/actor"
+	"github.com/bhandras/delight/cli/pkg/types"
 )
 
 func TestReduceSwitchMode_EmitsStartEffects(t *testing.T) {
@@ -129,15 +131,229 @@ func TestReducePersistAgentState_EmitsPersistEffect(t *testing.T) {
 	if next.PersistRetryRemaining != 1 {
 		t.Fatalf("PersistRetryRemaining=%d, want 1", next.PersistRetryRemaining)
 	}
-	if len(effects) != 1 {
-		t.Fatalf("effects=%d, want 1", len(effects))
+	foundCancel := false
+	foundStart := false
+	for _, eff := range effects {
+		switch eff.(type) {
+		case effCancelTimer:
+			foundCancel = true
+		case effStartTimer:
+			foundStart = true
+		}
 	}
-	eff, ok := effects[0].(effPersistAgentState)
-	if !ok {
-		t.Fatalf("effect=%T, want effPersistAgentState", effects[0])
+	if !foundCancel || !foundStart {
+		t.Fatalf("expected debounce timer effects, got: %+v", effects)
 	}
-	if eff.ExpectedVersion != 3 {
-		t.Fatalf("ExpectedVersion=%d, want 3", eff.ExpectedVersion)
+}
+
+func TestReduceSwitchMode_LocalToRemote_EffectSequence(t *testing.T) {
+	t.Parallel()
+
+	initial := State{
+		FSM:  StateLocalRunning,
+		Mode: ModeLocal,
+		AgentState: types.AgentState{
+			ControlledByUser: true,
+		},
+	}
+	reply := make(chan error, 1)
+
+	next, effects := Reduce(initial, cmdSwitchMode{Target: ModeRemote, Reply: reply})
+	if next.FSM != StateRemoteStarting || next.Mode != ModeRemote {
+		t.Fatalf("state=%v/%v, want %v/%v", next.FSM, next.Mode, StateRemoteStarting, ModeRemote)
+	}
+	if next.AgentState.ControlledByUser {
+		t.Fatalf("ControlledByUser=%v, want false", next.AgentState.ControlledByUser)
+	}
+
+	var stopLocal effStopLocalRunner
+	var startRemote effStartRemoteRunner
+	var foundStop, foundStart bool
+	for _, eff := range effects {
+		switch v := eff.(type) {
+		case effStopLocalRunner:
+			stopLocal = v
+			foundStop = true
+		case effStartRemoteRunner:
+			startRemote = v
+			foundStart = true
+		}
+	}
+	if !foundStop || !foundStart {
+		t.Fatalf("expected stop/start effects, got: %+v", effects)
+	}
+	if stopLocal.Gen != 0 {
+		t.Fatalf("stopLocal.Gen=%d, want 0", stopLocal.Gen)
+	}
+	if startRemote.Gen != 1 {
+		t.Fatalf("startRemote.Gen=%d, want 1", startRemote.Gen)
+	}
+}
+
+func TestReduceSwitchMode_RemoteToLocal_EffectSequence(t *testing.T) {
+	t.Parallel()
+
+	initial := State{
+		FSM:  StateRemoteRunning,
+		Mode: ModeRemote,
+		RunnerGen: 3,
+		AgentState: types.AgentState{
+			ControlledByUser: false,
+		},
+	}
+	reply := make(chan error, 1)
+
+	next, effects := Reduce(initial, cmdSwitchMode{Target: ModeLocal, Reply: reply})
+	if next.FSM != StateLocalStarting || next.Mode != ModeLocal {
+		t.Fatalf("state=%v/%v, want %v/%v", next.FSM, next.Mode, StateLocalStarting, ModeLocal)
+	}
+	if !next.AgentState.ControlledByUser {
+		t.Fatalf("ControlledByUser=%v, want true", next.AgentState.ControlledByUser)
+	}
+
+	var stopRemote effStopRemoteRunner
+	var startLocal effStartLocalRunner
+	var foundStop, foundStart bool
+	for _, eff := range effects {
+		switch v := eff.(type) {
+		case effStopRemoteRunner:
+			stopRemote = v
+			foundStop = true
+		case effStartLocalRunner:
+			startLocal = v
+			foundStart = true
+		}
+	}
+	if !foundStop || !foundStart {
+		t.Fatalf("expected stop/start effects, got: %+v", effects)
+	}
+	if stopRemote.Gen != 3 {
+		t.Fatalf("stopRemote.Gen=%d, want 3", stopRemote.Gen)
+	}
+	if startLocal.Gen != 4 {
+		t.Fatalf("startLocal.Gen=%d, want 4", startLocal.Gen)
+	}
+}
+
+func TestReducePermissionRequested_AddsDurableRequest(t *testing.T) {
+	t.Parallel()
+
+	state := State{
+		SessionID: "s1",
+		FSM:       StateRemoteRunning,
+		Mode:      ModeRemote,
+		AgentState: types.AgentState{
+			ControlledByUser: false,
+			Requests:         map[string]types.AgentPendingRequest{},
+		},
+	}
+
+	input := json.RawMessage(`{"foo":"bar"}`)
+	next, effects := Reduce(state, evPermissionRequested{
+		RequestID: "r1",
+		ToolName:  "can_use_tool",
+		Input:     input,
+		NowMs:     123,
+	})
+
+	if _, ok := next.AgentState.Requests["r1"]; !ok {
+		t.Fatalf("expected request to be stored")
+	}
+	foundEphemeral := false
+	for _, eff := range effects {
+		if _, ok := eff.(effEmitEphemeral); ok {
+			foundEphemeral = true
+		}
+	}
+	if !foundEphemeral {
+		t.Fatalf("expected effEmitEphemeral, got: %+v", effects)
+	}
+}
+
+func TestReducePermissionDecision_RemovesDurableAndEmitsDecisionEffect(t *testing.T) {
+	t.Parallel()
+
+	state := State{
+		SessionID: "s1",
+		FSM:       StateRemoteRunning,
+		Mode:      ModeRemote,
+		RunnerGen: 9,
+		AgentState: types.AgentState{
+			ControlledByUser: false,
+			Requests: map[string]types.AgentPendingRequest{
+				"r1": {ToolName: "tool", Input: "{}", CreatedAt: 1},
+			},
+		},
+	}
+	reply := make(chan error, 1)
+
+	next, effects := Reduce(state, cmdPermissionDecision{
+		RequestID: "r1",
+		Allow:     true,
+		Message:   "ok",
+		NowMs:     456,
+		Reply:     reply,
+	})
+	if _, ok := next.AgentState.Requests["r1"]; ok {
+		t.Fatalf("expected request to be removed")
+	}
+	if _, ok := next.AgentState.CompletedRequests["r1"]; !ok {
+		t.Fatalf("expected completed request to be stored")
+	}
+	foundDecision := false
+	for _, eff := range effects {
+		if d, ok := eff.(effRemotePermissionDecision); ok {
+			foundDecision = true
+			if d.Gen != 9 {
+				t.Fatalf("decision gen=%d, want 9", d.Gen)
+			}
+		}
+	}
+	if !foundDecision {
+		t.Fatalf("expected effRemotePermissionDecision, got: %+v", effects)
+	}
+	select {
+	case err := <-reply:
+		if err != nil {
+			t.Fatalf("reply err=%v, want nil", err)
+		}
+	default:
+		t.Fatalf("expected reply to be completed")
+	}
+}
+
+func TestReduceDebouncedPersistence_CoalescesToLatest(t *testing.T) {
+	t.Parallel()
+
+	state := State{
+		FSM:              StateLocalRunning,
+		Mode:             ModeLocal,
+		AgentStateVersion: 7,
+	}
+
+	state, _ = Reduce(state, cmdPersistAgentState{AgentStateJSON: `{"a":1}`})
+	state, _ = Reduce(state, cmdPersistAgentState{AgentStateJSON: `{"a":2}`})
+
+	if state.AgentStateJSON != `{"a":2}` {
+		t.Fatalf("AgentStateJSON=%s, want latest", state.AgentStateJSON)
+	}
+
+	next, effects := Reduce(state, evTimerFired{Name: persistDebounceTimerName, NowMs: 1})
+	_ = next
+	foundPersist := false
+	for _, eff := range effects {
+		if p, ok := eff.(effPersistAgentState); ok {
+			foundPersist = true
+			if p.AgentStateJSON != `{"a":2}` {
+				t.Fatalf("persist json=%s, want latest", p.AgentStateJSON)
+			}
+			if p.ExpectedVersion != 7 {
+				t.Fatalf("ExpectedVersion=%d, want 7", p.ExpectedVersion)
+			}
+		}
+	}
+	if !foundPersist {
+		t.Fatalf("expected effPersistAgentState on timer fired, got: %+v", effects)
 	}
 }
 

@@ -311,8 +311,22 @@ func (b *RemoteBridge) handleMessage(msg *RemoteMessage) {
 		}
 
 	case "control_request":
-		// Permission request from Claude
-		go b.handlePermissionRequest(msg)
+		// Permission request from Claude.
+		//
+		// Backward compatibility:
+		// - If a PermissionHandler is installed, keep the legacy "handler returns a
+		//   response" behavior (and the bridge sends control_response itself).
+		// - If no PermissionHandler is installed, forward the control_request to
+		//   the message handler and allow the consumer to respond by calling
+		//   SendPermissionResponse.
+		b.mu.Lock()
+		handler := b.permissionHandler
+		b.mu.Unlock()
+		if handler != nil {
+			go b.handlePermissionRequest(msg)
+			return
+		}
+		b.forwardMessage(msg)
 
 	case "system":
 		// Track session ID from init message
@@ -385,6 +399,29 @@ func (b *RemoteBridge) handlePermissionRequest(msg *RemoteMessage) {
 func (b *RemoteBridge) sendPermissionResponse(requestID string, response *PermissionResponse) {
 	responseJSON, _ := json.Marshal(response)
 	b.sendMessage(&RemoteMessage{
+		Type:      "control_response",
+		RequestID: requestID,
+		Response:  responseJSON,
+	})
+}
+
+// SendPermissionResponse sends a control_response message for the given request.
+//
+// This is intended for callers that consume "control_request" messages via the
+// message handler and want to respond asynchronously (e.g. after a mobile user
+// approves a permission prompt).
+func (b *RemoteBridge) SendPermissionResponse(requestID string, response *PermissionResponse) error {
+	if requestID == "" {
+		return fmt.Errorf("missing request id")
+	}
+	if response == nil {
+		response = &PermissionResponse{Behavior: "deny", Message: "missing response"}
+	}
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	return b.sendMessage(&RemoteMessage{
 		Type:      "control_response",
 		RequestID: requestID,
 		Response:  responseJSON,

@@ -180,7 +180,7 @@ func (m *Manager) Start(workDir string) error {
 			m.initSessionActor()
 			// Persist the initial agent state immediately so mobile can derive control mode
 			// deterministically (and to migrate any legacy/invalid agentState on the server).
-			m.requestPersistAgentState()
+			m.requestPersistAgentStateImmediate()
 		} else {
 			log.Printf("Warning: WebSocket connection timeout")
 		}
@@ -298,7 +298,9 @@ func (m *Manager) initSessionActor() {
 
 	rt := sessionactor.NewRuntime(m.workDir, m.debug).
 		WithSessionID(m.sessionID).
-		WithStateUpdater(m.wsClient)
+		WithStateUpdater(m.wsClient).
+		WithSocketEmitter(m.wsClient).
+		WithEncryptFn(m.encrypt)
 
 	hooks := framework.Hooks[sessionactor.State]{
 		OnInput: func(input framework.Input) {

@@ -412,3 +412,20 @@ func (m *Manager) requestPersistAgentState() {
 	m.stateDirty = true
 	_ = m.sessionActor.Enqueue(sessionactor.PersistAgentState(string(stateData)))
 }
+
+func (m *Manager) requestPersistAgentStateImmediate() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+
+	if m.sessionActor == nil || m.wsClient == nil || !m.wsClient.IsConnected() {
+		m.stateDirty = true
+		return
+	}
+
+	stateData, err := json.Marshal(m.state)
+	if err != nil {
+		return
+	}
+	m.stateDirty = true
+	_ = m.sessionActor.Enqueue(sessionactor.PersistAgentStateImmediate(string(stateData)))
+}
