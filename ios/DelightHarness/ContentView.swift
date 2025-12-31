@@ -1145,6 +1145,8 @@ private struct ControlStatusBanner: View {
     var body: some View {
         let ui = session.uiState
         let state = ui?.state ?? "disconnected"
+        let switching = ui?.switching ?? false
+        let transition = ui?.transition ?? ""
         let isConnectedAndActive = (state == "local" || state == "remote")
         let controlledByDesktop = isConnectedAndActive
             ? (ui?.controlledByUser ?? (session.agentState?.controlledByUser ?? true))
@@ -1180,6 +1182,11 @@ private struct ControlStatusBanner: View {
                             .font(Theme.caption)
                             .foregroundColor(Theme.warning)
                     }
+                    if switching {
+                        Text(transition.isEmpty ? "switching…" : transition.replacingOccurrences(of: "to-", with: "switching to ") + "…")
+                            .font(Theme.caption)
+                            .foregroundColor(Theme.mutedText)
+                    }
                 }
                 Spacer()
                 // Phone UI only supports "Take Control" (switch to remote). Returning
@@ -1189,7 +1196,7 @@ private struct ControlStatusBanner: View {
                         model.requestSessionControl(mode: "remote", sessionID: session.id)
                     }
                     .buttonStyle(PillButtonStyle(fill: Theme.accent))
-                    .disabled(model.isSwitchingControl || !canTakeControl)
+                    .disabled(switching || !canTakeControl)
                 }
             }
 

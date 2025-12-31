@@ -147,6 +147,8 @@ struct SessionUIState: Equatable {
     let connected: Bool
     let active: Bool
     let controlledByUser: Bool
+    let switching: Bool
+    let transition: String
     let canTakeControl: Bool
     let canSend: Bool
 
@@ -156,6 +158,8 @@ struct SessionUIState: Equatable {
         let connected = dict["connected"] as? Bool ?? false
         let active = dict["active"] as? Bool ?? false
         let controlledByUser = dict["controlledByUser"] as? Bool ?? true
+        let switching = dict["switching"] as? Bool ?? false
+        let transition = dict["transition"] as? String ?? ""
         let canTakeControl = dict["canTakeControl"] as? Bool ?? false
         let canSend = dict["canSend"] as? Bool ?? false
         return SessionUIState(
@@ -163,6 +167,8 @@ struct SessionUIState: Equatable {
             connected: connected,
             active: active,
             controlledByUser: controlledByUser,
+            switching: switching,
+            transition: transition,
             canTakeControl: canTakeControl,
             canSend: canSend
         )
@@ -352,7 +358,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var activePermissionRequest: PendingPermissionRequest?
     @Published var showPermissionPrompt: Bool = false
     @Published var isRespondingToPermission: Bool = false
-    @Published var isSwitchingControl: Bool = false
     @Published var isCreatingAccount: Bool = false
     @Published var isApprovingTerminal: Bool = false
     @Published var isLoggingOut: Bool = false
@@ -648,8 +653,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let targetID = sessionID ?? self.sessionID
         guard !targetID.isEmpty else { return }
 
-        DispatchQueue.main.async { self.isSwitchingControl = true }
-
         sdkCallAsync {
             do {
                 let paramsData = try JSONSerialization.data(withJSONObject: ["mode": mode], options: [])
@@ -676,14 +679,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
                 // Refresh sessions to pick up the authoritative agent state (plus requests).
                 self.listSessions()
-                DispatchQueue.main.async {
-                    self.isSwitchingControl = false
-                }
             } catch {
                 self.logSwiftOnly("Switch control error: \(error)")
-                DispatchQueue.main.async {
-                    self.isSwitchingControl = false
-                }
             }
         }
     }
