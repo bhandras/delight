@@ -69,6 +69,7 @@ type sessionFSMState struct {
 	switching        bool
 	transition       string
 	switchingAt      int64
+	uiJSON           string
 	updatedAt        int64
 	fetchedAt        int64
 }
@@ -155,6 +156,28 @@ func deriveSessionUI(
 	}
 
 	return fsm, ui
+}
+
+func sessionUIJSON(ui map[string]any) string {
+	if ui == nil {
+		return ""
+	}
+	encoded, err := json.Marshal(ui)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+func buildSessionUIUpdate(nowMs int64, sessionID string, ui map[string]any) map[string]any {
+	return map[string]any{
+		"createdAt": nowMs,
+		"body": map[string]any{
+			"t":   "session-ui",
+			"sid": sessionID,
+			"ui":  ui,
+		},
+	}
 }
 
 func (c *Client) refreshSessionsForFSM() error {
@@ -710,6 +733,21 @@ func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
 				prev.switchingAt = time.Now().UnixMilli()
 				c.sessionFSM[sessionID] = prev
 				c.mu.Unlock()
+
+				// Emit a synthetic session-ui update so clients can re-render
+				// immediately without polling ListSessions.
+				fsm, ui := deriveSessionUI(time.Now().UnixMilli(), prev.connected, prev.active, "", &prev)
+				uiJSON := sessionUIJSON(ui)
+				c.mu.Lock()
+				prevCache := c.sessionFSM[sessionID]
+				if prevCache.uiJSON != uiJSON {
+					fsm.uiJSON = uiJSON
+					c.sessionFSM[sessionID] = fsm
+					c.mu.Unlock()
+					c.emitUpdate(sessionID, buildSessionUIUpdate(time.Now().UnixMilli(), sessionID, ui))
+				} else {
+					c.mu.Unlock()
+				}
 			}
 		}
 
@@ -790,8 +828,13 @@ func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
 			next.switching = false
 			next.transition = ""
 			next.switchingAt = 0
+			_, ui := deriveSessionUI(time.Now().UnixMilli(), connected, active, "", &next)
+			next.uiJSON = sessionUIJSON(ui)
 			c.sessionFSM[sessionID] = next
 			c.mu.Unlock()
+
+			// Emit a synthetic session-ui update for immediate client re-rendering.
+			c.emitUpdate(sessionID, buildSessionUIUpdate(time.Now().UnixMilli(), sessionID, ui))
 		}
 	}
 
@@ -807,8 +850,12 @@ func (c *Client) clearSessionSwitching(sessionID string) {
 	prev.switching = false
 	prev.transition = ""
 	prev.switchingAt = 0
+	_, ui := deriveSessionUI(time.Now().UnixMilli(), prev.connected, prev.active, "", &prev)
+	prev.uiJSON = sessionUIJSON(ui)
 	c.sessionFSM[sessionID] = prev
 	c.mu.Unlock()
+
+	c.emitUpdate(sessionID, buildSessionUIUpdate(time.Now().UnixMilli(), sessionID, ui))
 }
 
 func (c *Client) sendMessageWithLocalID(sessionID string, localID string, rawRecordJSON string) error {
@@ -940,6 +987,7 @@ func (c *Client) listSessions() (resp string, err error) {
 
 				if sessionID != "" {
 					c.mu.Lock()
+					fsm.uiJSON = sessionUIJSON(ui)
 					c.sessionFSM[sessionID] = fsm
 					c.mu.Unlock()
 				}
@@ -1251,15 +1299,21 @@ func (c *Client) applyAgentStateToSessionFSM(sessionID string, agentState string
 		connected = true
 	}
 
-	fsm, _ := deriveSessionUI(now, connected, active, agentState, &prev)
+	fsm, ui := deriveSessionUI(now, connected, active, agentState, &prev)
 	fsm.updatedAt = prev.updatedAt
 	fsm.switching = false
 	fsm.transition = ""
 	fsm.switchingAt = 0
+	fsm.uiJSON = sessionUIJSON(ui)
 
 	c.mu.Lock()
+	prevUI := prev.uiJSON
 	c.sessionFSM[sessionID] = fsm
 	c.mu.Unlock()
+
+	if prevUI != fsm.uiJSON {
+		c.emitUpdate(sessionID, buildSessionUIUpdate(now, sessionID, ui))
+	}
 }
 
 func (c *Client) maybeHydrateSessionKeys() {

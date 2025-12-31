@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -205,6 +206,43 @@ func TestHandleUpdate_UpdateSession_AgentStateUpdatesFSM(t *testing.T) {
 	require.True(t, got.connected)
 	require.False(t, got.switching)
 	require.Equal(t, "", got.transition)
+}
+
+func TestApplyAgentStateToSessionFSM_EmitsSessionUIUpdate(t *testing.T) {
+	t.Parallel()
+
+	c := NewClient("http://example.invalid")
+	sessionID := "s1"
+	listener := newCaptureListener()
+	c.SetListener(listener)
+
+	c.sessionFSM[sessionID] = sessionFSMState{
+		state:            "remote",
+		active:           true,
+		connected:        true,
+		controlledByUser: false,
+		uiJSON:           "",
+	}
+
+	c.applyAgentStateToSessionFSM(sessionID, `{"controlledByUser":true}`)
+
+	listener.waitUpdate(t)
+	listener.mu.Lock()
+	got := listener.lastUpdate
+	listener.mu.Unlock()
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal([]byte(got), &decoded))
+	body, _ := decoded["body"].(map[string]any)
+	require.NotNil(t, body)
+	require.Equal(t, "session-ui", body["t"])
+	require.Equal(t, sessionID, body["sid"])
+
+	ui, _ := body["ui"].(map[string]any)
+	require.NotNil(t, ui)
+	require.Equal(t, "local", ui["state"])
+	require.Equal(t, false, ui["canSend"])
+	require.Equal(t, true, ui["canTakeControl"])
 }
 
 func boolToJSON(v bool) string {
