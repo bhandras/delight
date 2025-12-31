@@ -91,6 +91,37 @@ private struct UpdateBody: Decodable {
     let time: Int64?
 }
 
+/// UpdateKind enumerates the update event discriminants sent by the server/SDK.
+private enum UpdateKind: String {
+    case activity = "activity"
+    case newMessage = "new-message"
+    case permissionRequest = "permission-request"
+    case sessionAlive = "session-alive"
+    case sessionUI = "session-ui"
+}
+
+/// UpdateFields collects JSON keys used in update payloads.
+private enum UpdateFields {
+    static let content = "content"
+    static let createdAt = "createdAt"
+    static let data = "data"
+    static let id = "id"
+    static let localID = "localId"
+    static let seq = "seq"
+}
+
+/// UpdateTiming collects debounce and clock-related constants.
+private enum UpdateTiming {
+    static let millisecondsPerSecond: Double = 1000
+    static let sessionRefreshDelaySeconds: TimeInterval = 0.35
+    static let sessionRefreshMinIntervalSeconds: TimeInterval = 1.0
+}
+
+/// LogLimits defines the maximum log buffer size retained in memory.
+private enum LogLimits {
+    static let maxLines = 100
+}
+
 final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var serverURL: String = "http://localhost:3005" {
         didSet { persistSettings() }
@@ -886,10 +917,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
+    /// handleSessionUIUpdate applies session UI updates to the cached summary list.
     private func handleSessionUIUpdate(_ json: String) -> Bool {
         guard let update = decodeUpdateEnvelope(json),
               let body = update.body,
-              body.t == "session-ui",
+              body.t == UpdateKind.sessionUI.rawValue,
               let sessionID = body.sid,
               let ui = body.ui else {
             return false
@@ -915,24 +947,25 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return true
     }
 
+    /// tryAppendMessageFromUpdate attempts to render a new message without a fetch.
     private func tryAppendMessageFromUpdate(_ updateJSON: String, sessionID: String) -> Bool {
         guard let update = decodeUpdateEnvelope(updateJSON),
               let body = update.body,
-              body.t == "new-message",
+              body.t == UpdateKind.newMessage.rawValue,
               let messageValue = body.message,
               let message = messageValue.object else {
             return false
         }
 
         // Ignore messages we intentionally don't render as transcript entries.
-        let content = normalizeContent(firstNonNull(message["content"], message["data"]))
+        let content = normalizeContent(firstNonNull(message[UpdateFields.content], message[UpdateFields.data]))
         if isNullMessage(content) || isFileHistorySnapshot(content) || isToolResultMessage(content) {
             return true
         }
 
-        let id = message["id"]?.string ?? UUID().uuidString
-        let createdAt = jsonInt64(message, "createdAt")
-        let seq = jsonInt64(message, "seq")
+        let id = message[UpdateFields.id]?.string ?? UUID().uuidString
+        let createdAt = jsonInt64(message, UpdateFields.createdAt)
+        let seq = jsonInt64(message, UpdateFields.seq)
 
         var blocks = extractBlocks(from: content, sessionID: sessionID)
         if blocks.isEmpty, let text = extractText(from: content) {
@@ -948,7 +981,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
 
         let role = extractRole(from: message, content: content)
-        let localID = message["localId"]?.string
+        let localID = message[UpdateFields.localID]?.string
         let uuid = self.extractMessageUUID(from: content)
         let serverItem = MessageItem(id: id, seq: seq, localID: localID, uuid: uuid, role: role, blocks: blocks, createdAt: createdAt)
 
@@ -1007,15 +1040,16 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return true
     }
 
+    /// shouldFetchMessages decides if an update requires a server-side refresh.
     private func shouldFetchMessages(fromUpdateJSON json: String) -> Bool {
         guard let update = decodeUpdateEnvelope(json),
               let body = update.body,
-              body.t == "new-message",
+              body.t == UpdateKind.newMessage.rawValue,
               let messageValue = body.message,
               let message = messageValue.object else {
             return true
         }
-        let content = normalizeContent(firstNonNull(message["content"], message["data"]))
+        let content = normalizeContent(firstNonNull(message[UpdateFields.content], message[UpdateFields.data]))
         if isNullMessage(content) || isFileHistorySnapshot(content) || isToolResultMessage(content) {
             return false
         }
@@ -1071,7 +1105,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
-    private func scheduleSessionsRefreshDebounced(minIntervalSeconds: TimeInterval = 1.0, delaySeconds: TimeInterval = 0.35) {
+    /// scheduleSessionsRefreshDebounced refreshes sessions after activity updates.
+    private func scheduleSessionsRefreshDebounced(
+        minIntervalSeconds: TimeInterval = UpdateTiming.sessionRefreshMinIntervalSeconds,
+        delaySeconds: TimeInterval = UpdateTiming.sessionRefreshDelaySeconds
+    ) {
         DispatchQueue.main.async {
             self.scheduledSessionRefresh?.cancel()
             let work = DispatchWorkItem { [weak self] in
@@ -1101,7 +1139,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             requestID: payload.requestID,
             toolName: payload.toolName,
             input: payload.input,
-            receivedAt: Int64(Date().timeIntervalSince1970 * 1000)
+            receivedAt: Int64(Date().timeIntervalSince1970 * UpdateTiming.millisecondsPerSecond)
         )
 
         DispatchQueue.main.async {
@@ -1121,8 +1159,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
+    /// extractPermissionRequestPayload normalizes permission prompts from update envelopes.
     private func extractPermissionRequestPayload(from update: UpdateEnvelope) -> (sessionID: String, requestID: String, toolName: String, input: String)? {
-        if update.type == "permission-request" || update.t == "permission-request" {
+        if update.type == UpdateKind.permissionRequest.rawValue || update.t == UpdateKind.permissionRequest.rawValue {
             let sessionID = update.id ?? update.sid
             let requestID = update.requestId
             let toolName = update.toolName
@@ -1135,7 +1174,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             }
         }
 
-        if let body = update.body, (body.type == "permission-request" || body.t == "permission-request") {
+        if let body = update.body,
+           body.type == UpdateKind.permissionRequest.rawValue || body.t == UpdateKind.permissionRequest.rawValue {
             let sessionID = body.id ?? body.sid
             guard let sessionID, !sessionID.isEmpty,
                   let requestID = body.requestId, !requestID.isEmpty,
@@ -1148,14 +1188,15 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return nil
     }
 
+    /// extractActivityPayload normalizes activity updates from update envelopes.
     private func extractActivityPayload(from update: UpdateEnvelope) -> (id: String, active: Bool?, activeAt: Int64?, thinking: Bool?)? {
         // Root-level activity messages.
-        if update.type == "activity" || update.t == "activity" {
+        if update.type == UpdateKind.activity.rawValue || update.t == UpdateKind.activity.rawValue {
             let id = update.id ?? update.sid
             guard let id, !id.isEmpty else { return nil }
             return (id: id, active: update.active, activeAt: update.activeAt, thinking: update.thinking)
         }
-        if update.type == "session-alive" || update.t == "session-alive" {
+        if update.type == UpdateKind.sessionAlive.rawValue || update.t == UpdateKind.sessionAlive.rawValue {
             let id = update.id ?? update.sid
             guard let id, !id.isEmpty else { return nil }
             let activeAt = update.activeAt ?? update.time
@@ -1166,13 +1207,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let bodyType = body.t ?? body.type
         guard let bodyType else { return nil }
 
-        if bodyType == "activity" {
+        if bodyType == UpdateKind.activity.rawValue {
             let id = body.id ?? body.sid
             guard let id, !id.isEmpty else { return nil }
             return (id: id, active: body.active, activeAt: body.activeAt, thinking: body.thinking)
         }
 
-        if bodyType == "session-alive" {
+        if bodyType == UpdateKind.sessionAlive.rawValue {
             let id = body.id ?? body.sid
             guard let id, !id.isEmpty else { return nil }
             // Session alive implies the session is active.
@@ -1195,8 +1236,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         DispatchQueue.main.async {
             self.lastLogLine = message
             self.logLines.append(message)
-            if self.logLines.count > 100 {
-                self.logLines = Array(self.logLines.suffix(100))
+            if self.logLines.count > LogLimits.maxLines {
+                self.logLines = Array(self.logLines.suffix(LogLimits.maxLines))
             }
             self.logs = self.logLines.joined(separator: "\n")
         }
