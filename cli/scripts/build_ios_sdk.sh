@@ -32,12 +32,17 @@ export GOWORK=off
   # Try with the `lldb` build tag first (enables nicer debugging hooks in some setups).
   # Some Go/cgo combinations emit a `-Werror,-Wdeclaration-after-statement` failure when
   # building with `lldb`; we relax that to keep builds working.
+  #
+  # IMPORTANT:
+  #   We always set the `gomobile` build tag so the SDK can exclude desktop-only
+  #   APIs that are unsafe across the gomobile/cgo boundary (e.g. string/[]byte
+  #   return values).
   if ! CC="clang -std=gnu99 -Wno-error=declaration-after-statement -Wno-declaration-after-statement" \
     CGO_CFLAGS="-std=gnu99 -Wno-error=declaration-after-statement -Wno-declaration-after-statement" \
     GOGCCFLAGS="-std=gnu99 -Wno-error=declaration-after-statement -Wno-declaration-after-statement" \
-    gomobile bind -tags lldb -target=ios -o "${OUT_DIR}/DelightSDK.xcframework" ./sdk; then
+    gomobile bind -tags lldb,gomobile -target=ios -o "${OUT_DIR}/DelightSDK.xcframework" ./sdk; then
     echo "lldb build tag failed; retrying without lldb." >&2
-    gomobile bind -target=ios -o "${OUT_DIR}/DelightSDK.xcframework" ./sdk
+    gomobile bind -tags gomobile -target=ios -o "${OUT_DIR}/DelightSDK.xcframework" ./sdk
   fi
 )
 

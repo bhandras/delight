@@ -1,4 +1,4 @@
-//go:build !ios && !android
+//go:build !gomobile
 
 package sdk
 
@@ -41,4 +41,3 @@ func (c *Client) ListMachines() (string, error) {
 func (c *Client) GetSessionMessages(sessionID string, limit int) (string, error) {
 	return c.getSessionMessagesDispatch(sessionID, limit)
 }
-

@@ -1,4 +1,4 @@
-//go:build !ios && !android
+//go:build !gomobile
 
 package sdk
 
@@ -32,4 +32,3 @@ func GenerateEd25519KeyPair() (*KeyPair, error) {
 		privateKey: priv,
 	}, nil
 }
-

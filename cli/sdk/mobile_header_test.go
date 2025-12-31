@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestMobileObjCHeaderDoesNotExposeStringReturningAPIs(t *testing.T) {
@@ -25,12 +27,12 @@ func TestMobileObjCHeaderDoesNotExposeStringReturningAPIs(t *testing.T) {
 		[]byte("getSessionMessages:(NSString"),
 		[]byte("listSessions:(NSError"),
 		[]byte("listMachines:(NSError"),
-		[]byte("StartLogServer"),
+		// NOTE: We only disallow the string-returning StartLogServer API. The
+		// Buffer-based `startLogServerBuffer` is allowed (and should remain
+		// available) for mobile.
+		[]byte("startLogServer:("),
 	}
 	for _, needle := range disallowed {
-		if bytes.Contains(b, needle) {
-			t.Fatalf("mobile ObjC header unexpectedly contains %q; string-returning APIs should not be exported in gomobile builds", needle)
-		}
+		require.Falsef(t, bytes.Contains(b, needle), "mobile ObjC header unexpectedly contains %q; string-returning APIs should not be exported in gomobile builds", needle)
 	}
 }
-

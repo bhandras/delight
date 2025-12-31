@@ -1,4 +1,4 @@
-//go:build !ios && !android
+//go:build !gomobile
 
 package sdk
 
@@ -6,4 +6,3 @@ package sdk
 func (c *Client) StartLogServer() (string, error) {
 	return c.startLogServer()
 }
-
