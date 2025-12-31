@@ -1730,12 +1730,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     hasMore = page["hasMore"]?.bool ?? false
                     nextBeforeSeq = page["nextBeforeSeq"]?.int64 ?? (page["nextBeforeSeq"]?.number).map { Int64($0) }
                 }
-            } else if let dataDict = dict["data"]?.object,
+            } else if let dataDict = dict[UpdateFields.data]?.object,
                       let messages = dataDict["messages"]?.array {
                 itemsArray = messages
             } else if let items = dict["items"]?.array {
                 itemsArray = items
-            } else if let dataItems = dict["data"]?.array {
+            } else if let dataItems = dict[UpdateFields.data]?.array {
                 itemsArray = dataItems
             } else {
                 itemsArray = []
@@ -1751,7 +1751,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
         for item in itemsArray {
             guard let dict = item.object else { continue }
-            let content = normalizeContent(firstNonNull(dict["content"], dict["message"], dict["data"]))
+            let content = normalizeContent(firstNonNull(dict[UpdateFields.content], dict["message"], dict[UpdateFields.data]))
             if isNullMessage(content) || isFileHistorySnapshot(content) || isToolResultMessage(content) {
                 continue
             }
@@ -1760,7 +1760,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if localID != nil || uuid != nil {
                 let role = extractRole(from: dict, content: content)
                 let text = extractText(from: content)
-                if let key = fallbackDedupeKey(role: role, createdAt: jsonInt64(dict, "createdAt"), text: text) {
+                if let key = fallbackDedupeKey(role: role, createdAt: jsonInt64(dict, UpdateFields.createdAt), text: text) {
                     richFallbackKeys.insert(key)
                 }
             }
@@ -1769,9 +1769,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         for item in itemsArray {
             guard let dict = item.object else { continue }
             let id = jsonString(dict, "id") ?? UUID().uuidString
-            let createdAt = jsonInt64(dict, "createdAt")
-            let seq = jsonInt64(dict, "seq")
-            let content = normalizeContent(firstNonNull(dict["content"], dict["message"], dict["data"]))
+            let createdAt = jsonInt64(dict, UpdateFields.createdAt)
+            let seq = jsonInt64(dict, UpdateFields.seq)
+            let content = normalizeContent(firstNonNull(dict[UpdateFields.content], dict["message"], dict[UpdateFields.data]))
             if isNullMessage(content) || isFileHistorySnapshot(content) {
                 continue
             }
@@ -1866,7 +1866,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
               let message = messageValue.object else {
             return
         }
-        let content = normalizeContent(firstNonNull(message["content"], message["data"]))
+        let content = normalizeContent(firstNonNull(message[UpdateFields.content], message[UpdateFields.data]))
         let hasThinking = containsThinkingBlock(content)
         let blocks = extractBlocks(from: content, sessionID: targetSessionID)
         if hasThinking && blocks.isEmpty {
@@ -1891,16 +1891,16 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if let text = dict["text"]?.string {
                 return splitMarkdownBlocks(text)
             }
-            if let contentText = dict["content"]?.string {
+            if let contentText = dict[UpdateFields.content]?.string {
                 return splitMarkdownBlocks(contentText)
             }
-            if let inner = dict["content"] {
+            if let inner = dict[UpdateFields.content] {
                 return extractBlocks(from: inner, sessionID: sessionID)
             }
             if let message = dict["message"] {
                 return extractBlocks(from: message, sessionID: sessionID)
             }
-            if let data = dict["data"] {
+            if let data = dict[UpdateFields.data] {
                 return extractBlocks(from: data, sessionID: sessionID)
             }
         } else if let array = content.array {
@@ -1936,7 +1936,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     blocks.append(contentsOf: splitMarkdownBlocks(text))
                     continue
                 }
-                if let contentText = dict["content"]?.string {
+                if let contentText = dict[UpdateFields.content]?.string {
                     blocks.append(contentsOf: splitMarkdownBlocks(contentText))
                     continue
                 }
@@ -1974,7 +1974,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if let message = dict["message"]?.object, message["type"]?.string == "file-history-snapshot" {
                 return true
             }
-            if let inner = dict["content"], isFileHistorySnapshot(inner) {
+            if let inner = dict[UpdateFields.content], isFileHistorySnapshot(inner) {
                 return true
             }
         }
@@ -1991,10 +1991,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if let message = dict["message"] {
                 return isToolResultMessage(message)
             }
-            if let inner = dict["content"] {
+            if let inner = dict[UpdateFields.content] {
                 return isToolResultMessage(inner)
             }
-            if let data = dict["data"] {
+            if let data = dict[UpdateFields.data] {
                 return isToolResultMessage(data)
             }
         }
@@ -2011,7 +2011,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     private func extractLocalID(from dict: [String: JSONValue]) -> String? {
-        guard let localID = dict["localId"]?.string, !localID.isEmpty else {
+        guard let localID = dict[UpdateFields.localID]?.string, !localID.isEmpty else {
             return nil
         }
         return localID
@@ -2027,13 +2027,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                let uuid = message["uuid"]?.string, !uuid.isEmpty {
                 return uuid
             }
-            if let inner = dict["content"], let uuid = extractMessageUUID(from: inner) {
+            if let inner = dict[UpdateFields.content], let uuid = extractMessageUUID(from: inner) {
                 return uuid
             }
             if let message = dict["message"], let uuid = extractMessageUUID(from: message) {
                 return uuid
             }
-            if let data = dict["data"], let uuid = extractMessageUUID(from: data) {
+            if let data = dict[UpdateFields.data], let uuid = extractMessageUUID(from: data) {
                 return uuid
             }
         }
@@ -2077,13 +2077,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if dict["type"]?.string == "thinking" {
                 return true
             }
-            if let inner = dict["content"], containsThinkingBlock(inner) {
+            if let inner = dict[UpdateFields.content], containsThinkingBlock(inner) {
                 return true
             }
             if let message = dict["message"], containsThinkingBlock(message) {
                 return true
             }
-            if let data = dict["data"], containsThinkingBlock(data) {
+            if let data = dict[UpdateFields.data], containsThinkingBlock(data) {
                 return true
             }
         }
@@ -2128,13 +2128,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if let text = dict["text"]?.string {
                 return text
             }
-            if let inner = dict["content"] {
+            if let inner = dict[UpdateFields.content] {
                 return extractText(from: inner)
             }
             if let message = dict["message"] {
                 return extractText(from: message)
             }
-            if let data = dict["data"] {
+            if let data = dict[UpdateFields.data] {
                 return extractText(from: data)
             }
         } else if let array = content.array {
@@ -2304,7 +2304,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if let role = dict["role"]?.string {
                 return normalizeRole(role)
             }
-            if let inner = dict["content"]?.object,
+            if let inner = dict[UpdateFields.content]?.object,
                let role = inner["role"]?.string {
                 return normalizeRole(role)
             }
@@ -2313,11 +2313,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 return normalizeRole(role)
             }
             if let message = dict["message"]?.object,
-               let inner = message["content"]?.object,
+               let inner = message[UpdateFields.content]?.object,
                let role = inner["role"]?.string {
                 return normalizeRole(role)
             }
-            if let data = dict["data"]?.object,
+            if let data = dict[UpdateFields.data]?.object,
                let message = data["message"]?.object,
                let role = message["role"]?.string {
                 return normalizeRole(role)
