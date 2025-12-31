@@ -2,11 +2,13 @@ package actor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/claude"
+	"github.com/bhandras/delight/cli/internal/websocket"
 )
 
 // Runtime interprets SessionActor effects for the Delight CLI.
@@ -23,8 +25,11 @@ import (
 type Runtime struct {
 	mu sync.Mutex
 
+	sessionID string
 	workDir string
 	debug   bool
+
+	stateUpdater StateUpdater
 
 	localProc    *claude.Process
 	localGen     int64
@@ -32,9 +37,30 @@ type Runtime struct {
 	remoteGen    int64
 }
 
+// StateUpdater persists session agent state to a server.
+type StateUpdater interface {
+	UpdateState(sessionID string, agentState string, version int64) (int64, error)
+}
+
 // NewRuntime returns a Runtime that executes runner effects in the given workDir.
 func NewRuntime(workDir string, debug bool) *Runtime {
 	return &Runtime{workDir: workDir, debug: debug}
+}
+
+// WithSessionID configures the session id used for state persistence effects.
+func (r *Runtime) WithSessionID(sessionID string) *Runtime {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sessionID = sessionID
+	return r
+}
+
+// WithStateUpdater configures the persistence adapter used for agent state updates.
+func (r *Runtime) WithStateUpdater(updater StateUpdater) *Runtime {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stateUpdater = updater
+	return r
 }
 
 // HandleEffects implements actor.Runtime.
@@ -60,7 +86,7 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 		case effRemoteAbort:
 			r.remoteAbort(e)
 		case effPersistAgentState:
-			// Phase 4: persist agent state via socket runtime.
+			r.persistAgentState(ctx, e, emit)
 		default:
 			// Unknown effect: ignore.
 		}
@@ -211,3 +237,41 @@ func (r *Runtime) remoteAbort(eff effRemoteAbort) {
 	_ = bridge.Abort()
 }
 
+func (r *Runtime) persistAgentState(ctx context.Context, eff effPersistAgentState, emit func(framework.Input)) {
+	r.mu.Lock()
+	updater := r.stateUpdater
+	sessionID := r.sessionID
+	r.mu.Unlock()
+
+	if updater == nil || sessionID == "" {
+		// Not configured yet; treat as no-op.
+		return
+	}
+
+	// Persist asynchronously to avoid blocking the actor loop on socket IO.
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		newVersion, err := updater.UpdateState(sessionID, eff.AgentStateJSON, eff.ExpectedVersion)
+		if err == nil {
+			emit(evAgentStatePersisted{NewVersion: newVersion})
+			return
+		}
+
+		// Special case: version mismatch should be retried by the reducer with the server version.
+		if errors.Is(err, websocket.ErrVersionMismatch) {
+			if newVersion <= 0 {
+				// If the server didn't provide a version, treat as a generic failure.
+				emit(evAgentStatePersistFailed{Err: err})
+				return
+			}
+			emit(evAgentStateVersionMismatch{ServerVersion: newVersion})
+			return
+		}
+		emit(evAgentStatePersistFailed{Err: err})
+	}()
+}

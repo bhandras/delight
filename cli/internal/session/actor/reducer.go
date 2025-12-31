@@ -28,6 +28,12 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 	case evDesktopTakeback:
 		// Desktop takeback is a switch to local.
 		return reduceSwitchMode(state, cmdSwitchMode{Target: ModeLocal, Reply: nil})
+	case evAgentStatePersisted:
+		return reduceAgentStatePersisted(state, in)
+	case evAgentStateVersionMismatch:
+		return reduceAgentStateVersionMismatch(state, in)
+	case evAgentStatePersistFailed:
+		return reduceAgentStatePersistFailed(state, in)
 	default:
 		return state, nil
 	}
@@ -50,6 +56,7 @@ func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 
 	// Only keep the latest pending switch reply (callers should serialize in higher layers).
 	state.PendingSwitchReply = cmd.Reply
+	state.PersistRetryRemaining = 1
 
 	switch cmd.Target {
 	case ModeRemote:
@@ -58,7 +65,7 @@ func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 		return state, []actor.Effect{
 			effStopLocalRunner{Gen: gen - 1},
 			effStartRemoteRunner{Gen: gen},
-			effPersistAgentState{AgentStateJSON: state.AgentStateJSON},
+			effPersistAgentState{AgentStateJSON: state.AgentStateJSON, ExpectedVersion: state.AgentStateVersion},
 		}
 	case ModeLocal:
 		state.Mode = ModeLocal
@@ -66,7 +73,7 @@ func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 		return state, []actor.Effect{
 			effStopRemoteRunner{Gen: gen - 1},
 			effStartLocalRunner{Gen: gen},
-			effPersistAgentState{AgentStateJSON: state.AgentStateJSON},
+			effPersistAgentState{AgentStateJSON: state.AgentStateJSON, ExpectedVersion: state.AgentStateVersion},
 		}
 	default:
 		// Unknown target; respond error if present.
@@ -198,3 +205,32 @@ func reducePermissionDecision(state State, cmd cmdPermissionDecision) (State, []
 	return state, nil
 }
 
+func reduceAgentStatePersisted(state State, ev evAgentStatePersisted) (State, []actor.Effect) {
+	if ev.NewVersion > 0 {
+		state.AgentStateVersion = ev.NewVersion
+	}
+	state.PersistRetryRemaining = 0
+	return state, nil
+}
+
+func reduceAgentStateVersionMismatch(state State, ev evAgentStateVersionMismatch) (State, []actor.Effect) {
+	if ev.ServerVersion > 0 {
+		state.AgentStateVersion = ev.ServerVersion
+	}
+	if state.PersistRetryRemaining <= 0 {
+		return state, nil
+	}
+	state.PersistRetryRemaining--
+	return state, []actor.Effect{
+		effPersistAgentState{AgentStateJSON: state.AgentStateJSON, ExpectedVersion: state.AgentStateVersion},
+	}
+}
+
+func reduceAgentStatePersistFailed(state State, ev evAgentStatePersistFailed) (State, []actor.Effect) {
+	_ = ev
+	// Phase 4 minimal behavior: keep version as-is and allow a future tick/debounce
+	// mechanism to retry. We don't retry immediately on arbitrary errors because
+	// it can create tight loops during outages.
+	state.PersistRetryRemaining = 0
+	return state, nil
+}

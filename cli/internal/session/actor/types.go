@@ -14,7 +14,9 @@ import (
 type Mode string
 
 const (
+	// ModeLocal means the desktop controls the session (interactive TUI).
 	ModeLocal  Mode = "local"
+	// ModeRemote means the phone controls the session (SDK/bridge mode).
 	ModeRemote Mode = "remote"
 )
 
@@ -22,11 +24,17 @@ const (
 type FSMState string
 
 const (
+	// StateLocalStarting indicates the local runner is being started.
 	StateLocalStarting  FSMState = "LocalStarting"
+	// StateLocalRunning indicates the local runner is active.
 	StateLocalRunning   FSMState = "LocalRunning"
+	// StateRemoteStarting indicates the remote runner is being started.
 	StateRemoteStarting FSMState = "RemoteStarting"
+	// StateRemoteRunning indicates the remote runner is active.
 	StateRemoteRunning  FSMState = "RemoteRunning"
+	// StateClosing indicates shutdown is in progress.
 	StateClosing        FSMState = "Closing"
+	// StateClosed indicates the session actor has stopped.
 	StateClosed         FSMState = "Closed"
 )
 
@@ -49,6 +57,14 @@ type State struct {
 
 	// AgentStateJSON is the durable agent state blob to persist (plaintext JSON).
 	AgentStateJSON string
+
+	// AgentStateVersion is the version used for optimistic concurrency control
+	// when persisting agent state to the server.
+	AgentStateVersion int64
+
+	// PersistRetryRemaining bounds retries on version-mismatch errors. Set to 1
+	// when the reducer schedules a persist, and decremented on retry.
+	PersistRetryRemaining int
 }
 
 // PermissionDecision is the resolved permission response to send back to the
@@ -145,6 +161,29 @@ type evDesktopTakeback struct {
 
 func (evDesktopTakeback) isSessionEvent() {}
 
+// Agent-state persistence events.
+
+type evAgentStatePersisted struct {
+	actor.InputBase
+	NewVersion int64
+}
+
+func (evAgentStatePersisted) isSessionEvent() {}
+
+type evAgentStateVersionMismatch struct {
+	actor.InputBase
+	ServerVersion int64
+}
+
+func (evAgentStateVersionMismatch) isSessionEvent() {}
+
+type evAgentStatePersistFailed struct {
+	actor.InputBase
+	Err error
+}
+
+func (evAgentStatePersistFailed) isSessionEvent() {}
+
 // Effects
 
 // Effect is a marker interface for effects emitted by the reducer.
@@ -205,7 +244,7 @@ func (effRemoteAbort) isSessionEffect() {}
 type effPersistAgentState struct {
 	actor.EffectBase
 	AgentStateJSON string
+	ExpectedVersion int64
 }
 
 func (effPersistAgentState) isSessionEffect() {}
-
