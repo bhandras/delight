@@ -1,6 +1,10 @@
 package sdk
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestControlledByUserFromAgentStateJSON(t *testing.T) {
 	t.Parallel()
@@ -23,9 +27,8 @@ func TestControlledByUserFromAgentStateJSON(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			gotValue, gotOK := controlledByUserFromAgentStateJSON(tt.agentJSON)
-			if gotValue != tt.wantValue || gotOK != tt.wantOK {
-				t.Fatalf("got (value=%v ok=%v), want (value=%v ok=%v)", gotValue, gotOK, tt.wantValue, tt.wantOK)
-			}
+			require.Equal(t, tt.wantValue, gotValue)
+			require.Equal(t, tt.wantOK, gotOK)
 		})
 	}
 }
@@ -48,21 +51,11 @@ func TestDeriveSessionUI_UsesCachedWhenAgentStateInvalid(t *testing.T) {
 
 	fsm, ui := deriveSessionUI(now, connected, active, "not-json", cached)
 
-	if fsm.state != "remote" {
-		t.Fatalf("fsm.state=%q, want %q", fsm.state, "remote")
-	}
-	if fsm.controlledByUser {
-		t.Fatalf("fsm.controlledByUser=true, want false")
-	}
-	if uiState, _ := ui["state"].(string); uiState != "remote" {
-		t.Fatalf("ui.state=%q, want %q", uiState, "remote")
-	}
-	if canSend, _ := ui["canSend"].(bool); !canSend {
-		t.Fatalf("ui.canSend=false, want true")
-	}
-	if canTake, _ := ui["canTakeControl"].(bool); canTake {
-		t.Fatalf("ui.canTakeControl=true, want false")
-	}
+	require.Equal(t, "remote", fsm.state)
+	require.False(t, fsm.controlledByUser)
+	require.Equal(t, "remote", ui["state"])
+	require.Equal(t, true, ui["canSend"])
+	require.Equal(t, false, ui["canTakeControl"])
 }
 
 func TestDeriveSessionUI_DefaultsToLocalWhenUnknown(t *testing.T) {
@@ -74,14 +67,76 @@ func TestDeriveSessionUI_DefaultsToLocalWhenUnknown(t *testing.T) {
 
 	fsm, ui := deriveSessionUI(now, connected, active, "not-json", nil)
 
-	if fsm.state != "local" {
-		t.Fatalf("fsm.state=%q, want %q", fsm.state, "local")
+	require.Equal(t, "local", fsm.state)
+	require.True(t, fsm.controlledByUser)
+	require.Equal(t, "local", ui["state"])
+}
+
+func TestComputeSessionFSM_Table(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		connected        bool
+		active           bool
+		controlledByUser bool
+		wantState        string
+		wantCanSend      bool
+		wantCanTake      bool
+	}{
+		{name: "disconnected", connected: false, active: true, controlledByUser: true, wantState: "disconnected", wantCanSend: false, wantCanTake: false},
+		{name: "offline", connected: true, active: false, controlledByUser: true, wantState: "offline", wantCanSend: false, wantCanTake: false},
+		{name: "local", connected: true, active: true, controlledByUser: true, wantState: "local", wantCanSend: false, wantCanTake: true},
+		{name: "remote", connected: true, active: true, controlledByUser: false, wantState: "remote", wantCanSend: true, wantCanTake: false},
 	}
-	if !fsm.controlledByUser {
-		t.Fatalf("fsm.controlledByUser=false, want true")
-	}
-	if uiState, _ := ui["state"].(string); uiState != "local" {
-		t.Fatalf("ui.state=%q, want %q", uiState, "local")
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fsm, ui := deriveSessionUI(123, tt.connected, tt.active, `{"controlledByUser":`+boolToJSON(tt.controlledByUser)+`}`, nil)
+			require.Equal(t, tt.wantState, fsm.state)
+			require.Equal(t, tt.wantState, ui["state"])
+			require.Equal(t, tt.wantCanSend, ui["canSend"])
+			require.Equal(t, tt.wantCanTake, ui["canTakeControl"])
+		})
 	}
 }
 
+func TestHandleUpdate_UpdateSession_AgentStateUpdatesFSM(t *testing.T) {
+	t.Parallel()
+
+	c := NewClient("http://example.invalid")
+	sessionID := "s1"
+
+	c.sessionFSM[sessionID] = sessionFSMState{
+		state:            "remote",
+		active:           true,
+		connected:        true,
+		controlledByUser: false,
+	}
+
+	c.handleUpdate(map[string]interface{}{
+		"body": map[string]interface{}{
+			"t":  "update-session",
+			"id": sessionID,
+			"agentState": map[string]interface{}{
+				"value": `{"controlledByUser":true}`,
+			},
+		},
+	})
+
+	got := c.sessionFSM[sessionID]
+	require.Equal(t, "local", got.state)
+	require.True(t, got.controlledByUser)
+	require.True(t, got.active)
+	require.True(t, got.connected)
+}
+
+func boolToJSON(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
+}

@@ -34,16 +34,16 @@ type Client struct {
 	token     string
 	debug     bool
 
-	mu           sync.Mutex
-	masterSecret []byte
-	dataKeys     map[string][]byte
-	sessionFSM   map[string]sessionFSMState
+	mu                   sync.Mutex
+	masterSecret         []byte
+	dataKeys             map[string][]byte
+	sessionFSM           map[string]sessionFSMState
 	lastSessionHydrateAt int64
-	listener     Listener
-	userSocket   *websocket.Client
-	httpClient   *http.Client
-	logServer    *http.Server
-	logServerURL string
+	listener             Listener
+	userSocket           *websocket.Client
+	httpClient           *http.Client
+	logServer            *http.Server
+	logServerURL         string
 
 	dispatch  *dispatcher
 	callbacks *dispatcher
@@ -1135,9 +1135,49 @@ func (c *Client) handleUpdate(data map[string]interface{}) {
 		}
 	case "update-session":
 		sessionID, _ = body["id"].(string)
+		// Keep the derived session control FSM up to date without requiring the UI
+		// to poll ListSessions.
+		//
+		// The server emits agentState changes as part of update-session events, so
+		// we can update our per-session cached UI state immediately.
+		if sessionID != "" {
+			if agentState, ok := body["agentState"].(map[string]interface{}); ok {
+				if value, _ := agentState["value"].(string); value != "" {
+					c.applyAgentStateToSessionFSM(sessionID, value)
+				}
+			}
+		}
 	}
 
 	c.emitUpdate(sessionID, data)
+}
+
+func (c *Client) applyAgentStateToSessionFSM(sessionID string, agentState string) {
+	now := time.Now().UnixMilli()
+
+	c.mu.Lock()
+	prev := c.sessionFSM[sessionID]
+	socket := c.userSocket
+	c.mu.Unlock()
+
+	connected := prev.connected
+	if socket != nil {
+		connected = socket.IsConnected()
+	}
+	active := prev.active
+	if prev.state == "" {
+		// If we don't have a previous snapshot, receiving an update implies the
+		// session is at least "online-ish".
+		active = true
+		connected = true
+	}
+
+	fsm, _ := deriveSessionUI(now, connected, active, agentState, &prev)
+	fsm.updatedAt = prev.updatedAt
+
+	c.mu.Lock()
+	c.sessionFSM[sessionID] = fsm
+	c.mu.Unlock()
 }
 
 func (c *Client) maybeHydrateSessionKeys() {
