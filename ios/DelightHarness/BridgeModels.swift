@@ -151,7 +151,7 @@ struct SessionAgentState {
 }
 
 /// SessionUIState is the SDK-derived, view-friendly UI state injected into session summaries.
-struct SessionUIState: Equatable {
+struct SessionUIState: Decodable, Equatable {
     let state: String // disconnected|offline|local|remote
     let connected: Bool
     let active: Bool
@@ -161,18 +161,48 @@ struct SessionUIState: Equatable {
     let canTakeControl: Bool
     let canSend: Bool
 
-    /// fromJSONDict parses the injected ui map.
-    static func fromJSONDict(_ dict: [String: Any]?) -> SessionUIState? {
-        guard let dict else { return nil }
-        let state = dict["state"] as? String ?? "disconnected"
-        let connected = dict["connected"] as? Bool ?? false
-        let active = dict["active"] as? Bool ?? false
-        let controlledByUser = dict["controlledByUser"] as? Bool ?? true
-        let switching = dict["switching"] as? Bool ?? false
-        let transition = dict["transition"] as? String ?? ""
-        let canTakeControl = dict["canTakeControl"] as? Bool ?? false
-        let canSend = dict["canSend"] as? Bool ?? false
-        return SessionUIState(
+    enum CodingKeys: String, CodingKey {
+        case state
+        case connected
+        case active
+        case controlledByUser
+        case switching
+        case transition
+        case canTakeControl
+        case canSend
+    }
+
+    init(
+        state: String,
+        connected: Bool,
+        active: Bool,
+        controlledByUser: Bool,
+        switching: Bool,
+        transition: String,
+        canTakeControl: Bool,
+        canSend: Bool
+    ) {
+        self.state = state
+        self.connected = connected
+        self.active = active
+        self.controlledByUser = controlledByUser
+        self.switching = switching
+        self.transition = transition
+        self.canTakeControl = canTakeControl
+        self.canSend = canSend
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let state = try container.decodeIfPresent(String.self, forKey: .state) ?? "disconnected"
+        let connected = try container.decodeIfPresent(Bool.self, forKey: .connected) ?? false
+        let active = try container.decodeIfPresent(Bool.self, forKey: .active) ?? false
+        let controlledByUser = try container.decodeIfPresent(Bool.self, forKey: .controlledByUser) ?? true
+        let switching = try container.decodeIfPresent(Bool.self, forKey: .switching) ?? false
+        let transition = try container.decodeIfPresent(String.self, forKey: .transition) ?? ""
+        let canTakeControl = try container.decodeIfPresent(Bool.self, forKey: .canTakeControl) ?? false
+        let canSend = try container.decodeIfPresent(Bool.self, forKey: .canSend) ?? false
+        self.init(
             state: state,
             connected: connected,
             active: active,
@@ -337,4 +367,3 @@ struct TerminalPairingReceipt: Identifiable {
     let machineID: String?
     let terminalKey: String
 }
-

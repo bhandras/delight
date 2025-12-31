@@ -76,7 +76,7 @@ private struct UpdateBody: Decodable {
     let id: String?
 
     // Common payload fields (present depending on `t`/`type`).
-    let ui: JSONValue?
+    let ui: SessionUIState?
     let message: JSONValue?
 
     // Permission request payload.
@@ -891,9 +891,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
               let body = update.body,
               body.t == "session-ui",
               let sessionID = body.sid,
-              let uiValue = body.ui,
-              let uiDict = uiValue.toAny() as? [String: Any],
-              let ui = SessionUIState.fromJSONDict(uiDict) else {
+              let ui = body.ui else {
             return false
         }
 
@@ -1310,7 +1308,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         struct SessionsUIResponse: Decodable {
             struct Session: Decodable {
                 let id: String
-                let ui: JSONValue?
+                let ui: SessionUIState?
             }
             let sessions: [Session]
         }
@@ -1324,11 +1322,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             var out: [String: SessionUIState] = [:]
             out.reserveCapacity(uiDecoded.sessions.count)
             for raw in uiDecoded.sessions {
-                guard let uiValue = raw.ui,
-                      let uiDict = uiValue.toAny() as? [String: Any],
-                      let uiState = SessionUIState.fromJSONDict(uiDict) else {
-                    continue
-                }
+                guard let uiState = raw.ui else { continue }
                 out[raw.id] = uiState
             }
             return out
