@@ -247,7 +247,7 @@ Rationale:
 ## 7) Cleanup / deletion list (endgame)
 
 - [x] Remove `Manager.Wait()` polling and any `Wait()` calls outside runtime waiters
-- [ ] Remove the following fields once actor owns them:
+- [x] Remove the following fields once actor owns them:
   - [x] `modeMu`, `stateMu`, `permissionMu`, `localRunMu`
   - [x] `spawnMu`, `spawnStoreMu`
   - [x] `recentRemoteInputsMu`, `recentOutboundUserLocalIDsMu`
