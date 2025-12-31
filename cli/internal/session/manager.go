@@ -89,10 +89,8 @@ type Manager struct {
 	pendingPermissions map[string]*pendingPermission
 	permissionMu       sync.Mutex
 
-	spawnMu         sync.Mutex
-	spawnedSessions map[string]*Manager
-
-	spawnStoreMu sync.Mutex
+	spawnActor        *framework.Actor[spawnActorState]
+	spawnActorRuntime *spawnActorRuntime
 
 	// inboundQueue serializes inbound events (socket updates, mobile RPC, etc.)
 	// to avoid concurrent state mutation when clients deliver events in parallel.
@@ -154,27 +152,26 @@ func NewManager(cfg *config.Config, token string, debug bool) (*Manager, error) 
 		return nil, fmt.Errorf("failed to get master secret: %w", err)
 	}
 
-	return &Manager{
-		cfg:                cfg,
-		token:              token,
-		masterSecret:       masterSecret,
-		debug:              debug,
-		fakeAgent:          cfg.FakeAgent,
-		acpAgent:           cfg.ACPAgent,
-		agent:              cfg.Agent,
-		codexQueue:         make(chan codexMessage, 100),
-		codexStop:          make(chan struct{}),
-		stopCh:             make(chan struct{}),
-		inboundQueue:       make(chan func(), 256),
-		switchCh:           make(chan Mode, 1),
-		mode:               ModeLocal,
-		pendingPermissions: make(map[string]*pendingPermission),
-		spawnedSessions:    make(map[string]*Manager),
-		state: &types.AgentState{
-			ControlledByUser:  true,
-			Requests:          make(map[string]types.AgentPendingRequest),
-			CompletedRequests: make(map[string]types.AgentCompletedRequest),
-		},
+		return &Manager{
+			cfg:                cfg,
+			token:              token,
+			masterSecret:       masterSecret,
+			debug:              debug,
+			fakeAgent:          cfg.FakeAgent,
+			acpAgent:           cfg.ACPAgent,
+			agent:              cfg.Agent,
+			codexQueue:         make(chan codexMessage, 100),
+			codexStop:          make(chan struct{}),
+			stopCh:             make(chan struct{}),
+			inboundQueue:       make(chan func(), 256),
+			switchCh:           make(chan Mode, 1),
+			mode:               ModeLocal,
+			pendingPermissions: make(map[string]*pendingPermission),
+			state: &types.AgentState{
+				ControlledByUser:  true,
+				Requests:          make(map[string]types.AgentPendingRequest),
+				CompletedRequests: make(map[string]types.AgentCompletedRequest),
+			},
 	}, nil
 }
 

@@ -198,7 +198,10 @@ Remove `permissionMu`.
 - Each spawned session has its own event loop.
 - Parent interacts via commands/events only.
 
-Remove `spawnMu` and `spawnStoreMu`.
+Implementation note:
+
+- Replace `spawnMu` / `spawnStoreMu` with a dedicated spawn supervisor actor that
+  owns the child map and registry persistence.
 
 ### Phase 7 — Delete mutexes and simplify
 

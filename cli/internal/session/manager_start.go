@@ -142,6 +142,7 @@ func (m *Manager) Start(workDir string) error {
 	log.Printf("Session created: %s", m.sessionID)
 
 	m.initRuntime()
+	m.initSpawnActor()
 
 	if m.agent == "acp" {
 		if !m.cfg.ACPEnable {
@@ -791,12 +792,7 @@ func (m *Manager) Close() error {
 		m.machineClient.Close()
 	}
 
-	m.spawnMu.Lock()
-	for _, child := range m.spawnedSessions {
-		child.Close()
-	}
-	m.spawnedSessions = make(map[string]*Manager)
-	m.spawnMu.Unlock()
+	m.shutdownSpawnedSessions()
 
 	// Kill Claude process
 	if m.claudeProcess != nil {

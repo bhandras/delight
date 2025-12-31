@@ -46,41 +46,20 @@ func (m *Manager) registerMachineRPCHandlers() {
 				}
 			}
 
-			child, err := NewManager(m.cfg, m.token, m.debug)
-			if err != nil {
-				return nil, err
-			}
-			if req.Agent == "acp" || req.Agent == "claude" || req.Agent == "codex" {
-				child.agent = req.Agent
-			}
-			child.disableMachineSocket = true
+				sessionID, err := m.spawnChildSession(req.Directory, req.Agent)
+				if err != nil {
+					return nil, err
+				}
+				if sessionID == "" {
+					return nil, fmt.Errorf("session id not assigned")
+				}
 
-			if err := child.Start(req.Directory); err != nil {
-				return nil, err
-			}
-			if child.sessionID == "" {
-				return nil, fmt.Errorf("session id not assigned")
-			}
-
-			m.spawnMu.Lock()
-			m.spawnedSessions[child.sessionID] = child
-			m.spawnMu.Unlock()
-
-			m.registerSpawnedSession(child.sessionID, req.Directory)
-
-			go func(sessionID string, mgr *Manager) {
-				_ = mgr.Wait()
-				m.spawnMu.Lock()
-				delete(m.spawnedSessions, sessionID)
-				m.spawnMu.Unlock()
-			}(child.sessionID, child)
-
-			return json.Marshal(wire.SpawnHappySessionResponse{
-				Type:      "success",
-				SessionID: child.sessionID,
+				return json.Marshal(wire.SpawnHappySessionResponse{
+					Type:      "success",
+					SessionID: sessionID,
+				})
 			})
 		})
-	})
 
 	m.machineRPC.RegisterHandler(prefix+"stop-session", func(params json.RawMessage) (json.RawMessage, error) {
 		return m.runInboundRPC(func() (json.RawMessage, error) {
@@ -93,21 +72,12 @@ func (m *Manager) registerMachineRPCHandlers() {
 				return nil, fmt.Errorf("sessionId is required")
 			}
 
-			m.spawnMu.Lock()
-			child, ok := m.spawnedSessions[req.SessionID]
-			if ok {
-				delete(m.spawnedSessions, req.SessionID)
-			}
-			m.spawnMu.Unlock()
-
-			if !ok {
-				return nil, fmt.Errorf("session not found")
-			}
-			_ = child.Close()
-			m.removeSpawnedSession(req.SessionID)
-			return json.Marshal(wire.StopSessionResponse{Message: "Session stopped"})
+				if err := m.stopChildSession(req.SessionID); err != nil {
+					return nil, err
+				}
+				return json.Marshal(wire.StopSessionResponse{Message: "Session stopped"})
+			})
 		})
-	})
 
 	m.machineRPC.RegisterHandler(prefix+"stop-daemon", func(params json.RawMessage) (json.RawMessage, error) {
 		return m.runInboundRPC(func() (json.RawMessage, error) {

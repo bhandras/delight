@@ -249,7 +249,7 @@ Rationale:
 - [ ] Remove `Manager.Wait()` polling and any `Wait()` calls outside runtime waiters
 - [ ] Remove the following fields once actor owns them:
   - [ ] `modeMu`, `stateMu`, `permissionMu`, `localRunMu`
-  - [ ] `spawnMu`, `spawnStoreMu`
+  - [x] `spawnMu`, `spawnStoreMu`
   - [ ] `recentRemoteInputsMu`, `recentOutboundUserLocalIDsMu`
   - [ ] `desktopTakebackMu` (takeback watcher lifecycle can be actor-owned)
 - [ ] Remove `enqueueInbound(func())` in favor of typed mailbox inputs
