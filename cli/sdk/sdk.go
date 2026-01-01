@@ -193,10 +193,10 @@ func (c *Client) setEncryptedSessionDataKey(sessionID, encryptedB64 string) erro
 	decrypted, err := crypto.DecryptDataEncryptionKey(encryptedB64, master)
 	if err != nil {
 		// Fallback: accept raw base64 data keys (legacy server behavior).
-			raw, decodeErr := base64.StdEncoding.DecodeString(encryptedB64)
-			if decodeErr != nil || len(raw) != masterKeyBytes {
-				return fmt.Errorf("decrypt data key: %w", err)
-			}
+		raw, decodeErr := base64.StdEncoding.DecodeString(encryptedB64)
+		if decodeErr != nil || len(raw) != masterKeyBytes {
+			return fmt.Errorf("decrypt data key: %w", err)
+		}
 		decrypted = raw
 	}
 	c.mu.Lock()
@@ -229,7 +229,7 @@ func (c *Client) connect() error {
 		return fmt.Errorf("token not set")
 	}
 
-	socket := websocket.NewUserClient(c.serverURL, token, debug)
+	socket := websocket.NewUserClient(c.serverURL, token, websocket.TransportWebSocket, debug)
 	socket.On(websocket.EventUpdate, c.handleUpdateQueued)
 	socket.On(websocket.EventEphemeral, c.handleEphemeralQueued)
 

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"sync"
 	"time"
 
@@ -61,6 +60,7 @@ type Client struct {
 	sessionID  string
 	machineID  string
 	clientType string
+	transport  string
 	socket     *socket.Socket
 	mu         sync.Mutex
 	handlers   map[EventType]func(map[string]interface{})
@@ -76,13 +76,33 @@ type Client struct {
 	onDisconnect []func(reason string)
 }
 
+const (
+	// TransportWebSocket forces Socket.IO to use WebSocket only.
+	TransportWebSocket = "websocket"
+	// TransportPolling forces Socket.IO to use HTTP long-polling only.
+	TransportPolling = "polling"
+)
+
+// normalizeTransport returns a supported transport mode or the default.
+func normalizeTransport(mode string) string {
+	switch mode {
+	case TransportWebSocket:
+		return TransportWebSocket
+	case TransportPolling:
+		return TransportPolling
+	default:
+		return TransportWebSocket
+	}
+}
+
 // NewClient creates a new Socket.IO client
-func NewClient(serverURL, token, sessionID string, debug bool) *Client {
+func NewClient(serverURL, token, sessionID, transport string, debug bool) *Client {
 	return &Client{
 		serverURL:  serverURL,
 		token:      token,
 		sessionID:  sessionID,
 		clientType: "session-scoped",
+		transport:  normalizeTransport(transport),
 		handlers:   make(map[EventType]func(map[string]interface{})),
 		done:       make(chan struct{}),
 		debug:      debug,
@@ -90,12 +110,13 @@ func NewClient(serverURL, token, sessionID string, debug bool) *Client {
 }
 
 // NewMachineClient creates a machine-scoped Socket.IO client.
-func NewMachineClient(serverURL, token, machineID string, debug bool) *Client {
+func NewMachineClient(serverURL, token, machineID, transport string, debug bool) *Client {
 	return &Client{
 		serverURL:  serverURL,
 		token:      token,
 		machineID:  machineID,
 		clientType: "machine-scoped",
+		transport:  normalizeTransport(transport),
 		handlers:   make(map[EventType]func(map[string]interface{})),
 		done:       make(chan struct{}),
 		debug:      debug,
@@ -103,11 +124,12 @@ func NewMachineClient(serverURL, token, machineID string, debug bool) *Client {
 }
 
 // NewUserClient creates a user-scoped Socket.IO client.
-func NewUserClient(serverURL, token string, debug bool) *Client {
+func NewUserClient(serverURL, token, transport string, debug bool) *Client {
 	return &Client{
 		serverURL:  serverURL,
 		token:      token,
 		clientType: "user-scoped",
+		transport:  normalizeTransport(transport),
 		handlers:   make(map[EventType]func(map[string]interface{})),
 		done:       make(chan struct{}),
 		debug:      debug,
@@ -159,6 +181,7 @@ func (c *Client) Connect() error {
 	clientType := c.clientType
 	sessionID := c.sessionID
 	machineID := c.machineID
+	transport := c.transport
 	prevSock := c.socket
 	c.socket = nil
 	c.connected = false
@@ -176,20 +199,19 @@ func (c *Client) Connect() error {
 	// Set the path (like JS client does)
 	opts.SetPath("/v1/updates")
 
-	transportMode := os.Getenv("DELIGHT_SOCKETIO_TRANSPORT")
-	switch transportMode {
-	case "websocket":
+	switch transport {
+	case TransportWebSocket:
 		if debug {
-			log.Printf("Socket.IO transports: websocket only (DELIGHT_SOCKETIO_TRANSPORT=websocket)")
+			log.Printf("Socket.IO transports: websocket only")
 		}
 		opts.SetTransports(types.NewSet(socket.WebSocket))
-	case "polling":
+	case TransportPolling:
 		if debug {
-			log.Printf("Socket.IO transports: polling only (DELIGHT_SOCKETIO_TRANSPORT=polling)")
+			log.Printf("Socket.IO transports: polling only")
 		}
 		opts.SetTransports(types.NewSet(socket.Polling))
 	default:
-		opts.SetTransports(types.NewSet(socket.Polling, socket.WebSocket))
+		opts.SetTransports(types.NewSet(socket.WebSocket))
 	}
 	opts.SetForceNew(true)
 	opts.SetMultiplex(false)

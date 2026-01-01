@@ -36,7 +36,7 @@ func StopDaemonCommand(cfg *config.Config) error {
 		return fmt.Errorf("failed to load master key: %w", err)
 	}
 
-	client := websocket.NewUserClient(cfg.ServerURL, token, cfg.Debug)
+	client := websocket.NewUserClient(cfg.ServerURL, token, cfg.SocketIOTransport, cfg.Debug)
 	if err := client.Connect(); err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
