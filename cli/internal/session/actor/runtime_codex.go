@@ -137,17 +137,25 @@ func (r *Runtime) codexRemoteSend(ctx context.Context, eff effRemoteSend, emit f
 		return
 	}
 
-	// Send synchronously so runtime effects remain ordered.
+	// Send asynchronously so runtime effect execution does not deadlock.
 	//
-	// The actor reducer loop runs independently from runtime effect execution,
-	// so blocking here will not starve state transitions (including permission
-	// prompts emitted via cmdPermissionAwait).
-	_ = engine.SendUserMessage(ctx, agentengine.UserMessage{
-		Text:    eff.Text,
-		Meta:    eff.Meta,
-		LocalID: eff.LocalID,
-		AtMs:    time.Now().UnixMilli(),
-	})
+	// Codex turns are synchronous: SendUserMessage can block while the engine
+	// requests tool approvals (via Runtime.AwaitPermission). AwaitPermission
+	// emits cmdPermissionAwait which produces effEmitEphemeral effects that must
+	// be executed by the runtime loop. If we block the runtime loop inside
+	// SendUserMessage, the permission-request ephemeral never gets emitted and
+	// the phone cannot respond, causing a deadlock.
+	go func() {
+		r.codexSendMu.Lock()
+		defer r.codexSendMu.Unlock()
+
+		_ = engine.SendUserMessage(ctx, agentengine.UserMessage{
+			Text:    eff.Text,
+			Meta:    eff.Meta,
+			LocalID: eff.LocalID,
+			AtMs:    time.Now().UnixMilli(),
+		})
+	}()
 }
 
 // ensureCodexEngine creates (if needed) and wires the Codex engine event loop.

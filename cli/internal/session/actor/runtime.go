@@ -46,6 +46,7 @@ type Runtime struct {
 	codexRemoteActive bool
 	codexLocalGen     int64
 	codexLocalActive  bool
+	codexSendMu       sync.Mutex
 
 	acpURL          string
 	acpAgent        string
