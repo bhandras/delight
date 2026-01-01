@@ -60,6 +60,7 @@ type Client struct {
 	perm     PermissionHandler
 	session  string
 	convo    string
+	rollout  string
 	waitOnce sync.Once
 	waitErr  error
 	waitCh   chan struct{}
@@ -247,6 +248,7 @@ func (c *Client) ClearSession() {
 	defer c.mu.Unlock()
 	c.session = ""
 	c.convo = ""
+	c.rollout = ""
 }
 
 func (c *Client) SessionID() string {
@@ -259,6 +261,17 @@ func (c *Client) ConversationID() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.convo
+}
+
+// RolloutPath returns the current rollout JSONL path recorded for the active Codex session.
+//
+// When Codex is running as an MCP server, responses and events may include a `rolloutPath`
+// field pointing at the append-only JSONL event log for the conversation. This path can be
+// tailed to mirror activity in other UIs (e.g. a mobile viewer) without scraping the TUI.
+func (c *Client) RolloutPath() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rollout
 }
 
 func (c *Client) Close() error {
@@ -555,6 +568,7 @@ func (c *Client) updateIdentifiersFromEvent(event map[string]interface{}) {
 func (c *Client) updateIdentifiersFromMap(values map[string]interface{}) {
 	sessionID := getStringParam(values, "sessionId", "session_id")
 	conversationID := getStringParam(values, "conversationId", "conversation_id")
+	rolloutPath := getStringParam(values, "rolloutPath", "rollout_path")
 
 	if sessionID != "" {
 		c.mu.Lock()
@@ -564,6 +578,11 @@ func (c *Client) updateIdentifiersFromMap(values map[string]interface{}) {
 	if conversationID != "" {
 		c.mu.Lock()
 		c.convo = conversationID
+		c.mu.Unlock()
+	}
+	if rolloutPath != "" {
+		c.mu.Lock()
+		c.rollout = rolloutPath
 		c.mu.Unlock()
 	}
 }
