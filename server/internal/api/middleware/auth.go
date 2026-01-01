@@ -1,7 +1,9 @@
 package middleware
 
 import (
+	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/bhandras/delight/server/internal/crypto"
@@ -12,26 +14,38 @@ import (
 func AuthMiddleware(jwtManager *crypto.JWTManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Get Authorization header
-		authHeader := c.GetHeader("Authorization")
+		authHeader := strings.TrimSpace(c.GetHeader("Authorization"))
 		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authorization header"})
 			c.Abort()
 			return
 		}
 
-		// Extract token (format: "Bearer <token>")
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization header format"})
+		// Extract token. Clients are inconsistent about auth schemes:
+		// - "Bearer <token>" is common.
+		// - Some clients use "Token <token>" or "JWT <token>".
+		// - Some legacy integrations send a raw token without a prefix.
+		token := authHeader
+		if parts := strings.SplitN(authHeader, " ", 2); len(parts) == 2 {
+			switch {
+			case strings.EqualFold(parts[0], "Bearer"),
+				strings.EqualFold(parts[0], "Token"),
+				strings.EqualFold(parts[0], "JWT"):
+				token = strings.TrimSpace(parts[1])
+			}
+		}
+		if token == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing token"})
 			c.Abort()
 			return
 		}
 
-		token := parts[1]
-
 		// Verify token
 		claims, err := jwtManager.VerifyToken(token)
 		if err != nil {
+			if os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1" {
+				log.Printf("AuthMiddleware: invalid token: %v", err)
+			}
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			c.Abort()
 			return
