@@ -6,6 +6,11 @@ type CreateSessionRequest struct {
 	Tag string `json:"tag"`
 	// Metadata is the encrypted metadata payload (base64-encoded).
 	Metadata string `json:"metadata"`
+	// DataEncryptionKey is the session data key (base64-encoded 32 bytes).
+	//
+	// When present, clients may use this key to encrypt session payloads using
+	// AES-256-GCM.
+	DataEncryptionKey *string `json:"dataEncryptionKey,omitempty"`
 }
 
 // CreateSessionResponse is the HTTP POST /v1/sessions response body.
@@ -19,8 +24,8 @@ type CreateSessionResponse struct {
 type CreateSessionResponseSession struct {
 	// ID is the server-assigned session id.
 	ID string `json:"id"`
-	// DataEncryptionKey is the encrypted data key (base64-encoded) when present.
-	DataEncryptionKey string `json:"dataEncryptionKey,omitempty"`
+	// DataEncryptionKey is the session data key (base64-encoded 32 bytes) when present.
+	DataEncryptionKey *string `json:"dataEncryptionKey,omitempty"`
 }
 
 // CreateMachineRequest is the HTTP POST /v1/machines request body.

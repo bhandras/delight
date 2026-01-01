@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -23,6 +24,11 @@ type SessionHandler struct {
 	queries *models.Queries
 	updates *websocket.SocketIOServer
 }
+
+const (
+	// sessionDataEncryptionKeyBytes is the byte length for per-session data keys.
+	sessionDataEncryptionKeyBytes = 32
+)
 
 func NewSessionHandler(db *sql.DB, updates *websocket.SocketIOServer) *SessionHandler {
 	return &SessionHandler{
@@ -119,7 +125,16 @@ func (h *SessionHandler) CreateSession(c *gin.Context) {
 	})
 
 	if err == nil {
-		// Session exists, return it
+		// Session exists; ensure it has a dataEncryptionKey.
+		if len(existing.DataEncryptionKey) == 0 {
+			key, keyErr := h.ensureSessionDataEncryptionKey(c.Request.Context(), existing.ID)
+			if keyErr != nil {
+				c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to ensure dataEncryptionKey"})
+				return
+			}
+			existing.DataEncryptionKey = key
+		}
+
 		c.JSON(http.StatusOK, gin.H{"session": h.toSessionResponse(existing)})
 		return
 	} else if err != sql.ErrNoRows {
@@ -131,11 +146,19 @@ func (h *SessionHandler) CreateSession(c *gin.Context) {
 	var dataEncryptionKey []byte
 	if req.DataEncryptionKey != nil && *req.DataEncryptionKey != "" {
 		decoded, err := base64.StdEncoding.DecodeString(*req.DataEncryptionKey)
-		if err != nil || len(decoded) != 32 {
+		if err != nil || len(decoded) != sessionDataEncryptionKeyBytes {
 			c.JSON(http.StatusBadRequest, types.ErrorResponse{Error: "invalid dataEncryptionKey (must be 32 bytes base64)"})
 			return
 		}
 		dataEncryptionKey = decoded
+	}
+	if len(dataEncryptionKey) == 0 {
+		key, keyErr := h.ensureSessionDataEncryptionKey(c.Request.Context(), "")
+		if keyErr != nil {
+			c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to generate dataEncryptionKey"})
+			return
+		}
+		dataEncryptionKey = key
 	}
 
 	// Create new session
@@ -200,6 +223,24 @@ func (h *SessionHandler) CreateSession(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"session": h.toSessionResponse(session)})
+}
+
+// ensureSessionDataEncryptionKey generates and optionally persists a session key.
+//
+// When sessionID is empty, it only generates a new key. When non-empty, it
+// also persists it to the sessions row.
+func (h *SessionHandler) ensureSessionDataEncryptionKey(ctx context.Context, sessionID string) ([]byte, error) {
+	key := make([]byte, sessionDataEncryptionKeyBytes)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	if sessionID == "" {
+		return key, nil
+	}
+	if _, err := h.db.ExecContext(ctx, `UPDATE sessions SET data_encryption_key = ? WHERE id = ?`, key, sessionID); err != nil {
+		return nil, err
+	}
+	return key, nil
 }
 
 // GetSession handles GET /v1/sessions/:id
