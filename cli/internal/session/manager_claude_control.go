@@ -13,7 +13,7 @@ func (m *Manager) GetMode() Mode {
 	}
 	// Not all agents have a local/remote runner lifecycle yet. For legacy agents,
 	// treat "mode" as an observability signal derived from AgentState.
-	if m.agent != "claude" && m.agent != "codex" {
+	if m.agent != "claude" && m.agent != "codex" && m.agent != "acp" && m.agent != "fake" {
 		if m.sessionActor.State().AgentState.ControlledByUser {
 			return ModeLocal
 		}
@@ -31,7 +31,7 @@ func (m *Manager) GetMode() Mode {
 
 // SwitchToRemote switches to remote mode (phone control).
 func (m *Manager) SwitchToRemote() error {
-	if m.agent != "claude" && m.agent != "codex" {
+	if m.agent != "claude" && m.agent != "codex" && m.agent != "acp" && m.agent != "fake" {
 		return fmt.Errorf("switch mode is not supported for agent=%s", m.agent)
 	}
 	if m.sessionActor == nil {
@@ -53,7 +53,7 @@ func (m *Manager) SwitchToRemote() error {
 
 // SwitchToLocal switches to local mode (desktop control).
 func (m *Manager) SwitchToLocal() error {
-	if m.agent != "claude" && m.agent != "codex" {
+	if m.agent != "claude" && m.agent != "codex" && m.agent != "acp" && m.agent != "fake" {
 		return fmt.Errorf("switch mode is not supported for agent=%s", m.agent)
 	}
 	if m.sessionActor == nil {
@@ -75,7 +75,7 @@ func (m *Manager) SwitchToLocal() error {
 
 // SendUserMessage sends a user message to the remote runner.
 func (m *Manager) SendUserMessage(content string, meta map[string]interface{}) error {
-	if m.agent != "claude" && m.agent != "codex" {
+	if m.agent != "claude" && m.agent != "codex" && m.agent != "acp" && m.agent != "fake" {
 		return fmt.Errorf("remote send is not supported for agent=%s", m.agent)
 	}
 	if m.sessionActor == nil {
@@ -95,7 +95,7 @@ func (m *Manager) SendUserMessage(content string, meta map[string]interface{}) e
 
 // AbortRemote aborts the current remote query.
 func (m *Manager) AbortRemote() error {
-	if m.agent != "claude" && m.agent != "codex" {
+	if m.agent != "claude" && m.agent != "codex" && m.agent != "acp" && m.agent != "fake" {
 		return fmt.Errorf("abort is not supported for agent=%s", m.agent)
 	}
 	if m.sessionActor == nil {

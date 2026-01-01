@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bhandras/delight/cli/internal/acp"
 	framework "github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/claude"
 	"github.com/bhandras/delight/cli/internal/config"
@@ -50,10 +49,8 @@ type Manager struct {
 	machineState         *types.DaemonState
 	debug                bool
 	fakeAgent            bool
-	acpClient            *acp.Client
 	acpSessionID         string
 	acpAgent             string
-	acpQueue             chan string
 	agent                string
 
 	workDir string
@@ -92,6 +89,11 @@ func NewManager(cfg *config.Config, token string, debug bool) (*Manager, error) 
 		return nil, fmt.Errorf("failed to get master secret: %w", err)
 	}
 
+	agent := cfg.Agent
+	if cfg.FakeAgent {
+		agent = "fake"
+	}
+
 	return &Manager{
 		cfg:          cfg,
 		token:        token,
@@ -99,8 +101,7 @@ func NewManager(cfg *config.Config, token string, debug bool) (*Manager, error) 
 		debug:        debug,
 		fakeAgent:    cfg.FakeAgent,
 		acpAgent:     cfg.ACPAgent,
-		acpQueue:     make(chan string, 64),
-		agent:        cfg.Agent,
+		agent:        agent,
 		stopCh:       make(chan struct{}),
 		// Permission requests are owned by the SessionActor.
 		sessionActorClosed: make(chan struct{}),

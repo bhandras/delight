@@ -102,8 +102,8 @@ func (m *Manager) Start(workDir string) error {
 		if !m.cfg.ACPEnable {
 			return fmt.Errorf("acp agent selected but ACP is not configured")
 		}
-		if err := m.startACP(); err != nil {
-			return err
+		if err := m.ensureACPSessionID(); err != nil {
+			return fmt.Errorf("failed to ensure acp session id: %w", err)
 		}
 	}
 
@@ -207,17 +207,15 @@ func (m *Manager) Start(workDir string) error {
 		log.Printf("Failed to restore spawned sessions: %v", err)
 	}
 
-	if m.fakeAgent {
-		log.Println("Fake agent mode enabled (no Claude process)")
-		go m.keepAliveLoop()
-		return nil
-	}
-
 	if m.cfg.ACPEnable && m.agent != "acp" && m.debug {
 		log.Printf("ACP configured but disabled (agent=%s)", m.agent)
 	}
 
 	if m.agent == "acp" {
+		// ACP has no local runner; start in remote mode so phone input is accepted.
+		if err := m.SwitchToRemote(); err != nil {
+			return err
+		}
 		go m.keepAliveLoop()
 		return nil
 	}
@@ -229,7 +227,7 @@ func (m *Manager) Start(workDir string) error {
 	// - local mode (native TUI + rollout tail)
 	//
 	// Claude supports local PTY and remote stream-json.
-	if m.agent == "claude" || m.agent == "codex" {
+	if m.agent == "claude" || m.agent == "codex" || m.agent == "fake" {
 		if m.cfg != nil && m.cfg.StartingMode == "remote" {
 			if err := m.SwitchToRemote(); err != nil {
 				return err
@@ -257,6 +255,9 @@ func (m *Manager) initSessionActor() {
 				m.sessionActorRuntime.WithSocketEmitter(m.wsClient)
 			}
 			m.sessionActorRuntime.WithAgent(m.agent)
+			if m.cfg != nil && m.cfg.ACPEnable {
+				m.sessionActorRuntime.WithACPConfig(m.cfg.ACPURL, m.acpAgent, m.acpSessionID)
+			}
 			m.sessionActorRuntime.WithEncryptFn(m.encrypt)
 		}
 		return
@@ -267,6 +268,7 @@ func (m *Manager) initSessionActor() {
 		WithStateUpdater(m.wsClient).
 		WithSocketEmitter(m.wsClient).
 		WithAgent(m.agent).
+		WithACPConfig(m.cfg.ACPURL, m.acpAgent, m.acpSessionID).
 		WithEncryptFn(m.encrypt)
 
 	hooks := framework.Hooks[sessionactor.State]{
@@ -516,11 +518,6 @@ func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 	// This suppression is handled inside the SessionActor reducer once it owns
 	// the dedupe window. Leave this check here only for non-Claude agents.
 
-	if m.fakeAgent {
-		m.sendFakeAgentResponse(text)
-		return
-	}
-
 	messageContent := text
 	if messageContent == "" {
 		if m.debug {
@@ -529,17 +526,6 @@ func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 		return
 	}
 	messageContent = strings.TrimRight(messageContent, "\r\n")
-
-	if m.agent == "acp" {
-		select {
-		case m.acpQueue <- messageContent:
-		default:
-			if m.debug {
-				log.Printf("ACP queue full; dropping message")
-			}
-		}
-		return
-	}
 
 	if m.sessionActor == nil {
 		if m.debug {

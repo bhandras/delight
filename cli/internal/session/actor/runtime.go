@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bhandras/delight/cli/internal/acp"
 	framework "github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/agentengine"
 	"github.com/bhandras/delight/cli/internal/agentengine/codexengine"
@@ -46,6 +47,20 @@ type Runtime struct {
 	codexLocalGen     int64
 	codexLocalActive  bool
 
+	acpURL          string
+	acpAgent        string
+	acpSessionID    string
+	acpClient       *acp.Client
+	acpRemoteGen    int64
+	acpRemoteActive bool
+	acpLocalGen     int64
+	acpLocalActive  bool
+
+	fakeRemoteGen    int64
+	fakeRemoteActive bool
+	fakeLocalGen     int64
+	fakeLocalActive  bool
+
 	takebackCancel chan struct{}
 	takebackDone   chan struct{}
 	takebackTTY    *os.File
@@ -78,6 +93,18 @@ func (r *Runtime) WithAgent(agent string) *Runtime {
 		return r
 	}
 	r.agent = agentengine.AgentType(agent)
+	return r
+}
+
+// WithACPConfig configures the ACP client parameters for agentengine.AgentACP sessions.
+func (r *Runtime) WithACPConfig(url string, agent string, sessionID string) *Runtime {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.acpURL = url
+	r.acpAgent = agent
+	r.acpSessionID = sessionID
+	// Recreate client lazily on next use.
+	r.acpClient = nil
 	return r
 }
 
@@ -144,6 +171,10 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 			switch r.agent {
 			case agentengine.AgentCodex:
 				r.startCodexLocal(ctx, e, emit)
+			case agentengine.AgentACP:
+				r.startACPLocal(ctx, e, emit)
+			case agentengine.AgentFake:
+				r.startFakeLocal(ctx, e, emit)
 			default:
 				r.startLocal(ctx, e, emit)
 			}
@@ -151,6 +182,10 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 			switch r.agent {
 			case agentengine.AgentCodex:
 				r.stopCodexLocal(e)
+			case agentengine.AgentACP:
+				r.stopACPLocal(e)
+			case agentengine.AgentFake:
+				r.stopFakeLocal(e)
 			default:
 				r.stopLocal(e)
 			}
@@ -158,6 +193,10 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 			switch r.agent {
 			case agentengine.AgentCodex:
 				r.startCodexRemote(ctx, e, emit)
+			case agentengine.AgentACP:
+				r.startACPRemote(ctx, e, emit)
+			case agentengine.AgentFake:
+				r.startFakeRemote(ctx, e, emit)
 			default:
 				r.startRemote(ctx, e, emit)
 			}
@@ -165,6 +204,10 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 			switch r.agent {
 			case agentengine.AgentCodex:
 				r.stopCodexRemote(e)
+			case agentengine.AgentACP:
+				r.stopACPRemote(e)
+			case agentengine.AgentFake:
+				r.stopFakeRemote(e)
 			default:
 				r.stopRemote(e)
 			}
@@ -177,6 +220,10 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 			switch r.agent {
 			case agentengine.AgentCodex:
 				r.codexRemoteSend(ctx, e, emit)
+			case agentengine.AgentACP:
+				r.acpRemoteSend(ctx, e, emit)
+			case agentengine.AgentFake:
+				r.fakeRemoteSend(ctx, e, emit)
 			default:
 				r.remoteSend(e)
 			}
