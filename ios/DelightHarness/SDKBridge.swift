@@ -118,6 +118,49 @@ private enum UpdateFields {
     static let uuid = "uuid"
 }
 
+/// MessageValue enumerates the string values we expect in message payloads.
+///
+/// These values originate from the server and Claude SDK streams.
+private enum MessageValue {
+    enum BlockType {
+        static let ciphertext = "ciphertext"
+        static let encrypted = "encrypted"
+        static let fileHistorySnapshot = "file-history-snapshot"
+        static let thinking = "thinking"
+        static let text = "text"
+        static let toolCallDash = "tool-call"
+        static let toolResultDash = "tool-result"
+        static let toolResultSnake = "tool_result"
+        static let toolUseDash = "tool-use"
+        static let toolUseSnake = "tool_use"
+
+        static let toolCallTypes: Set<String> = [
+            toolCallDash,
+            toolUseDash,
+            toolUseSnake,
+        ]
+
+        static let toolResultTypes: Set<String> = [
+            toolResultDash,
+            toolResultSnake,
+        ]
+
+        static let encryptedTypes: Set<String> = [
+            ciphertext,
+            encrypted,
+        ]
+    }
+
+    enum Role {
+        static let agent = "agent"
+        static let assistant = "assistant"
+        static let event = "event"
+        static let system = "system"
+        static let tool = "tool"
+        static let user = "user"
+    }
+}
+
 /// UpdateTiming collects debounce and clock-related constants.
 private enum UpdateTiming {
     static let millisecondsPerSecond: Double = 1000
@@ -837,7 +880,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
         do {
             let json = try JSONCoding.encode(
-                RawUserMessageRecord(role: "user", content: .init(type: "text", text: outgoingText))
+                RawUserMessageRecord(
+                    role: MessageValue.Role.user,
+                    content: .init(type: MessageValue.BlockType.text, text: outgoingText)
+                )
             )
 
             // Do network work on the SDK queue to keep the UI responsive.
@@ -1888,10 +1934,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         guard let content else { return [] }
         if let dict = content.object {
             if let type = dict[UpdateFields.typeShort]?.string, let payload = dict[UpdateFields.payload] {
-                if type == "text", let text = payload.string {
+                if type == MessageValue.BlockType.text, let text = payload.string {
                     return [.text(text)]
                 }
-                if type == "encrypted" || type == "ciphertext" {
+                if MessageValue.BlockType.encryptedTypes.contains(type) {
                     return [.text("Encrypted message")]
                 }
                 return extractBlocks(from: payload, sessionID: sessionID)
@@ -1916,21 +1962,21 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             for part in array {
                 guard let dict = part.object else { continue }
                 if let type = dict[UpdateFields.type]?.string {
-                    if type == "text", let text = dict[UpdateFields.text]?.string {
+                    if type == MessageValue.BlockType.text, let text = dict[UpdateFields.text]?.string {
                         blocks.append(contentsOf: splitMarkdownBlocks(text))
                         continue
                     }
-                    if type == "thinking" {
+                    if type == MessageValue.BlockType.thinking {
                         continue
                     }
-                    if type == "tool-call" || type == "tool_use" || type == "tool-use" {
+                    if MessageValue.BlockType.toolCallTypes.contains(type) {
                         let name = dict["name"]?.string ?? "tool"
                         if let summary = toolSummary(name: name, input: dict["input"]) {
                             blocks.append(.toolCall(summary))
                         }
                         continue
                     }
-                    if type == "tool-result" || type == "tool_result" {
+                    if MessageValue.BlockType.toolResultTypes.contains(type) {
                         continue
                     }
                 }
@@ -1976,11 +2022,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private func isFileHistorySnapshot(_ content: JSONValue?) -> Bool {
         guard let content else { return false }
         if let dict = content.object {
-            if dict[UpdateFields.type]?.string == "file-history-snapshot" {
+            if dict[UpdateFields.type]?.string == MessageValue.BlockType.fileHistorySnapshot {
                 return true
             }
             if let message = dict[UpdateFields.message]?.object,
-               message[UpdateFields.type]?.string == "file-history-snapshot" {
+               message[UpdateFields.type]?.string == MessageValue.BlockType.fileHistorySnapshot {
                 return true
             }
             if let inner = dict[UpdateFields.content], isFileHistorySnapshot(inner) {
@@ -1994,7 +2040,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         guard let content else { return false }
         if let dict = content.object {
             if let type = dict[UpdateFields.type]?.string,
-               type == "tool_result" || type == "tool-result" {
+               MessageValue.BlockType.toolResultTypes.contains(type) {
                 return true
             }
             if let message = dict[UpdateFields.message] {
@@ -2011,7 +2057,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             for part in array {
                 if let dict = part.object,
                    let type = dict[UpdateFields.type]?.string,
-                   type == "tool_result" || type == "tool-result" {
+                   MessageValue.BlockType.toolResultTypes.contains(type) {
                     return true
                 }
             }
@@ -2083,7 +2129,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private func containsThinkingBlock(_ content: JSONValue?) -> Bool {
         guard let content else { return false }
         if let dict = content.object {
-            if dict[UpdateFields.type]?.string == "thinking" {
+            if dict[UpdateFields.type]?.string == MessageValue.BlockType.thinking {
                 return true
             }
             if let inner = dict[UpdateFields.content], containsThinkingBlock(inner) {
@@ -2126,10 +2172,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         guard let content else { return nil }
         if let dict = content.object {
             if let type = dict[UpdateFields.typeShort]?.string, let payload = dict[UpdateFields.payload] {
-                if type == "text", let text = payload.string {
+                if type == MessageValue.BlockType.text, let text = payload.string {
                     return text
                 }
-                if type == "encrypted" || type == "ciphertext" {
+                if MessageValue.BlockType.encryptedTypes.contains(type) {
                     return "Encrypted message"
                 }
                 return extractText(from: payload)
@@ -2149,7 +2195,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         } else if let array = content.array {
             let texts = array.compactMap { part -> String? in
                 guard let dict = part.object else { return nil }
-                if dict[UpdateFields.type]?.string == "text" {
+                if dict[UpdateFields.type]?.string == MessageValue.BlockType.text {
                     return dict[UpdateFields.text]?.string
                 }
                 return dict[UpdateFields.text]?.string
@@ -2337,15 +2383,15 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     private func normalizeRole(_ role: String) -> MessageRole {
         switch role.lowercased() {
-        case "user":
+        case MessageValue.Role.user:
             return .user
-        case "assistant", "agent":
+        case MessageValue.Role.assistant, MessageValue.Role.agent:
             return .assistant
-        case "system":
+        case MessageValue.Role.system:
             return .system
-        case "tool":
+        case MessageValue.Role.tool:
             return .tool
-        case "event":
+        case MessageValue.Role.event:
             return .event
         default:
             return .unknown
