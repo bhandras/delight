@@ -76,9 +76,10 @@ func StopDaemonCommand(cfg *config.Config) error {
 }
 
 func encryptMachineParams(masterSecret []byte, payload map[string]interface{}) (string, error) {
-	var secretKey [32]byte
-	copy(secretKey[:], masterSecret)
-	encrypted, err := crypto.EncryptLegacy(payload, &secretKey)
+	if len(masterSecret) != 32 {
+		return "", fmt.Errorf("master secret must be 32 bytes, got %d", len(masterSecret))
+	}
+	encrypted, err := crypto.EncryptWithDataKey(payload, masterSecret)
 	if err != nil {
 		return "", err
 	}
@@ -104,11 +105,11 @@ func decryptMachineResult(masterSecret []byte, raw any) (map[string]interface{},
 		return nil, err
 	}
 
-	var secretKey [32]byte
-	copy(secretKey[:], masterSecret)
-
 	var out map[string]interface{}
-	if err := crypto.DecryptLegacy(encrypted, &secretKey, &out); err != nil {
+	if len(masterSecret) != 32 {
+		return nil, fmt.Errorf("master secret must be 32 bytes, got %d", len(masterSecret))
+	}
+	if err := crypto.DecryptWithDataKey(encrypted, masterSecret, &out); err != nil {
 		// Some handlers may return plain JSON; try to decode raw string.
 		if err := json.Unmarshal([]byte(encoded), &out); err == nil {
 			return out, nil

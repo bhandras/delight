@@ -16,7 +16,7 @@ The original Delight server is abandoned and closed-source hosted. This is a cle
 - 🔐 **Challenge-Response Authentication** - Ed25519 signature-based auth
 - 🔑 **QR Code Auth** - Secure CLI → Mobile pairing via X25519 encryption
 - 💬 **Real-time Sync** - WebSocket-based session and message synchronization
-- 🔒 **End-to-End Encryption** - TweetNaCl + AES-256-GCM (compatible with original)
+- 🔒 **End-to-End Encryption** - Box handshake + AES-256-GCM session payloads
 - 📱 **Multi-device** - Seamless sync between CLI, mobile, and daemon
 - 🚀 **Self-hosted** - Single binary + SQLite database
 
@@ -26,7 +26,6 @@ The original Delight server is abandoned and closed-source hosted. This is a cle
 - **Database**: SQLite with sqlc for type-safe queries
 - **WebSocket**: Socket.IO (via go-socket.io)
 - **Encryption**:
-  - TweetNaCl SecretBox (XSalsa20-Poly1305) - Legacy
   - AES-256-GCM - Per-session keys
   - TweetNaCl Box (X25519) - Auth handshake
 

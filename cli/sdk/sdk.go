@@ -42,9 +42,6 @@ const (
 	aesGCMVersionBytes = 1
 	aesGCMNonceBytes   = 12
 	aesGCMTagBytes     = 16
-
-	// secretBoxNonceBytes is the nonce size for NaCl SecretBox.
-	secretBoxNonceBytes = 24
 )
 
 // SetDebug enables debug logging for underlying sockets.
@@ -583,8 +580,8 @@ func (c *Client) listSessions() (resp string, err error) {
 				}
 				metadataB64, _ := session["metadata"].(string)
 				if metadataB64 != "" {
-					if decrypted, err := c.decryptLegacyString(metadataB64); err == nil {
-						session["metadata"] = decrypted
+					if decodedJSON, err := decodeBase64JSONString(metadataB64); err == nil {
+						session["metadata"] = decodedJSON
 					}
 				}
 
@@ -649,7 +646,7 @@ func (c *Client) listMachinesDispatch() (resp string, err error) {
 	return value.(string), nil
 }
 
-// listMachines fetches machines and best-effort decrypts legacy fields.
+// listMachines fetches machines and best-effort decrypts encrypted fields.
 func (c *Client) listMachines() (resp string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -674,14 +671,14 @@ func (c *Client) listMachines() (resp string, err error) {
 		}
 		metadataB64, _ := machine["metadata"].(string)
 		if metadataB64 != "" {
-			if decrypted, err := c.decryptLegacyString(metadataB64); err == nil {
-				machine["metadata"] = decrypted
+			if decryptedJSON, err := c.decryptMachineString(metadataB64); err == nil {
+				machine["metadata"] = decryptedJSON
 			}
 		}
 		daemonStateB64, _ := machine["daemonState"].(string)
 		if daemonStateB64 != "" {
-			if decrypted, err := c.decryptLegacyString(daemonStateB64); err == nil {
-				machine["daemonState"] = decrypted
+			if decryptedJSON, err := c.decryptMachineString(daemonStateB64); err == nil {
+				machine["daemonState"] = decryptedJSON
 			}
 		}
 	}
@@ -693,8 +690,21 @@ func (c *Client) listMachines() (resp string, err error) {
 	return string(encoded), nil
 }
 
-// decryptLegacyString decrypts a legacy-encrypted JSON payload using the master key.
-func (c *Client) decryptLegacyString(payload string) (string, error) {
+// decodeBase64JSONString decodes a base64(JSON) string into a JSON string.
+func decodeBase64JSONString(payload string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return "", fmt.Errorf("decode base64: %w", err)
+	}
+	if !json.Valid(raw) {
+		return "", fmt.Errorf("decoded payload is not valid JSON")
+	}
+	return string(raw), nil
+}
+
+// decryptMachineString decrypts an AES-GCM encrypted JSON payload using the
+// master key and returns a JSON string.
+func (c *Client) decryptMachineString(payload string) (string, error) {
 	c.mu.Lock()
 	secret := make([]byte, len(c.masterSecret))
 	copy(secret, c.masterSecret)
@@ -706,17 +716,17 @@ func (c *Client) decryptLegacyString(payload string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decode payload: %w", err)
 	}
-	var key [masterKeyBytes]byte
-	copy(key[:], secret)
-	var decoded map[string]interface{}
-	if err := crypto.DecryptLegacy(raw, &key, &decoded); err != nil {
+	if len(raw) < aesGCMVersionBytes+aesGCMNonceBytes+aesGCMTagBytes || raw[0] != encryptedPayloadFormatV0 {
+		return "", fmt.Errorf("unsupported encrypted payload format")
+	}
+	var decoded json.RawMessage
+	if err := crypto.DecryptWithDataKey(raw, secret, &decoded); err != nil {
 		return "", fmt.Errorf("decrypt payload: %w", err)
 	}
-	encoded, err := json.Marshal(decoded)
-	if err != nil {
-		return "", fmt.Errorf("marshal decrypted: %w", err)
+	if !json.Valid(decoded) {
+		return "", fmt.Errorf("decrypted payload is not valid JSON")
 	}
-	return string(encoded), nil
+	return string(decoded), nil
 }
 
 // GetSessionMessagesBuffer returns GetSessionMessages JSON as a gomobile-safe Buffer.
@@ -1005,22 +1015,12 @@ func (c *Client) getListener() Listener {
 func (c *Client) encryptPayload(sessionID string, data []byte) (string, error) {
 	c.mu.Lock()
 	dataKey := c.dataKeys[sessionID]
-	master := c.masterSecret
 	c.mu.Unlock()
 
-	var encrypted []byte
-	var err error
-
-	if len(dataKey) == masterKeyBytes {
-		encrypted, err = crypto.EncryptWithDataKey(json.RawMessage(data), dataKey)
-	} else {
-		if len(master) != masterKeyBytes {
-			return "", fmt.Errorf("master key not set")
-		}
-		var secretKey [masterKeyBytes]byte
-		copy(secretKey[:], master)
-		encrypted, err = crypto.EncryptLegacy(json.RawMessage(data), &secretKey)
+	if len(dataKey) != masterKeyBytes {
+		return "", fmt.Errorf("session data key not set (call ListSessions or SetSessionDataKey)")
 	}
+	encrypted, err := crypto.EncryptWithDataKey(json.RawMessage(data), dataKey)
 	if err != nil {
 		return "", err
 	}
@@ -1054,8 +1054,7 @@ func (c *Client) decryptEnvelope(sessionID string, content map[string]interface{
 	return decoded, nil
 }
 
-// decryptPayload decrypts an encrypted wire payload using the session data key
-// (preferred) and falls back to legacy decrypts using the master key.
+// decryptPayload decrypts an encrypted wire payload using the session data key.
 func (c *Client) decryptPayload(sessionID, dataB64 string) ([]byte, error) {
 	encrypted, err := base64.StdEncoding.DecodeString(dataB64)
 	if err != nil {
@@ -1067,56 +1066,19 @@ func (c *Client) decryptPayload(sessionID, dataB64 string) ([]byte, error) {
 
 	c.mu.Lock()
 	dataKey := c.dataKeys[sessionID]
-	master := c.masterSecret
 	c.mu.Unlock()
 
-	// AES-GCM format has version byte 0 and 12-byte nonce.
-	if encrypted[0] == encryptedPayloadFormatV0 && len(encrypted) >= aesGCMVersionBytes+aesGCMNonceBytes+aesGCMTagBytes {
-		var aesErr error
-		key := dataKey
-		if len(key) != masterKeyBytes {
-			if len(master) == masterKeyBytes {
-				key = master
-			} else {
-				return nil, fmt.Errorf("AES-GCM data but no key available")
-			}
-		}
-		var result json.RawMessage
-		if err := crypto.DecryptWithDataKey(encrypted, key, &result); err == nil {
-			return []byte(result), nil
-		} else {
-			aesErr = err
-		}
-
-		// Fall back to legacy decoding if the AES decode fails. This avoids
-		// misclassifying legacy SecretBox payloads whose nonce happens to start
-		// with a 0 byte.
-		decrypted, legacyErr := decryptLegacyPayload(encrypted, dataKey, master)
-		if legacyErr == nil {
-			return decrypted, nil
-		}
-		return nil, aesErr
+	if len(dataKey) != masterKeyBytes {
+		return nil, fmt.Errorf("session data key not set (call ListSessions or SetSessionDataKey)")
 	}
 
-	return decryptLegacyPayload(encrypted, dataKey, master)
-}
-
-// decryptLegacyPayload decrypts legacy-encrypted payloads using either the
-// session data key or the master key.
-func decryptLegacyPayload(encrypted, dataKey, master []byte) ([]byte, error) {
-	// Legacy SecretBox format: [nonce(24)][ciphertext]
-	var secretKey [masterKeyBytes]byte
-	switch {
-	case len(dataKey) == masterKeyBytes:
-		copy(secretKey[:], dataKey)
-	case len(master) == masterKeyBytes:
-		copy(secretKey[:], master)
-	default:
-		return nil, fmt.Errorf("secret key not set")
+	// AES-GCM format: [version(1)] [nonce(12)] [ciphertext+tag(16+)].
+	if encrypted[0] != encryptedPayloadFormatV0 || len(encrypted) < aesGCMVersionBytes+aesGCMNonceBytes+aesGCMTagBytes {
+		return nil, fmt.Errorf("unsupported encrypted payload format")
 	}
 
 	var result json.RawMessage
-	if err := crypto.DecryptLegacy(encrypted, &secretKey, &result); err != nil {
+	if err := crypto.DecryptWithDataKey(encrypted, dataKey, &result); err != nil {
 		return nil, err
 	}
 	return []byte(result), nil

@@ -446,16 +446,16 @@ func stableSessionTag(machineID, workDir string) string {
 // createMachine creates or updates a machine on the server
 func (m *Manager) createMachine() error {
 	// Encrypt machine metadata
-	var secretKey [32]byte
-	copy(secretKey[:], m.masterSecret)
-
-	encryptedMeta, err := crypto.EncryptLegacy(m.machineMetadata, &secretKey)
+	if len(m.masterSecret) != dataEncryptionKeyBytes {
+		return fmt.Errorf("master secret must be %d bytes, got %d", dataEncryptionKeyBytes, len(m.masterSecret))
+	}
+	encryptedMeta, err := crypto.EncryptWithDataKey(m.machineMetadata, m.masterSecret)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt machine metadata: %w", err)
 	}
 
 	// Encrypt daemon state
-	encryptedState, err := crypto.EncryptLegacy(m.machineState, &secretKey)
+	encryptedState, err := crypto.EncryptWithDataKey(m.machineState, m.masterSecret)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt daemon state: %w", err)
 	}

@@ -63,7 +63,7 @@ func (c *captureListener) waitUpdate(t *testing.T) {
 	}
 }
 
-func TestDecryptLegacyString(t *testing.T) {
+func TestDecryptMachineString(t *testing.T) {
 	client := NewClient("http://example.com")
 	secret := make([]byte, 32)
 	for i := range secret {
@@ -77,13 +77,11 @@ func TestDecryptLegacyString(t *testing.T) {
 		"host": "m2.local",
 		"pid":  123,
 	}
-	var key [32]byte
-	copy(key[:], secret)
-	encrypted, err := crypto.EncryptLegacy(payload, &key)
+	encrypted, err := crypto.EncryptWithDataKey(payload, secret)
 	require.NoError(t, err)
 	encoded := base64.StdEncoding.EncodeToString(encrypted)
 
-	decoded, err := client.decryptLegacyString(encoded)
+	decoded, err := client.decryptMachineString(encoded)
 	require.NoError(t, err)
 
 	var result map[string]interface{}
@@ -96,12 +94,10 @@ func TestListSessionsDecryptsMetadata(t *testing.T) {
 	for i := range secret {
 		secret[i] = byte(9)
 	}
-	var key [32]byte
-	copy(key[:], secret)
 	metadata := map[string]interface{}{"host": "m2.local", "path": "/work/project"}
-	encrypted, err := crypto.EncryptLegacy(metadata, &key)
+	encodedMeta, err := json.Marshal(metadata)
 	require.NoError(t, err)
-	encoded := base64.StdEncoding.EncodeToString(encrypted)
+	encoded := base64.StdEncoding.EncodeToString(encodedMeta)
 	dataKey := base64.StdEncoding.EncodeToString(make([]byte, 32))
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -148,13 +144,11 @@ func TestListMachinesDecryptsMetadataAndDaemonState(t *testing.T) {
 	for i := range secret {
 		secret[i] = byte(7)
 	}
-	var key [32]byte
-	copy(key[:], secret)
 	metadata := map[string]interface{}{"host": "m2.local", "platform": "darwin"}
 	daemon := map[string]interface{}{"pid": 123, "status": "ok"}
-	metadataEnc, err := crypto.EncryptLegacy(metadata, &key)
+	metadataEnc, err := crypto.EncryptWithDataKey(metadata, secret)
 	require.NoError(t, err)
-	daemonEnc, err := crypto.EncryptLegacy(daemon, &key)
+	daemonEnc, err := crypto.EncryptWithDataKey(daemon, secret)
 	require.NoError(t, err)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -349,42 +343,7 @@ func TestParseTerminalURL(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestDecryptPayloadLegacyWithDataKey(t *testing.T) {
-	client := NewClient("http://example.com")
-	sessionID := "s1"
-	dataKey := make([]byte, 32)
-	for i := range dataKey {
-		dataKey[i] = byte(11)
-	}
-	var key [32]byte
-	copy(key[:], dataKey)
-	encrypted, err := crypto.EncryptLegacy(json.RawMessage(`{"ok":true}`), &key)
-	require.NoError(t, err)
-	require.NoError(t, client.SetSessionDataKey(sessionID, base64.StdEncoding.EncodeToString(dataKey)))
-
-	decrypted, err := client.decryptPayload(sessionID, base64.StdEncoding.EncodeToString(encrypted))
-	require.NoError(t, err)
-	require.Contains(t, string(decrypted), "\"ok\":true")
-}
-
-func TestDecryptPayloadLegacyWithMaster(t *testing.T) {
-	client := NewClient("http://example.com")
-	master := make([]byte, 32)
-	for i := range master {
-		master[i] = byte(12)
-	}
-	var key [32]byte
-	copy(key[:], master)
-	encrypted, err := crypto.EncryptLegacy(json.RawMessage(`{"ok":true}`), &key)
-	require.NoError(t, err)
-	require.NoError(t, client.SetMasterKeyBase64(base64.StdEncoding.EncodeToString(master)))
-
-	decrypted, err := client.decryptPayload("s1", base64.StdEncoding.EncodeToString(encrypted))
-	require.NoError(t, err)
-	require.Contains(t, string(decrypted), "\"ok\":true")
-}
-
-func TestDecryptPayloadAESUsesMasterFallback(t *testing.T) {
+func TestDecryptPayloadRequiresSessionDataKey(t *testing.T) {
 	client := NewClient("http://example.com")
 	master := make([]byte, 32)
 	for i := range master {
@@ -394,9 +353,8 @@ func TestDecryptPayloadAESUsesMasterFallback(t *testing.T) {
 
 	encrypted, err := crypto.EncryptWithDataKey(json.RawMessage(`{"ok":true}`), master)
 	require.NoError(t, err)
-	decrypted, err := client.decryptPayload("s1", base64.StdEncoding.EncodeToString(encrypted))
-	require.NoError(t, err)
-	require.Contains(t, string(decrypted), "\"ok\":true")
+	_, err = client.decryptPayload("s1", base64.StdEncoding.EncodeToString(encrypted))
+	require.Error(t, err)
 }
 
 func TestDecryptEnvelopeNonEncrypted(t *testing.T) {
@@ -426,18 +384,8 @@ func TestEncryptPayloadPaths(t *testing.T) {
 		master[i] = byte(15)
 	}
 	require.NoError(t, client.SetMasterKeyBase64(base64.StdEncoding.EncodeToString(master)))
-	encoded, err = client.encryptPayload("s2", []byte(`{"ok":true}`))
-	require.NoError(t, err)
-	raw, err = base64.StdEncoding.DecodeString(encoded)
-	require.NoError(t, err)
-	// Legacy secretbox payloads start with a random nonce, so the first byte can
-	// occasionally be 0. Validate by ensuring the payload isn't decryptable as
-	// AES-GCM, and is decryptable by the SDK.
-	var aesOut json.RawMessage
-	require.Error(t, crypto.DecryptWithDataKey(raw, master, &aesOut))
-	decrypted, err := client.decryptPayload("s2", encoded)
-	require.NoError(t, err)
-	require.Contains(t, string(decrypted), "\"ok\":true")
+	_, err = client.encryptPayload("s2", []byte(`{"ok":true}`))
+	require.Error(t, err)
 }
 
 func TestHandleUpdateNewSessionStoresDataKey(t *testing.T) {

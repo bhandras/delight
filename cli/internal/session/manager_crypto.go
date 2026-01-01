@@ -30,8 +30,7 @@ func (m *Manager) encrypt(data []byte) (string, error) {
 	return base64.StdEncoding.EncodeToString(encrypted), nil
 }
 
-// decrypt decrypts base64-encoded data using the session key
-// Detects encryption format: AES-GCM (version byte 0) vs legacy SecretBox
+// decrypt decrypts base64-encoded data using the session key.
 func (m *Manager) decrypt(dataB64 string) ([]byte, error) {
 	encrypted, err := base64.StdEncoding.DecodeString(dataB64)
 	if err != nil {
@@ -72,9 +71,10 @@ func (m *Manager) decrypt(dataB64 string) ([]byte, error) {
 
 // encryptMachine encrypts daemon-scoped state using the master secret.
 func (m *Manager) encryptMachine(data []byte) (string, error) {
-	var secretKey [32]byte
-	copy(secretKey[:], m.masterSecret)
-	encrypted, err := crypto.EncryptLegacy(json.RawMessage(data), &secretKey)
+	if len(m.masterSecret) != 32 {
+		return "", fmt.Errorf("master secret must be 32 bytes, got %d", len(m.masterSecret))
+	}
+	encrypted, err := crypto.EncryptWithDataKey(json.RawMessage(data), m.masterSecret)
 	if err != nil {
 		return "", err
 	}
@@ -88,11 +88,11 @@ func (m *Manager) decryptMachine(dataB64 string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to decode base64: %w", err)
 	}
 
-	var secretKey [32]byte
-	copy(secretKey[:], m.masterSecret)
-
 	var raw json.RawMessage
-	if err := crypto.DecryptLegacy(encrypted, &secretKey, &raw); err != nil {
+	if len(m.masterSecret) != 32 {
+		return nil, fmt.Errorf("master secret must be 32 bytes, got %d", len(m.masterSecret))
+	}
+	if err := crypto.DecryptWithDataKey(encrypted, m.masterSecret, &raw); err != nil {
 		return nil, err
 	}
 	return []byte(raw), nil

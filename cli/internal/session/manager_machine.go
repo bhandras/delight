@@ -96,10 +96,10 @@ func (m *Manager) updateMachineState() error {
 		return nil
 	}
 
-	var secretKey [32]byte
-	copy(secretKey[:], m.masterSecret)
-
-	encryptedState, err := crypto.EncryptLegacy(m.machineState, &secretKey)
+	if len(m.masterSecret) != 32 {
+		return fmt.Errorf("master secret must be 32 bytes, got %d", len(m.masterSecret))
+	}
+	encryptedState, err := crypto.EncryptWithDataKey(m.machineState, m.masterSecret)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt daemon state: %w", err)
 	}
@@ -137,10 +137,10 @@ func (m *Manager) updateMachineMetadata() error {
 		return nil
 	}
 
-	var secretKey [32]byte
-	copy(secretKey[:], m.masterSecret)
-
-	encryptedMeta, err := crypto.EncryptLegacy(m.machineMetadata, &secretKey)
+	if len(m.masterSecret) != 32 {
+		return fmt.Errorf("master secret must be 32 bytes, got %d", len(m.masterSecret))
+	}
+	encryptedMeta, err := crypto.EncryptWithDataKey(m.machineMetadata, m.masterSecret)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt machine metadata: %w", err)
 	}

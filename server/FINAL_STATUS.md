@@ -93,7 +93,6 @@ All core features have been implemented. The server is **ready to be tested with
 - `error` - Error message
 
 ### 6. Encryption (100%)
-- ✅ TweetNaCl SecretBox (XSalsa20-Poly1305) - Legacy
 - ✅ AES-256-GCM - Per-session encryption keys
 - ✅ TweetNaCl Box (X25519) - Auth handshake
 - ✅ Ed25519 signature verification
@@ -234,7 +233,6 @@ delight-server-go/
 │   │       ├── auth.go            # JWT verification (48 lines)
 │   │       └── logging.go         # Request logging (30 lines)
 │   ├── crypto/
-│   │   ├── secretbox.go           # NaCl SecretBox (60 lines)
 │   │   ├── aesgcm.go              # AES-256-GCM (90 lines)
 │   │   ├── box.go                 # NaCl Box (60 lines)
 │   │   ├── jwt.go                 # JWT tokens (90 lines)

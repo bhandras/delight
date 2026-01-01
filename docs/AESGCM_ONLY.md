@@ -74,5 +74,4 @@ so we can simplify aggressively.
 - [x] CLI: AES‑GCM only for session payloads; fail fast if key missing.
 - [x] CLI: hydrate key from create-session response and `new-session` update.
 - [x] Tests: update itests to use `dataEncryptionKey` + AES‑GCM.
-- [ ] (Optional) Remove legacy SecretBox code once unused everywhere.
-
+- [x] Remove legacy SecretBox implementation and call sites.

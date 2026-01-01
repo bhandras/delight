@@ -15,7 +15,6 @@
 - ✅ Automatic `updated_at` triggers
 
 ### Encryption (100% Compatible)
-- ✅ TweetNaCl SecretBox (XSalsa20-Poly1305) - Legacy encryption
 - ✅ AES-256-GCM - New per-session encryption
 - ✅ TweetNaCl Box (X25519) - QR code auth encryption
 - ✅ Ed25519 signature verification for challenge-response auth
