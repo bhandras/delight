@@ -65,6 +65,16 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 		return reduceSwitchMode(state, cmdSwitchMode{Target: ModeLocal, Reply: nil})
 	case evWSConnected:
 		state.WSConnected = true
+		// If we reconnect after being offline, ensure the latest agent state is
+		// persisted. This is critical for permission prompts: if a tool approval
+		// was requested while disconnected, mobile clients can only discover it
+		// via the durable `agentState.requests` blob.
+		//
+		// schedulePersistDebounced is idempotent; it will arm a timer only if one
+		// isn't already pending.
+		if state.AgentStateJSON != "" {
+			return schedulePersistDebounced(state)
+		}
 		return state, nil
 	case evWSDisconnected:
 		state.WSConnected = false
@@ -688,8 +698,9 @@ func reducePermissionAwait(state State, cmd cmdPermissionAwait) (State, []actor.
 		state.AgentState.Requests = make(map[string]types.AgentPendingRequest)
 	}
 	// Idempotent: if the request already exists, keep it and avoid emitting
-	// duplicate ephemerals.
-	if _, exists := state.AgentState.Requests[cmd.RequestID]; !exists {
+	// duplicate durable state changes.
+	_, exists := state.AgentState.Requests[cmd.RequestID]
+	if !exists {
 		state.AgentState.Requests[cmd.RequestID] = types.AgentPendingRequest{
 			ToolName:  cmd.ToolName,
 			Input:     string(cmd.Input),
@@ -703,17 +714,34 @@ func reducePermissionAwait(state State, cmd cmdPermissionAwait) (State, []actor.
 	}
 	state.PendingPermissionPromises[cmd.RequestID] = cmd.Reply
 
-	state, persistEffects := schedulePersistDebounced(state)
-	effects := []actor.Effect{
-		effEmitEphemeral{Payload: map[string]any{
-			"type":      "permission-request",
-			"id":        state.SessionID,
-			"requestId": cmd.RequestID,
-			"toolName":  cmd.ToolName,
-			"input":     string(cmd.Input),
-		}},
+	var effects []actor.Effect
+	// Always emit the ephemeral, even if the durable request already exists.
+	//
+	// Rationale:
+	// - Synchronous engines (Codex/ACP) may retry cmdPermissionAwait to recover
+	//   from transient websocket issues or missed UI updates.
+	// - The phone UI dedupes by requestID, so duplicate ephemerals are safe.
+	effects = append(effects, effEmitEphemeral{Payload: map[string]any{
+		"type":      "permission-request",
+		"id":        state.SessionID,
+		"requestId": cmd.RequestID,
+		"toolName":  cmd.ToolName,
+		"input":     string(cmd.Input),
+	}})
+	if !exists {
+		var persistEffects []actor.Effect
+		state, persistEffects = schedulePersistDebounced(state)
+		effects = append(effects, persistEffects...)
 	}
-	effects = append(effects, persistEffects...)
+
+	// Notify synchronous callers that the request is registered. This must be
+	// non-blocking to keep the reducer pure and fast.
+	if cmd.Ack != nil {
+		select {
+		case cmd.Ack <- struct{}{}:
+		default:
+		}
+	}
 	return state, effects
 }
 
@@ -744,11 +772,16 @@ func reduceAgentStateVersionMismatch(state State, ev EvAgentStateVersionMismatch
 // reduceAgentStatePersistFailed records a persistence failure and clears retries.
 func reduceAgentStatePersistFailed(state State, ev EvAgentStatePersistFailed) (State, []actor.Effect) {
 	_ = ev
-	// Phase 4 minimal behavior: keep version as-is and allow a future tick/debounce
-	// mechanism to retry. We don't retry immediately on arbitrary errors because
-	// it can create tight loops during outages.
-	state.PersistRetryRemaining = 0
-	return state, nil
+	// If the websocket is disconnected, we rely on evWSConnected to trigger a
+	// best-effort re-persist. Avoid retry loops while offline.
+	if !state.WSConnected {
+		return state, nil
+	}
+
+	// Best-effort: re-arm a single debounced persist. This recovers from brief
+	// socket hiccups without requiring UI polling, but avoids tight loops by
+	// relying on debounce.
+	return schedulePersistDebounced(state)
 }
 
 // reduceTimerFired handles internal debounce timers.

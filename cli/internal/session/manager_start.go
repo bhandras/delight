@@ -272,6 +272,12 @@ func (m *Manager) initSessionActor() {
 		WithEncryptFn(m.encrypt)
 
 	hooks := framework.Hooks[sessionactor.State]{
+		OnInput: func(input framework.Input) {
+			if os.Getenv("DELIGHT_DEBUG_SESSION_ACTOR_INPUTS") != "1" {
+				return
+			}
+			log.Printf("session-actor input: %T", input)
+		},
 		OnTransition: func(prev sessionactor.State, next sessionactor.State, input framework.Input) {
 			_ = input
 			if next.FSM == sessionactor.StateClosed && prev.FSM != sessionactor.StateClosed {
@@ -302,7 +308,21 @@ func (m *Manager) initSessionActor() {
 	}
 
 	m.sessionActorRuntime = rt
-	m.sessionActor = framework.New(initial, sessionactor.Reduce, rt, framework.WithHooks(hooks))
+	// Codex can emit very chatty event streams (reasoning deltas, tool logs, etc.).
+	// The SessionActor mailbox must be large enough to avoid dropping critical
+	// command inputs like cmdPermissionAwait, which would otherwise deadlock the
+	// remote engine waiting for an approval decision.
+	// sessionActorMailboxSize is intentionally large to prevent deadlocks in
+	// synchronous flows (e.g. Codex permission prompts) when the engine is
+	// emitting a high volume of events.
+	const sessionActorMailboxSize = 8192
+	m.sessionActor = framework.New(
+		initial,
+		sessionactor.Reduce,
+		rt,
+		framework.WithHooks(hooks),
+		framework.WithMailboxSize[sessionactor.State](sessionActorMailboxSize),
+	)
 	m.sessionActor.Start()
 }
 

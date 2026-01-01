@@ -137,15 +137,17 @@ func (r *Runtime) codexRemoteSend(ctx context.Context, eff effRemoteSend, emit f
 		return
 	}
 
-	if err := engine.SendUserMessage(ctx, agentengine.UserMessage{
+	// Send synchronously so runtime effects remain ordered.
+	//
+	// The actor reducer loop runs independently from runtime effect execution,
+	// so blocking here will not starve state transitions (including permission
+	// prompts emitted via cmdPermissionAwait).
+	_ = engine.SendUserMessage(ctx, agentengine.UserMessage{
 		Text:    eff.Text,
 		Meta:    eff.Meta,
 		LocalID: eff.LocalID,
 		AtMs:    time.Now().UnixMilli(),
-	}); err != nil {
-		// Best-effort: remote send errors currently surface as local logs; the
-		// authoritative failure will be reflected in the agent stream.
-	}
+	})
 }
 
 // ensureCodexEngine creates (if needed) and wires the Codex engine event loop.

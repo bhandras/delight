@@ -226,6 +226,10 @@ type cmdPermissionAwait struct {
 	Input     json.RawMessage
 	NowMs     int64
 	Reply     chan PermissionDecision
+	// Ack is an optional signal that fires once the reducer registers the request
+	// and emits the ephemeral. It allows synchronous callers to detect mailbox
+	// drops and avoid stalling upstream engines indefinitely.
+	Ack chan struct{}
 }
 
 // isSessionCommand marks cmdPermissionAwait as a session command.

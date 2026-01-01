@@ -272,6 +272,7 @@ func TestReducePermissionAwait_StoresPromiseAndEmitsEphemeral(t *testing.T) {
 	t.Parallel()
 
 	decisionCh := make(chan PermissionDecision, 1)
+	ack := make(chan struct{}, 1)
 	state := State{
 		SessionID: "s1",
 		FSM:       StateLocalRunning,
@@ -288,12 +289,19 @@ func TestReducePermissionAwait_StoresPromiseAndEmitsEphemeral(t *testing.T) {
 		Input:     json.RawMessage(`{"foo":"bar"}`),
 		NowMs:     100,
 		Reply:     decisionCh,
+		Ack:       ack,
 	})
 
 	_, ok := next.AgentState.Requests["r1"]
 	require.True(t, ok)
 	require.NotNil(t, next.PendingPermissionPromises)
 	require.NotNil(t, next.PendingPermissionPromises["r1"])
+
+	select {
+	case <-ack:
+	default:
+		require.Fail(t, "expected ack to be signaled")
+	}
 
 	foundEphemeral := false
 	for _, eff := range effects {
@@ -302,6 +310,72 @@ func TestReducePermissionAwait_StoresPromiseAndEmitsEphemeral(t *testing.T) {
 		}
 	}
 	require.True(t, foundEphemeral, "expected effEmitEphemeral, got: %+v", effects)
+}
+
+func TestReducePermissionAwait_DedupesEphemeral(t *testing.T) {
+	t.Parallel()
+
+	decisionCh := make(chan PermissionDecision, 1)
+	state := State{
+		SessionID: "s1",
+		FSM:       StateLocalRunning,
+		Mode:      ModeLocal,
+		AgentState: types.AgentState{
+			ControlledByUser: true,
+			Requests: map[string]types.AgentPendingRequest{
+				"r1": {ToolName: "acp.await", Input: "{}", CreatedAt: 1},
+			},
+		},
+	}
+
+	next, effects := Reduce(state, cmdPermissionAwait{
+		RequestID: "r1",
+		ToolName:  "acp.await",
+		Input:     json.RawMessage(`{"foo":"bar"}`),
+		NowMs:     100,
+		Reply:     decisionCh,
+	})
+	require.NotNil(t, next.PendingPermissionPromises)
+	require.NotNil(t, next.PendingPermissionPromises["r1"])
+
+	// Even for duplicates, we re-emit the permission-request ephemeral so the
+	// phone UI can recover if it missed the original prompt.
+	foundEphemeral := false
+	for _, eff := range effects {
+		if _, ok := eff.(effEmitEphemeral); ok {
+			foundEphemeral = true
+		}
+	}
+	require.True(t, foundEphemeral, "expected effEmitEphemeral for duplicate request")
+}
+
+func TestReduceWSConnected_SchedulesPersist(t *testing.T) {
+	t.Parallel()
+
+	state := State{
+		SessionID:   "s1",
+		FSM:         StateRemoteRunning,
+		Mode:        ModeRemote,
+		WSConnected: false,
+		AgentState: types.AgentState{
+			ControlledByUser: false,
+			Requests: map[string]types.AgentPendingRequest{
+				"r1": {ToolName: "CodexApplyPatch", Input: "{}", CreatedAt: 123},
+			},
+		},
+	}
+	state = refreshAgentStateJSON(state)
+
+	next, effects := Reduce(state, evWSConnected{})
+	require.True(t, next.WSConnected)
+
+	foundTimer := false
+	for _, eff := range effects {
+		if _, ok := eff.(effStartTimer); ok {
+			foundTimer = true
+		}
+	}
+	require.True(t, foundTimer, "expected debounced persist timer, got: %+v", effects)
 }
 
 func TestReducePermissionDecision_CompletesAwaitPromiseWithoutRemoteEffect(t *testing.T) {

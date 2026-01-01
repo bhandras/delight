@@ -3,6 +3,7 @@ package actor
 import (
 	"context"
 	"errors"
+	"log"
 	"time"
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
@@ -95,11 +96,32 @@ func (r *Runtime) cancelTimer(eff effCancelTimer) {
 func (r *Runtime) emitEphemeral(eff effEmitEphemeral) {
 	r.mu.Lock()
 	emitter := r.socketEmitter
+	debug := r.debug
 	r.mu.Unlock()
 	if emitter == nil {
+		if debug {
+			log.Printf("session: emit ephemeral skipped (no socket emitter)")
+		}
 		return
 	}
-	_ = emitter.EmitEphemeral(eff.Payload)
+	if debug {
+		typ := ""
+		if payload, ok := eff.Payload.(map[string]any); ok {
+			if t, _ := payload["type"].(string); t != "" {
+				typ = t
+			} else if t, _ := payload["t"].(string); t != "" {
+				typ = t
+			}
+		}
+		if typ != "" {
+			log.Printf("session: emit ephemeral type=%s", typ)
+		} else {
+			log.Printf("session: emit ephemeral")
+		}
+	}
+	if err := emitter.EmitEphemeral(eff.Payload); err != nil && debug {
+		log.Printf("session: emit ephemeral failed: %v", err)
+	}
 }
 
 // emitMessage emits an encrypted session message to the server.
@@ -120,4 +142,3 @@ func (r *Runtime) emitMessage(eff effEmitMessage) {
 		Message: eff.Ciphertext,
 	})
 }
-
