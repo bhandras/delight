@@ -13,6 +13,8 @@ package actor
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"sync"
 )
 
@@ -77,13 +79,14 @@ type Actor[S any] struct {
 	runtime Runtime
 	hooks   Hooks[S]
 
-	mu     sync.Mutex
-	state  S
-	inbox  chan Input
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{}
-	once   sync.Once
+	mu      sync.Mutex
+	state   S
+	inbox   chan Input
+	effects chan []Effect
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    chan struct{}
+	once    sync.Once
 }
 
 // New creates a new actor with initial state, reducer, and runtime.
@@ -94,6 +97,7 @@ func New[S any](initial S, reducer ReducerFunc[S], runtime Runtime, opts ...Opti
 		runtime: runtime,
 		state:   initial,
 		inbox:   make(chan Input, 256),
+		effects: nil,
 		ctx:     ctx,
 		cancel:  cancel,
 		done:    make(chan struct{}),
@@ -101,6 +105,9 @@ func New[S any](initial S, reducer ReducerFunc[S], runtime Runtime, opts ...Opti
 	for _, opt := range opts {
 		opt(a)
 	}
+	// Keep the effects queue sized similarly to the mailbox so effect bursts
+	// don't stall the reducer loop unless the runtime is truly wedged.
+	a.effects = make(chan []Effect, cap(a.inbox))
 	return a
 }
 
@@ -126,7 +133,14 @@ func WithMailboxSize[S any](n int) Option[S] {
 //
 // Start is idempotent; calling Start multiple times has no effect.
 func (a *Actor[S]) Start() {
-	a.once.Do(func() { go a.loop() })
+	a.once.Do(func() {
+		// Run the reducer loop and runtime interpreter in separate goroutines.
+		//
+		// This keeps the reducer loop responsive: long-running side effects must
+		// never block state transitions or message receipt.
+		go a.loop()
+		go a.runRuntime()
+	})
 }
 
 // Stop cancels the actor context and stops the runtime.
@@ -160,6 +174,9 @@ func (a *Actor[S]) Enqueue(input Input) bool {
 	default:
 		// Best-effort: drop if mailbox is full. Callers that need backpressure
 		// should use a larger mailbox or explicit flow control.
+		if os.Getenv("DELIGHT_DEBUG_DROP") == "1" {
+			log.Printf("actor: dropped input (mailbox full): %T", input)
+		}
 		return false
 	}
 }
@@ -186,10 +203,6 @@ func (a *Actor[S]) loop() {
 			panic(r)
 		}
 	}()
-
-	emit := func(in Input) {
-		_ = a.Enqueue(in)
-	}
 
 	for {
 		select {
@@ -220,13 +233,46 @@ func (a *Actor[S]) loop() {
 				a.hooks.OnEffects(effects)
 			}
 
-			if a.runtime != nil && len(effects) > 0 {
-				a.runtime.HandleEffects(a.ctx, effects, emit)
+			if len(effects) > 0 {
+				select {
+				case <-a.ctx.Done():
+					return
+				case a.effects <- effects:
+				}
 			}
+		}
+	}
+}
+
+// runRuntime interprets effects produced by the reducer.
+//
+// This loop runs in its own goroutine to ensure the reducer loop never blocks
+// on long-running I/O (process management, network calls, etc.). Runtimes must
+// still avoid blocking forever, but this separation prevents state starvation.
+func (a *Actor[S]) runRuntime() {
+	emit := func(in Input) {
+		if in == nil {
+			return
+		}
+		select {
+		case <-a.ctx.Done():
+			return
+		case a.inbox <- in:
+		}
+	}
+
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case effs := <-a.effects:
+			if len(effs) == 0 || a.runtime == nil {
+				continue
+			}
+			a.runtime.HandleEffects(a.ctx, effs, emit)
 		}
 	}
 }
 
 // ErrStopped is returned by helpers when the actor has been stopped.
 var ErrStopped = fmt.Errorf("actor stopped")
-
