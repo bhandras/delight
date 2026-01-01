@@ -161,6 +161,23 @@ private enum MessageValue {
     }
 }
 
+/// MessageFields collects JSON keys used in Claude message blocks and server responses.
+private enum MessageFields {
+    static let command = "command"
+    static let filePath = "file_path"
+    static let hasMore = "hasMore"
+    static let id = "id"
+    static let input = "input"
+    static let items = "items"
+    static let message = "message"
+    static let messages = "messages"
+    static let name = "name"
+    static let nextBeforeSeq = "nextBeforeSeq"
+    static let page = "page"
+    static let path = "path"
+    static let pattern = "pattern"
+}
+
 /// UpdateTiming collects debounce and clock-related constants.
 private enum UpdateTiming {
     static let millisecondsPerSecond: Double = 1000
@@ -1778,16 +1795,17 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         case .array(let array):
             itemsArray = array
         case .object(let dict):
-            if let messages = dict["messages"]?.array {
+            if let messages = dict[MessageFields.messages]?.array {
                 itemsArray = messages
-                if let page = dict["page"]?.object {
-                    hasMore = page["hasMore"]?.bool ?? false
-                    nextBeforeSeq = page["nextBeforeSeq"]?.int64 ?? (page["nextBeforeSeq"]?.number).map { Int64($0) }
+                if let page = dict[MessageFields.page]?.object {
+                    hasMore = page[MessageFields.hasMore]?.bool ?? false
+                    nextBeforeSeq = page[MessageFields.nextBeforeSeq]?.int64
+                        ?? (page[MessageFields.nextBeforeSeq]?.number).map { Int64($0) }
                 }
             } else if let dataDict = dict[UpdateFields.data]?.object,
-                      let messages = dataDict["messages"]?.array {
+                      let messages = dataDict[MessageFields.messages]?.array {
                 itemsArray = messages
-            } else if let items = dict["items"]?.array {
+            } else if let items = dict[MessageFields.items]?.array {
                 itemsArray = items
             } else if let dataItems = dict[UpdateFields.data]?.array {
                 itemsArray = dataItems
@@ -1822,7 +1840,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
         for item in itemsArray {
             guard let dict = item.object else { continue }
-            let id = jsonString(dict, "id") ?? UUID().uuidString
+            let id = jsonString(dict, MessageFields.id) ?? UUID().uuidString
             let createdAt = jsonInt64(dict, UpdateFields.createdAt)
             let seq = jsonInt64(dict, UpdateFields.seq)
             let content = normalizeContent(firstNonNull(dict[UpdateFields.content], dict[UpdateFields.message], dict[UpdateFields.data]))
@@ -1970,8 +1988,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                         continue
                     }
                     if MessageValue.BlockType.toolCallTypes.contains(type) {
-                        let name = dict["name"]?.string ?? "tool"
-                        if let summary = toolSummary(name: name, input: dict["input"]) {
+                        let name = dict[MessageFields.name]?.string ?? "tool"
+                        if let summary = toolSummary(name: name, input: dict[MessageFields.input]) {
                             blocks.append(.toolCall(summary))
                         }
                         continue
@@ -1980,7 +1998,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                         continue
                     }
                 }
-                if let name = dict["name"]?.string, let input = dict["input"] {
+                if let name = dict[MessageFields.name]?.string, let input = dict[MessageFields.input] {
                     if let summary = toolSummary(name: name, input: input) {
                         blocks.append(.toolCall(summary))
                     }
@@ -2311,27 +2329,27 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
         if normalized == "grep",
            let dict = input?.object,
-           let pattern = dict["pattern"]?.string {
+           let pattern = dict[MessageFields.pattern]?.string {
             return ToolCallSummary(title: "grep(pattern: \(pattern))", icon: icon, subtitle: nil)
         }
         if normalized == "read",
            let dict = input?.object,
-           let filePath = dict["file_path"]?.string {
+           let filePath = dict[MessageFields.filePath]?.string {
             return ToolCallSummary(title: displayPath(filePath), icon: icon, subtitle: nil)
         }
         if normalized == "glob",
            let dict = input?.object,
-           let pattern = dict["pattern"]?.string {
+           let pattern = dict[MessageFields.pattern]?.string {
             return ToolCallSummary(title: pattern, icon: icon, subtitle: nil)
         }
         if normalized == "ls",
            let dict = input?.object,
-           let path = dict["path"]?.string {
+           let path = dict[MessageFields.path]?.string {
             return ToolCallSummary(title: displayPath(path), icon: icon, subtitle: nil)
         }
         if normalized == "bash",
            let dict = input?.object,
-           let command = dict["command"]?.string {
+           let command = dict[MessageFields.command]?.string {
             return ToolCallSummary(title: command, icon: icon, subtitle: nil)
         }
         return ToolCallSummary(title: name, icon: icon, subtitle: nil)
