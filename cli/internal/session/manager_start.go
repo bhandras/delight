@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -22,6 +23,11 @@ import (
 	"github.com/bhandras/delight/cli/internal/websocket"
 	"github.com/bhandras/delight/cli/pkg/types"
 	"github.com/bhandras/delight/protocol/wire"
+)
+
+const (
+	// dataEncryptionKeyBytes is the byte length for session/machine data keys.
+	dataEncryptionKeyBytes = 32
 )
 
 // Start starts a new Delight session.
@@ -335,19 +341,29 @@ func (m *Manager) createSession() error {
 		m.sessionTag = stableSessionTag(m.machineID, m.workDir)
 	}
 
-	// Encrypt metadata
-	var secretKey [32]byte
-	copy(secretKey[:], m.masterSecret)
-
-	encryptedMeta, err := crypto.EncryptLegacy(m.metadata, &secretKey)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt metadata: %w", err)
+	// Ensure the per-session dataEncryptionKey is available.
+	//
+	// This key is used for AES-256-GCM encryption of session payloads (RPC + messages).
+	if m.dataKey == nil {
+		m.dataKey = make([]byte, dataEncryptionKeyBytes)
+		if _, err := rand.Read(m.dataKey); err != nil {
+			return fmt.Errorf("failed to generate dataEncryptionKey: %w", err)
+		}
 	}
 
+	// Encode metadata as base64(JSON). (No app clients depend on encrypted metadata.)
+	metaJSON, err := json.Marshal(m.metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+	encodedMeta := base64.StdEncoding.EncodeToString(metaJSON)
+
 	// Create session request (encode metadata as base64 string)
+	dataKeyB64 := base64.StdEncoding.EncodeToString(m.dataKey)
 	body, err := json.Marshal(wire.CreateSessionRequest{
-		Tag:      m.sessionTag,
-		Metadata: base64.StdEncoding.EncodeToString(encryptedMeta),
+		Tag:               m.sessionTag,
+		Metadata:          encodedMeta,
+		DataEncryptionKey: &dataKeyB64,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal request: %w", err)
@@ -389,18 +405,35 @@ func (m *Manager) createSession() error {
 	m.sessionID = result.Session.ID
 
 	// Extract data key if present
-	if result.Session.DataEncryptionKey != "" {
-		decrypted, err := crypto.DecryptDataEncryptionKey(result.Session.DataEncryptionKey, m.masterSecret)
-		if err != nil {
-			log.Printf("Failed to decrypt data encryption key: %v", err)
-		} else {
-			m.dataKey = decrypted
-			if m.debug {
-				log.Println("Data encryption key decrypted")
-			}
+	if result.Session.DataEncryptionKey != nil && *result.Session.DataEncryptionKey != "" {
+		if err := m.setSessionDataEncryptionKey(*result.Session.DataEncryptionKey); err != nil && m.debug {
+			log.Printf("Failed to load session dataEncryptionKey: %v", err)
 		}
 	}
 
+	return nil
+}
+
+// setSessionDataEncryptionKey loads the session's dataEncryptionKey.
+//
+// The server stores and returns `dataEncryptionKey` as raw 32-byte base64.
+func (m *Manager) setSessionDataEncryptionKey(encoded string) error {
+	if encoded == "" {
+		return nil
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return fmt.Errorf("decode base64: %w", err)
+	}
+
+	if len(raw) != dataEncryptionKeyBytes {
+		return fmt.Errorf("invalid dataEncryptionKey length: %d", len(raw))
+	}
+	m.dataKey = raw
+	if m.debug {
+		log.Printf("Session dataEncryptionKey loaded")
+	}
 	return nil
 }
 
@@ -565,6 +598,13 @@ func (m *Manager) handleUpdate(data map[string]interface{}) {
 
 	wire.DumpToTestdata("session_update_event", data)
 
+	// Best-effort: hydrate dataEncryptionKey if this update includes a session
+	// record (e.g. new-session). This is required for decrypting AES-GCM
+	// encrypted messages coming from newer clients.
+	if m.dataKey == nil {
+		m.hydrateSessionDataEncryptionKeyFromUpdate(data)
+	}
+
 	cipher, localID, ok, err := wire.ExtractNewMessageCipherAndLocalID(data)
 	if err != nil {
 		if m.debug {
@@ -577,6 +617,37 @@ func (m *Manager) handleUpdate(data map[string]interface{}) {
 	}
 
 	m.handleEncryptedUserMessage(cipher, localID)
+}
+
+// hydrateSessionDataEncryptionKeyFromUpdate checks for a `new-session` update
+// containing a dataEncryptionKey and loads it into the manager.
+func (m *Manager) hydrateSessionDataEncryptionKeyFromUpdate(data map[string]interface{}) {
+	body, ok := data["body"].(map[string]any)
+	if !ok || body == nil {
+		return
+	}
+	t, _ := body["t"].(string)
+	if t != "new-session" {
+		return
+	}
+
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return
+	}
+	var session wire.UpdateBodyNewSession
+	if err := json.Unmarshal(raw, &session); err != nil {
+		return
+	}
+	if session.ID == "" || session.ID != m.sessionID {
+		return
+	}
+	if session.DataEncryptionKey == nil || *session.DataEncryptionKey == "" {
+		return
+	}
+	if err := m.setSessionDataEncryptionKey(*session.DataEncryptionKey); err != nil && m.debug {
+		log.Printf("Failed to hydrate session dataEncryptionKey from update: %v", err)
+	}
 }
 
 // handleSessionUpdate handles session update events

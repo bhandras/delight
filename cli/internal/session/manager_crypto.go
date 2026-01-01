@@ -10,6 +10,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/crypto"
 )
 
+// min returns the smaller of a and b.
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -19,20 +20,13 @@ func min(a, b int) int {
 
 // encrypt encrypts data using the session key
 func (m *Manager) encrypt(data []byte) (string, error) {
-	var encrypted []byte
-	var err error
-
-	if m.dataKey != nil {
-		encrypted, err = crypto.EncryptWithDataKey(json.RawMessage(data), m.dataKey)
-	} else {
-		var secretKey [32]byte
-		copy(secretKey[:], m.masterSecret)
-		encrypted, err = crypto.EncryptLegacy(json.RawMessage(data), &secretKey)
+	if m.dataKey == nil {
+		return "", fmt.Errorf("session dataEncryptionKey is not loaded")
 	}
+	encrypted, err := crypto.EncryptWithDataKey(json.RawMessage(data), m.dataKey)
 	if err != nil {
 		return "", err
 	}
-
 	return base64.StdEncoding.EncodeToString(encrypted), nil
 }
 
@@ -60,54 +54,23 @@ func (m *Manager) decrypt(dataB64 string) ([]byte, error) {
 		if m.debug {
 			log.Printf("[decrypt] Detected AES-GCM format (version byte 0)")
 		}
-		// AES-GCM format - use dataKey if available, otherwise try master secret
-		key := m.dataKey
-		if key == nil {
-			if m.debug {
-				log.Printf("[decrypt] No dataKey, trying masterSecret for AES-GCM")
-			}
-			key = m.masterSecret
-		}
-		if key == nil {
-			return nil, fmt.Errorf("AES-GCM encrypted data but no key available")
+		// AES-GCM format is only valid when the session dataEncryptionKey is
+		// present. Falling back to the master secret cannot work reliably and
+		// masks the real problem (missing key hydration).
+		if m.dataKey == nil {
+			return nil, fmt.Errorf("AES-GCM encrypted data but dataEncryptionKey is not loaded")
 		}
 		var result json.RawMessage
-		if err := crypto.DecryptWithDataKey(encrypted, key, &result); err != nil {
+		if err := crypto.DecryptWithDataKey(encrypted, m.dataKey, &result); err != nil {
 			return nil, fmt.Errorf("failed to decrypt AES-GCM: %w", err)
 		}
 		return result, nil
 	}
 
-	if m.debug {
-		log.Printf("[decrypt] Using legacy SecretBox format")
-	}
-
-	// Legacy SecretBox format - always uses master secret
-	var secretKey [32]byte
-	if m.masterSecret == nil {
-		if m.dataKey != nil {
-			copy(secretKey[:], m.dataKey)
-			if m.debug {
-				log.Printf("[decrypt] Using dataKey for SecretBox fallback, first 8 bytes: %v", m.dataKey[:8])
-			}
-		} else {
-			return nil, fmt.Errorf("no master secret available for legacy decryption")
-		}
-	} else {
-		copy(secretKey[:], m.masterSecret)
-		if m.debug {
-			log.Printf("[decrypt] Using masterSecret, first 8 bytes: %v", m.masterSecret[:8])
-		}
-	}
-
-	var result json.RawMessage
-	if err := crypto.DecryptLegacy(encrypted, &secretKey, &result); err != nil {
-		return nil, fmt.Errorf("failed to decrypt SecretBox: %w", err)
-	}
-
-	return result, nil
+	return nil, fmt.Errorf("unsupported encrypted payload format")
 }
 
+// encryptMachine encrypts daemon-scoped state using the master secret.
 func (m *Manager) encryptMachine(data []byte) (string, error) {
 	var secretKey [32]byte
 	copy(secretKey[:], m.masterSecret)
@@ -118,6 +81,7 @@ func (m *Manager) encryptMachine(data []byte) (string, error) {
 	return base64.StdEncoding.EncodeToString(encrypted), nil
 }
 
+// decryptMachine decrypts daemon-scoped state using the master secret.
 func (m *Manager) decryptMachine(dataB64 string) ([]byte, error) {
 	encrypted, err := base64.StdEncoding.DecodeString(dataB64)
 	if err != nil {
