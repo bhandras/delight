@@ -22,6 +22,33 @@ const (
 	defaultProtocolVersion = "2024-11-05"
 )
 
+const (
+	// codexElicitationExecApproval identifies an exec approval prompt.
+	codexElicitationExecApproval = "exec-approval"
+	// codexElicitationPatchApproval identifies an apply-patch approval prompt.
+	codexElicitationPatchApproval = "patch-approval"
+)
+
+const (
+	// codexToolBash is the logical tool name used for exec approvals.
+	codexToolBash = "CodexBash"
+	// codexToolApplyPatch is the logical tool name used for patch approvals.
+	codexToolApplyPatch = "CodexApplyPatch"
+	// codexToolUnknownApproval is used when we cannot classify an approval prompt.
+	codexToolUnknownApproval = "CodexApproval"
+)
+
+const (
+	// codexDecisionApproved indicates the approval was granted.
+	codexDecisionApproved = "approved"
+	// codexDecisionDenied indicates the approval was denied.
+	codexDecisionDenied = "denied"
+	// codexDecisionAllow is a compatibility decision string used by some clients.
+	codexDecisionAllow = "allow"
+	// codexDecisionDeny is a compatibility decision string used by some clients.
+	codexDecisionDeny = "deny"
+)
+
 type PermissionDecision struct {
 	Decision string
 	Message  string
@@ -409,23 +436,56 @@ func (c *Client) handleRequest(msg *rpcMessage) {
 	if requestID == "" {
 		requestID = fmt.Sprintf("codex-%v", msg.ID)
 	}
-	toolName := "CodexBash"
+
+	elicitation, _ := params["codex_elicitation"].(string)
+	toolName := codexToolUnknownApproval
 	input := map[string]interface{}{
-		"command": params["codex_command"],
-		"cwd":     params["codex_cwd"],
+		"elicitation": elicitation,
+		"callId":      params["codex_call_id"],
+		"eventId":     params["codex_event_id"],
+		"toolCallId":  params["codex_mcp_tool_call_id"],
+	}
+
+	switch elicitation {
+	case codexElicitationExecApproval:
+		toolName = codexToolBash
+		input["command"] = params["codex_command"]
+		input["cwd"] = params["codex_cwd"]
+		input["parsedCommand"] = params["codex_parsed_cmd"]
+	case codexElicitationPatchApproval:
+		toolName = codexToolApplyPatch
+		input["changes"] = params["codex_changes"]
+		input["reason"] = params["codex_reason"]
+		input["grantRoot"] = params["codex_grant_root"]
+	default:
+		// Unknown approval type: keep a minimal payload to avoid sending large blobs
+		// but still allow the user to decide.
+		input["raw"] = params
 	}
 
 	c.mu.Lock()
 	handler := c.perm
+	debug := c.debug
 	c.mu.Unlock()
 
-	decision := "denied"
+	if debug {
+		log.Printf("codex: approval request: id=%s tool=%s type=%s", requestID, toolName, elicitation)
+	}
+
+	decision := codexDecisionDenied
 	message := ""
 	if handler != nil {
 		resp, err := handler(requestID, toolName, input)
 		if err == nil && resp != nil {
 			if resp.Decision != "" {
-				decision = resp.Decision
+				switch resp.Decision {
+				case codexDecisionAllow:
+					decision = codexDecisionApproved
+				case codexDecisionDeny:
+					decision = codexDecisionDenied
+				default:
+					decision = resp.Decision
+				}
 			}
 			message = resp.Message
 		}
@@ -436,6 +496,9 @@ func (c *Client) handleRequest(msg *rpcMessage) {
 	}
 	if message != "" {
 		result["reason"] = message
+	}
+	if debug {
+		log.Printf("codex: approval decision: id=%s decision=%s", requestID, decision)
 	}
 	_ = c.sendResult(msg.ID, result)
 }

@@ -39,6 +39,13 @@ const (
 )
 
 const (
+	// codexDecisionApproved is the Codex ReviewDecision string for approval.
+	codexDecisionApproved = "approved"
+	// codexDecisionDenied is the Codex ReviewDecision string for denial.
+	codexDecisionDenied = "denied"
+)
+
+const (
 	// configKeyPermissionMode is the meta key used by Delight to choose Codex permissions.
 	configKeyPermissionMode = "permissionMode"
 	// configKeyModel is the meta key used by Delight to choose the Codex model.
@@ -545,9 +552,9 @@ func (e *Engine) handlePermission(requestID string, toolName string, input map[s
 		return &codex.PermissionDecision{Decision: "denied", Message: err.Error()}, nil
 	}
 
-	approved := "denied"
+	approved := codexDecisionDenied
 	if decision.Allow {
-		approved = "approved"
+		approved = codexDecisionApproved
 	}
 	return &codex.PermissionDecision{
 		Decision: approved,
