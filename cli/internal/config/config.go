@@ -23,6 +23,8 @@ type Config struct {
 
 	// Debug enables verbose logging.
 	Debug bool
+	// SocketIOTransport selects the Socket.IO transport mode ("websocket" or "polling").
+	SocketIOTransport string
 	// Agent selects the local agent backend (acp|claude|codex).
 	Agent string
 	// FakeAgent enables a stub agent for integration tests.
@@ -62,11 +64,6 @@ func Load() (*Config, error) {
 	acpAgent := getenvFirst("DELIGHT_ACP_AGENT", "HAPPY_ACP_AGENT")
 	acpEnable := acpURL != "" && acpAgent != ""
 
-	debug := os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1"
-	if !debug {
-		debug = getenvFirst("DELIGHT_DEBUG", "HAPPY_DEBUG") == "true" ||
-			getenvFirst("DELIGHT_DEBUG", "HAPPY_DEBUG") == "1"
-	}
 	fakeAgent := getenvFirst("DELIGHT_FAKE_AGENT", "HAPPY_FAKE_AGENT") == "true" ||
 		getenvFirst("DELIGHT_FAKE_AGENT", "HAPPY_FAKE_AGENT") == "1"
 	agent := getenvFirst("DELIGHT_AGENT", "HAPPY_AGENT")
@@ -90,16 +87,17 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		ServerURL:    serverURL,
-		ACPURL:       acpURL,
-		ACPAgent:     acpAgent,
-		ACPEnable:    acpEnable,
-		DelightHome:  delightHome,
-		AccessKey:    filepath.Join(delightHome, "access.key"),
-		Debug:        debug,
-		Agent:        agent,
-		FakeAgent:    fakeAgent,
-		StartingMode: startingMode,
+		ServerURL:         serverURL,
+		ACPURL:            acpURL,
+		ACPAgent:          acpAgent,
+		ACPEnable:         acpEnable,
+		DelightHome:       delightHome,
+		AccessKey:         filepath.Join(delightHome, "access.key"),
+		Debug:             false,
+		SocketIOTransport: "websocket",
+		Agent:             agent,
+		FakeAgent:         fakeAgent,
+		StartingMode:      startingMode,
 	}, nil
 }
 

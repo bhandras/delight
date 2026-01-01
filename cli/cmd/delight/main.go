@@ -17,6 +17,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/config"
 	"github.com/bhandras/delight/cli/internal/crypto"
 	"github.com/bhandras/delight/cli/internal/session"
+	"github.com/bhandras/delight/cli/pkg/logger"
 )
 
 const (
@@ -101,12 +102,12 @@ func run() error {
 	masterKeyPath := filepath.Join(cfg.DelightHome, "master.key")
 	if _, err := os.Stat(masterKeyPath); os.IsNotExist(err) {
 		// No account credentials - trigger QR code authentication
-		log.Println("No account credentials found. Starting authentication...")
-		log.Println("")
+		logger.Infof("No account credentials found. Starting authentication...")
+		logger.Infof("")
 		if err := cli.AuthCommand(cfg); err != nil {
 			return fmt.Errorf("authentication failed: %w", err)
 		}
-		log.Println("")
+		logger.Infof("")
 	}
 
 	// Load access token
@@ -117,19 +118,19 @@ func run() error {
 	token := string(tokenData)
 
 	if cfg.Debug {
-		log.Printf("Access token: %s...", token[:20])
+		logger.Debugf("Access token: %s...", token[:20])
 	}
 
 	if cfg.Debug {
-		log.Printf("Config: ServerURL=%s, DelightHome=%s", cfg.ServerURL, cfg.DelightHome)
+		logger.Debugf("Config: ServerURL=%s, DelightHome=%s", cfg.ServerURL, cfg.DelightHome)
 	}
 
-	log.Println("Authentication successful!")
-	log.Printf("Delight home: %s", cfg.DelightHome)
-	log.Printf("Server: %s", cfg.ServerURL)
+	logger.Infof("Authentication successful!")
+	logger.Infof("Delight home: %s", cfg.DelightHome)
+	logger.Infof("Server: %s", cfg.ServerURL)
 
-	log.Printf("Starting Delight session in: %s", workDir)
-	log.Printf("Agent: %s", cfg.Agent)
+	logger.Infof("Starting Delight session in: %s", workDir)
+	logger.Infof("Agent: %s", cfg.Agent)
 
 	// Create and start session manager
 	sessionMgr, err := session.NewManager(cfg, token, cfg.Debug)
@@ -142,11 +143,11 @@ func run() error {
 		return fmt.Errorf("failed to start session: %w", err)
 	}
 
-	log.Println("Delight session started! Press Ctrl+C to exit.")
+	logger.Infof("Delight session started! Press Ctrl+C to exit.")
 
 	// Wait for Claude to exit
 	if err := sessionMgr.Wait(); err != nil {
-		log.Printf("Session ended with error: %v", err)
+		logger.Warnf("Session ended with error: %v", err)
 	}
 
 	return nil
@@ -157,10 +158,14 @@ func setupLogging(workDir string) (func(), error) {
 	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		log.SetOutput(io.Discard)
+		logger.SetOutput(io.Discard)
 		return func() {}, fmt.Errorf("failed to open log file %s: %w", logPath, err)
 	}
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	flags := log.LstdFlags | log.Lmicroseconds
+	log.SetFlags(flags)
 	log.SetOutput(file)
+	logger.SetFlags(flags)
+	logger.SetOutput(file)
 	return func() { _ = file.Close() }, nil
 }
 
@@ -168,10 +173,14 @@ func parseFlags(cfg *config.Config, args []string) ([]string, error) {
 	fs := flag.NewFlagSet("delight", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
+	serverURL := fs.String("server-url", "", "Delight server URL")
+	homeDir := fs.String("home-dir", "", "Delight home directory")
 	acpURL := fs.String("acp-url", "", "ACP server URL")
 	acpAgent := fs.String("acp-agent", "", "ACP agent name")
 	agent := fs.String("agent", "", "Agent backend (acp|claude|codex)")
 	forceNewSession := fs.Bool("new-session", false, "Force creation of a new session")
+	logLevel := fs.String("log-level", "info", "Log level (trace|debug|info|warn|error)")
+	socketIOTransport := fs.String("socketio-transport", "websocket", "Socket.IO transport (websocket|polling)")
 	showHelp := fs.Bool("help", false, "Show help")
 
 	if err := fs.Parse(args); err != nil {
@@ -183,6 +192,13 @@ func parseFlags(cfg *config.Config, args []string) ([]string, error) {
 		return nil, nil
 	}
 
+	if *serverURL != "" {
+		cfg.ServerURL = *serverURL
+	}
+	if *homeDir != "" {
+		cfg.DelightHome = *homeDir
+		cfg.AccessKey = filepath.Join(cfg.DelightHome, "access.key")
+	}
 	if *acpURL != "" {
 		cfg.ACPURL = *acpURL
 	}
@@ -199,6 +215,18 @@ func parseFlags(cfg *config.Config, args []string) ([]string, error) {
 	if *forceNewSession {
 		cfg.ForceNewSession = true
 	}
+	switch *socketIOTransport {
+	case "websocket", "polling":
+		cfg.SocketIOTransport = *socketIOTransport
+	default:
+		return nil, fmt.Errorf("invalid --socketio-transport %q (expected websocket or polling)", *socketIOTransport)
+	}
+	level, err := logger.ParseLevel(*logLevel)
+	if err != nil {
+		return nil, err
+	}
+	logger.SetLevel(level)
+	cfg.Debug = level <= logger.LevelDebug
 
 	return fs.Args(), nil
 }
@@ -278,19 +306,15 @@ Usage:
   delight daemon stop  Stop the running daemon (sessions stay alive)
   delight stop-daemon  Stop the running daemon (sessions stay alive)
 
-Environment Variables:
-  DELIGHT_SERVER_URL Server URL (default: https://happy-api.slopus.com)
-  DELIGHT_HOME_DIR   Config directory (default: ~/.delight)
-  DELIGHT_AGENT      Agent backend (claude|codex, default: claude)
-  DELIGHT_ACP_URL    ACP server URL (enables ACP mode when set)
-  DELIGHT_ACP_AGENT  ACP agent name (required with DELIGHT_ACP_URL)
-  DEBUG              Enable debug logging (true/1)
-
 Flags:
+  --server-url        Delight server URL
+  --home-dir          Delight home directory
   --acp-url           ACP server URL
   --acp-agent         ACP agent name
   --agent            Agent backend (claude|codex)
   --new-session       Force creation of a new session
+  --socketio-transport Socket.IO transport (websocket|polling)
+  --log-level         Log level (trace|debug|info|warn|error)
 
 Examples:
   # Authenticate with QR code
@@ -300,5 +324,5 @@ Examples:
   delight
 
   # Start a Claude session with custom server
-  DELIGHT_SERVER_URL=http://localhost:3005 delight`)
+  delight --server-url=http://localhost:3005`)
 }

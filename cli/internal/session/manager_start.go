@@ -21,6 +21,7 @@ import (
 	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
 	"github.com/bhandras/delight/cli/internal/storage"
 	"github.com/bhandras/delight/cli/internal/websocket"
+	"github.com/bhandras/delight/cli/pkg/logger"
 	"github.com/bhandras/delight/cli/pkg/types"
 	"github.com/bhandras/delight/protocol/wire"
 )
@@ -114,7 +115,7 @@ func (m *Manager) Start(workDir string) error {
 	}
 
 	// Connect WebSocket
-	m.wsClient = websocket.NewClient(m.cfg.ServerURL, m.token, m.sessionID, m.debug)
+	m.wsClient = websocket.NewClient(m.cfg.ServerURL, m.token, m.sessionID, m.cfg.SocketIOTransport, m.debug)
 	// Re-wire the session actor runtime with the now-constructed websocket client.
 	// initSessionActor is idempotent and updates runtime adapters when actor exists.
 	m.initSessionActor()
@@ -168,7 +169,7 @@ func (m *Manager) Start(workDir string) error {
 
 	// Connect machine-scoped WebSocket (best-effort)
 	if !m.disableMachineSocket {
-		m.machineClient = websocket.NewMachineClient(m.cfg.ServerURL, m.token, m.machineID, m.debug)
+		m.machineClient = websocket.NewMachineClient(m.cfg.ServerURL, m.token, m.machineID, m.cfg.SocketIOTransport, m.debug)
 		m.machineClient.OnConnect(func() {
 			if m.sessionActor != nil {
 				_ = m.sessionActor.Enqueue(sessionactor.MachineConnected())
@@ -279,10 +280,7 @@ func (m *Manager) initSessionActor() {
 
 	hooks := framework.Hooks[sessionactor.State]{
 		OnInput: func(input framework.Input) {
-			if os.Getenv("DELIGHT_DEBUG_SESSION_ACTOR_INPUTS") != "1" {
-				return
-			}
-			log.Printf("session-actor input: %T", input)
+			logger.Tracef("session-actor input: %T", input)
 		},
 		OnTransition: func(prev sessionactor.State, next sessionactor.State, input framework.Input) {
 			_ = input
