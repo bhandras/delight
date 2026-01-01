@@ -11,6 +11,7 @@ import (
 	"log"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,17 @@ import (
 
 const (
 	defaultProtocolVersion = "2024-11-05"
+)
+
+const (
+	// serverMethodElicitationRequest is the MCP method used by some older Codex builds for approvals.
+	serverMethodElicitationRequest = "elicitation/request"
+	// serverMethodElicitationCreate is the MCP method used by newer Codex builds for approvals.
+	serverMethodElicitationCreate = "elicitation/create"
+	// serverMethodExecCommandApproval is the Codex server request method for exec approvals.
+	serverMethodExecCommandApproval = "execCommandApproval"
+	// serverMethodApplyPatchApproval is the Codex server request method for patch approvals.
+	serverMethodApplyPatchApproval = "applyPatchApproval"
 )
 
 const (
@@ -422,11 +434,42 @@ func (c *Client) handleNotification(msg *rpcMessage) {
 
 func (c *Client) handleRequest(msg *rpcMessage) {
 	method := msg.Method
-	if method != "elicitation/request" {
+	c.mu.Lock()
+	debug := c.debug
+	c.mu.Unlock()
+
+	if debug {
+		var keys []string
+		for key := range msg.Params {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		log.Printf("codex: request: id=%v method=%s paramsKeys=%v", msg.ID, method, keys)
+	}
+	switch method {
+	case serverMethodElicitationRequest:
+		c.handleElicitationApproval(msg)
+		return
+	case serverMethodElicitationCreate:
+		c.handleElicitationApproval(msg)
+		return
+	case serverMethodExecCommandApproval:
+		c.handleExecCommandApproval(msg)
+		return
+	case serverMethodApplyPatchApproval:
+		c.handleApplyPatchApproval(msg)
+		return
+	default:
+		if debug {
+			log.Printf("codex: unsupported request method: %s", method)
+		}
 		_ = c.sendError(msg.ID, -32601, "method not supported")
 		return
 	}
+}
 
+// handleElicitationApproval handles the legacy MCP elicitation/request approval flow.
+func (c *Client) handleElicitationApproval(msg *rpcMessage) {
 	params := msg.Params
 	if params == nil {
 		params = map[string]interface{}{}
@@ -458,8 +501,6 @@ func (c *Client) handleRequest(msg *rpcMessage) {
 		input["reason"] = params["codex_reason"]
 		input["grantRoot"] = params["codex_grant_root"]
 	default:
-		// Unknown approval type: keep a minimal payload to avoid sending large blobs
-		// but still allow the user to decide.
 		input["raw"] = params
 	}
 
@@ -469,7 +510,7 @@ func (c *Client) handleRequest(msg *rpcMessage) {
 	c.mu.Unlock()
 
 	if debug {
-		log.Printf("codex: approval request: id=%s tool=%s type=%s", requestID, toolName, elicitation)
+		log.Printf("codex: approval request: id=%s method=%s tool=%s type=%s", requestID, msg.Method, toolName, elicitation)
 	}
 
 	decision := codexDecisionDenied
@@ -499,6 +540,123 @@ func (c *Client) handleRequest(msg *rpcMessage) {
 	}
 	if debug {
 		log.Printf("codex: approval decision: id=%s decision=%s", requestID, decision)
+	}
+	_ = c.sendResult(msg.ID, result)
+}
+
+// handleExecCommandApproval handles the modern Codex execCommandApproval request.
+func (c *Client) handleExecCommandApproval(msg *rpcMessage) {
+	params := msg.Params
+	if params == nil {
+		params = map[string]interface{}{}
+	}
+
+	callID := getStringParam(params, "callId", "call_id")
+	if callID == "" {
+		callID = fmt.Sprintf("codex-%v", msg.ID)
+	}
+
+	input := map[string]interface{}{
+		"callId":         callID,
+		"command":        params["command"],
+		"cwd":            params["cwd"],
+		"reason":         params["reason"],
+		"parsedCmd":      params["parsedCmd"],
+		"conversationId": params["conversationId"],
+	}
+
+	c.mu.Lock()
+	handler := c.perm
+	debug := c.debug
+	c.mu.Unlock()
+
+	if debug {
+		log.Printf("codex: approval request: id=%s method=%s tool=%s", callID, serverMethodExecCommandApproval, codexToolBash)
+	}
+
+	decision := codexDecisionDeny
+	message := ""
+	if handler != nil {
+		resp, err := handler(callID, codexToolBash, input)
+		if err == nil && resp != nil {
+			message = resp.Message
+			switch resp.Decision {
+			case codexDecisionApproved, codexDecisionAllow:
+				decision = codexDecisionAllow
+			case codexDecisionDenied, codexDecisionDeny, "":
+				decision = codexDecisionDeny
+			default:
+				decision = resp.Decision
+			}
+		}
+	}
+
+	result := map[string]interface{}{
+		"decision": decision,
+	}
+	if message != "" {
+		result["reason"] = message
+	}
+	if debug {
+		log.Printf("codex: approval decision: id=%s decision=%s", callID, decision)
+	}
+	_ = c.sendResult(msg.ID, result)
+}
+
+// handleApplyPatchApproval handles the modern Codex applyPatchApproval request.
+func (c *Client) handleApplyPatchApproval(msg *rpcMessage) {
+	params := msg.Params
+	if params == nil {
+		params = map[string]interface{}{}
+	}
+
+	callID := getStringParam(params, "callId", "call_id")
+	if callID == "" {
+		callID = fmt.Sprintf("codex-%v", msg.ID)
+	}
+
+	input := map[string]interface{}{
+		"callId":         callID,
+		"fileChanges":    params["fileChanges"],
+		"reason":         params["reason"],
+		"grantRoot":      params["grantRoot"],
+		"conversationId": params["conversationId"],
+	}
+
+	c.mu.Lock()
+	handler := c.perm
+	debug := c.debug
+	c.mu.Unlock()
+
+	if debug {
+		log.Printf("codex: approval request: id=%s method=%s tool=%s", callID, serverMethodApplyPatchApproval, codexToolApplyPatch)
+	}
+
+	decision := codexDecisionDeny
+	message := ""
+	if handler != nil {
+		resp, err := handler(callID, codexToolApplyPatch, input)
+		if err == nil && resp != nil {
+			message = resp.Message
+			switch resp.Decision {
+			case codexDecisionApproved, codexDecisionAllow:
+				decision = codexDecisionAllow
+			case codexDecisionDenied, codexDecisionDeny, "":
+				decision = codexDecisionDeny
+			default:
+				decision = resp.Decision
+			}
+		}
+	}
+
+	result := map[string]interface{}{
+		"decision": decision,
+	}
+	if message != "" {
+		result["reason"] = message
+	}
+	if debug {
+		log.Printf("codex: approval decision: id=%s decision=%s", callID, decision)
 	}
 	_ = c.sendResult(msg.ID, result)
 }
