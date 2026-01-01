@@ -99,7 +99,7 @@ func TestFakeAgentRoundTrip(t *testing.T) {
 	defer stopProcess(t, cliCmd)
 
 	sessionID := waitForSession(t, serverURL, token, 10*time.Second)
-	masterKey := loadMasterKey(t, filepath.Join(happyHome, "master.key"))
+	dataKey := waitForSessionDataEncryptionKey(t, serverURL, token, sessionID, 10*time.Second)
 
 	sock := connectUserSocket(t, serverURL, token)
 	defer sock.Close()
@@ -112,7 +112,7 @@ func TestFakeAgentRoundTrip(t *testing.T) {
 		},
 	}
 
-	encrypted := encryptPayload(t, masterKey, userPayload)
+	encrypted := encryptPayload(t, dataKey, userPayload)
 	updateCh := make(chan map[string]interface{}, 1)
 	sock.On(types.EventName("update"), func(args ...any) {
 		if len(args) == 0 {
@@ -143,7 +143,7 @@ func TestFakeAgentRoundTrip(t *testing.T) {
 	for {
 		select {
 		case update := <-updateCh:
-			responseText, ok := decryptUpdateText(t, masterKey, update)
+			responseText, ok := decryptUpdateText(t, dataKey, update)
 			if !ok {
 				continue
 			}
@@ -442,8 +442,8 @@ func TestUpdateStateAckMismatch(t *testing.T) {
 	defer sock.Close()
 
 	resp := emitAck(t, sock, "update-state", map[string]interface{}{
-		"sid":             env.sessionID,
-		"agentState":      "itest-state",
+		"sid":        env.sessionID,
+		"agentState": "itest-state",
 		// CLI now persists an initial agentState on connect, so version starts at >=1.
 		// Use an obviously stale version to force a mismatch.
 		"expectedVersion": int64(0),
@@ -625,7 +625,7 @@ func TestACPFlowWithAwait(t *testing.T) {
 	defer stopProcess(t, cliCmd)
 
 	sessionID := waitForSessionWithLogs(t, serverURL, token, 20*time.Second, &cliBuf, &serverBuf)
-	masterKey := loadMasterKey(t, filepath.Join(happyHome, "master.key"))
+	dataKey := waitForSessionDataEncryptionKey(t, serverURL, token, sessionID, 10*time.Second)
 
 	userSock := connectUserSocket(t, serverURL, token)
 	defer userSock.Close()
@@ -657,7 +657,7 @@ func TestACPFlowWithAwait(t *testing.T) {
 			"text": "ping",
 		},
 	}
-	encrypted := encryptPayload(t, masterKey, userPayload)
+	encrypted := encryptPayload(t, dataKey, userPayload)
 	if err := userSock.Emit("message", map[string]interface{}{
 		"sid":     sessionID,
 		"message": encrypted,
@@ -683,7 +683,7 @@ func TestACPFlowWithAwait(t *testing.T) {
 	waitForAwaitResume(t, acp, 5*time.Second)
 	waitForResumeDone(t, acp, 5*time.Second)
 
-	responseText := waitForAssistantText(t, updateCh, masterKey)
+	responseText := waitForAssistantText(t, updateCh, dataKey)
 	if responseText != "acp: ping (ok)" {
 		t.Fatalf("unexpected ACP response: %q\ncli logs:\n%s", responseText, cliBuf.String())
 	}
@@ -833,6 +833,8 @@ func waitForMachineID(t *testing.T, path string) string {
 func authToken(t *testing.T, serverURL string) string {
 	t.Helper()
 
+	client := &http.Client{Timeout: 5 * time.Second}
+
 	publicKey, privateKey, err := crypto.GenerateKeyPair()
 	if err != nil {
 		t.Fatalf("generate key pair: %v", err)
@@ -861,7 +863,7 @@ func authToken(t *testing.T, serverURL string) string {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("auth call: %v", err)
 	}
@@ -888,6 +890,8 @@ func authToken(t *testing.T, serverURL string) string {
 func waitForSession(t *testing.T, serverURL, token string, timeout time.Duration) string {
 	t.Helper()
 
+	client := &http.Client{Timeout: 2 * time.Second}
+
 	type session struct {
 		ID string `json:"id"`
 	}
@@ -903,7 +907,7 @@ func waitForSession(t *testing.T, serverURL, token string, timeout time.Duration
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			time.Sleep(200 * time.Millisecond)
 			continue
@@ -932,6 +936,8 @@ func waitForSession(t *testing.T, serverURL, token string, timeout time.Duration
 func waitForSessionWithLogs(t *testing.T, serverURL, token string, timeout time.Duration, cliBuf, serverBuf *bytes.Buffer) string {
 	t.Helper()
 
+	client := &http.Client{Timeout: 2 * time.Second}
+
 	type session struct {
 		ID string `json:"id"`
 	}
@@ -947,7 +953,7 @@ func waitForSessionWithLogs(t *testing.T, serverURL, token string, timeout time.
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			time.Sleep(200 * time.Millisecond)
 			continue
@@ -981,23 +987,64 @@ func waitForSessionWithLogs(t *testing.T, serverURL, token string, timeout time.
 	return ""
 }
 
-func loadMasterKey(t *testing.T, path string) *[32]byte {
+func waitForSessionDataEncryptionKey(t *testing.T, serverURL, token, sessionID string, timeout time.Duration) []byte {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	type session struct {
+		ID                string  `json:"id"`
+		DataEncryptionKey *string `json:"dataEncryptionKey"`
+	}
+	type response struct {
+		Sessions []session `json:"sessions"`
+	}
+
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err != nil {
-			time.Sleep(100 * time.Millisecond)
+		req, err := http.NewRequest("GET", serverURL+"/v1/sessions", nil)
+		if err != nil {
+			t.Fatalf("session request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			time.Sleep(200 * time.Millisecond)
 			continue
 		}
-		key, err := storage.LoadSecretKey(path)
-		if err != nil {
-			t.Fatalf("load master key: %v", err)
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			time.Sleep(200 * time.Millisecond)
+			continue
 		}
-		var secret [32]byte
-		copy(secret[:], key)
-		return &secret
+		var payload response
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			resp.Body.Close()
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+		resp.Body.Close()
+		for _, s := range payload.Sessions {
+			if s.ID != sessionID {
+				continue
+			}
+			if s.DataEncryptionKey == nil || *s.DataEncryptionKey == "" {
+				break
+			}
+			raw, err := base64.StdEncoding.DecodeString(*s.DataEncryptionKey)
+			if err != nil {
+				t.Fatalf("decode dataEncryptionKey: %v", err)
+			}
+			if len(raw) != 32 {
+				t.Fatalf("invalid dataEncryptionKey length: %d", len(raw))
+			}
+			return raw
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	t.Fatalf("master key not found at %s", path)
+
+	t.Fatalf("timed out waiting for session dataEncryptionKey (sessionID=%s)", sessionID)
 	return nil
 }
 
@@ -1012,10 +1059,7 @@ func connectUserSocket(t *testing.T, serverURL, token string) *socket.Socket {
 		"clientType": "user-scoped",
 	})
 
-	sock, err := socket.Connect(serverURL, opts)
-	if err != nil {
-		t.Fatalf("socket connect: %v", err)
-	}
+	sock := mustConnectSocket(t, serverURL, opts)
 	if sock.Connected() {
 		return sock
 	}
@@ -1069,10 +1113,7 @@ func connectSessionSocket(t *testing.T, serverURL, token, sessionID string) *soc
 		"sessionId":  sessionID,
 	})
 
-	sock, err := socket.Connect(serverURL, opts)
-	if err != nil {
-		t.Fatalf("socket connect: %v", err)
-	}
+	sock := mustConnectSocket(t, serverURL, opts)
 	if sock.Connected() {
 		return sock
 	}
@@ -1126,10 +1167,7 @@ func connectMachineSocket(t *testing.T, serverURL, token, machineID string) *soc
 		"machineId":  machineID,
 	})
 
-	sock, err := socket.Connect(serverURL, opts)
-	if err != nil {
-		t.Fatalf("socket connect: %v", err)
-	}
+	sock := mustConnectSocket(t, serverURL, opts)
 	if sock.Connected() {
 		return sock
 	}
@@ -1171,19 +1209,48 @@ func connectMachineSocket(t *testing.T, serverURL, token, machineID string) *soc
 	return sock
 }
 
-func encryptPayload(t *testing.T, secret *[32]byte, payload interface{}) string {
+func mustConnectSocket(t *testing.T, serverURL string, opts *socket.Options) *socket.Socket {
 	t.Helper()
-	encrypted, err := crypto.EncryptLegacy(payload, secret)
+
+	type result struct {
+		sock *socket.Socket
+		err  error
+	}
+	resCh := make(chan result, 1)
+
+	go func() {
+		sock, err := socket.Connect(serverURL, opts)
+		resCh <- result{sock: sock, err: err}
+	}()
+
+	select {
+	case res := <-resCh:
+		if res.err != nil {
+			t.Fatalf("socket connect: %v", res.err)
+		}
+		if res.sock == nil {
+			t.Fatal("socket connect returned nil socket")
+		}
+		return res.sock
+	case <-time.After(10 * time.Second):
+		t.Fatalf("socket connect timeout (%s)", serverURL)
+		return nil
+	}
+}
+
+func encryptPayload(t *testing.T, dataKey []byte, payload interface{}) string {
+	t.Helper()
+	encrypted, err := crypto.EncryptWithDataKey(payload, dataKey)
 	if err != nil {
 		t.Fatalf("encrypt payload: %v", err)
 	}
 	return base64.StdEncoding.EncodeToString(encrypted)
 }
 
-func decryptUpdateText(t *testing.T, secret *[32]byte, update map[string]interface{}) (string, bool) {
+func decryptUpdateText(t *testing.T, dataKey []byte, update map[string]interface{}) (string, bool) {
 	t.Helper()
 
-	decrypted, ok := decryptUpdatePayload(t, secret, update)
+	decrypted, ok := decryptUpdatePayload(t, dataKey, update)
 	if !ok {
 		return "", false
 	}
@@ -1195,7 +1262,7 @@ func decryptUpdateText(t *testing.T, secret *[32]byte, update map[string]interfa
 	return text, true
 }
 
-func decryptUpdatePayload(t *testing.T, secret *[32]byte, update map[string]interface{}) (interface{}, bool) {
+func decryptUpdatePayload(t *testing.T, dataKey []byte, update map[string]interface{}) (interface{}, bool) {
 	t.Helper()
 
 	body, _ := update["body"].(map[string]interface{})
@@ -1221,7 +1288,7 @@ func decryptUpdatePayload(t *testing.T, secret *[32]byte, update map[string]inte
 	}
 
 	var decrypted interface{}
-	if err := crypto.DecryptLegacy(encrypted, secret, &decrypted); err != nil {
+	if err := crypto.DecryptWithDataKey(encrypted, dataKey, &decrypted); err != nil {
 		t.Fatalf("decrypt payload: %v", err)
 	}
 
@@ -1489,14 +1556,14 @@ func waitForUpdate(t *testing.T, updateCh <-chan map[string]interface{}) map[str
 	}
 }
 
-func waitForAssistantText(t *testing.T, updateCh <-chan map[string]interface{}, secret *[32]byte) string {
+func waitForAssistantText(t *testing.T, updateCh <-chan map[string]interface{}, dataKey []byte) string {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
 	var lastPayload interface{}
 	for {
 		select {
 		case update := <-updateCh:
-			payload, ok := decryptUpdatePayload(t, secret, update)
+			payload, ok := decryptUpdatePayload(t, dataKey, update)
 			if !ok {
 				continue
 			}
