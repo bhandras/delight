@@ -596,7 +596,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         permissionQueue.removeAll(where: { $0.requestID == requestID })
         if let next = permissionQueue.first {
             activePermissionRequest = next
-            showPermissionPrompt = true
+            let owningSession = sessions.first(where: { $0.id == next.sessionID })
+            let controlledByDesktop = owningSession?.uiState?.controlledByUser
+                ?? owningSession?.agentState?.controlledByUser
+                ?? false
+            showPermissionPrompt = !controlledByDesktop
         } else {
             activePermissionRequest = nil
             showPermissionPrompt = false
@@ -1214,20 +1218,33 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         )
 
         DispatchQueue.main.async {
-            if let session = self.sessions.first(where: { $0.id == request.sessionID }),
-               session.agentState?.controlledByUser == true {
-                // Desktop controls: approvals appear in the desktop TUI.
-                return
-            }
             if self.permissionQueue.contains(where: { $0.requestID == request.requestID }) {
                 return
             }
             self.permissionQueue.append(request)
+
+            // Use SDK-derived UI state when available. agentState can lag behind
+            // during transitions, and we don't want to drop permission prompts.
+            let controlledByDesktop: Bool = {
+                guard let session = self.sessions.first(where: { $0.id == request.sessionID }) else {
+                    return false
+                }
+                if let ui = session.uiState {
+                    return ui.controlledByUser
+                }
+                return session.agentState?.controlledByUser ?? false
+            }()
+
             if self.activePermissionRequest == nil {
                 self.activePermissionRequest = request
-                self.showPermissionPrompt = true
+                // Only auto-present the modal when the phone controls the session.
+                self.showPermissionPrompt = !controlledByDesktop
             }
         }
+
+        // Permission prompts are actionable; refresh session UI state promptly so
+        // control transitions resolve quickly (e.g., after "Take Control").
+        scheduleSessionsRefreshDebounced()
     }
 
     /// extractPermissionRequestPayload normalizes permission prompts from update envelopes.
@@ -1467,11 +1484,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             // Hydrate pending permission prompts from durable agent state.
             let now = Int64(Date().timeIntervalSince1970 * 1000)
             for session in parsedSessions {
-                // Only hydrate/show permission prompts when the phone is actively
-                // controlling the session (remote mode). For offline/disconnected
-                // sessions, we keep the UI quiet and require the user to take control
-                // again once the CLI is online.
-                guard session.uiState?.state == "remote" else {
+                // Keep the permission queue in sync with durable agent state, but
+                // only auto-present prompts while the phone controls the session.
+                //
+                // This avoids losing prompts during UI-state lag or transitions.
+                let durable = session.agentState?.requests ?? [:]
+                if durable.isEmpty {
                     self.permissionQueue.removeAll(where: { $0.sessionID == session.id })
                     continue
                 }
@@ -1493,7 +1511,15 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
             if self.activePermissionRequest == nil, let next = self.permissionQueue.first {
                 self.activePermissionRequest = next
-                self.showPermissionPrompt = true
+            }
+            if let active = self.activePermissionRequest {
+                let owningSession = self.sessions.first(where: { $0.id == active.sessionID })
+                let controlledByDesktop = owningSession?.uiState?.controlledByUser
+                    ?? owningSession?.agentState?.controlledByUser
+                    ?? false
+                self.showPermissionPrompt = !controlledByDesktop
+            } else {
+                self.showPermissionPrompt = false
             }
             if let current = self.sessions.first(where: { $0.id == self.sessionID }) {
                 self.selectedMetadata = current.metadata

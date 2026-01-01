@@ -123,6 +123,105 @@ final class SDKBridgeTests: XCTestCase {
         waitForExpectations(timeout: 1.0)
     }
 
+    func testHandlePermissionRequestUpdateQueuedWhenDesktopControls() {
+        let model = HarnessViewModel()
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                updatedAt: 0,
+                active: true,
+                activeAt: nil,
+                title: nil,
+                subtitle: nil,
+                metadata: nil,
+                agentState: SessionAgentState(controlledByUser: true, requests: [:]),
+                uiState: nil,
+                thinking: false
+            )
+        ]
+        let json = """
+        {"type":"permission-request","id":"s1","requestId":"r1","toolName":"bash","input":"{\\"command\\":\\"ls\\"}"}
+        """
+
+        let expectation = expectation(description: "permission request queued but not shown")
+        model.onUpdate(nil, updateJSON: json)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(model.permissionQueue.count, 1)
+            XCTAssertEqual(model.activePermissionRequest?.requestID, "r1")
+            XCTAssertFalse(model.showPermissionPrompt)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
+
+    func testHandlePermissionRequestUpdateShownWhenUIStateRemote() {
+        let model = HarnessViewModel()
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                updatedAt: 0,
+                active: true,
+                activeAt: nil,
+                title: nil,
+                subtitle: nil,
+                metadata: nil,
+                agentState: SessionAgentState(controlledByUser: true, requests: [:]),
+                uiState: SessionUIState(
+                    state: "remote",
+                    connected: true,
+                    active: true,
+                    controlledByUser: false,
+                    switching: false,
+                    transition: "",
+                    canTakeControl: false,
+                    canSend: true
+                ),
+                thinking: false
+            )
+        ]
+        let json = """
+        {"type":"permission-request","id":"s1","requestId":"r1","toolName":"bash","input":"{\\"command\\":\\"ls\\"}"}
+        """
+
+        let expectation = expectation(description: "permission request queued and shown")
+        model.onUpdate(nil, updateJSON: json)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(model.permissionQueue.count, 1)
+            XCTAssertEqual(model.activePermissionRequest?.requestID, "r1")
+            XCTAssertTrue(model.showPermissionPrompt)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
+
+    func testParseSessionsShowsQueuedPermissionWhenRemote() {
+        let model = HarnessViewModel()
+        model.permissionQueue = [
+            PendingPermissionRequest(
+                sessionID: "s1",
+                requestID: "r1",
+                toolName: "bash",
+                input: "{\"command\":\"ls\"}",
+                receivedAt: 1
+            )
+        ]
+        model.activePermissionRequest = model.permissionQueue.first
+        model.showPermissionPrompt = false
+
+        let sessionsJSON = """
+        {"sessions":[{"id":"s1","updatedAt":0,"active":true,"metadata":null,"agentState":"{\\"controlledByUser\\":false,\\"requests\\":{\\"r1\\":{\\"tool_name\\":\\"bash\\",\\"input\\":\\"{}\\",\\"created_at\\":1}}}"}],"version":1}
+        """
+
+        let expectation = expectation(description: "permission request becomes visible in remote UI")
+        model.parseSessions(sessionsJSON)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertTrue(model.showPermissionPrompt)
+            XCTAssertEqual(model.activePermissionRequest?.requestID, "r1")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
+
     func testSessionMetadataParsesBase64Payload() {
         let payload = """
         {"host":"m2.local","path":"/work/project","summary":{"agent":"claude","text":"summary"}}
