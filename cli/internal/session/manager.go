@@ -11,7 +11,6 @@ import (
 	"github.com/bhandras/delight/cli/internal/acp"
 	framework "github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/claude"
-	"github.com/bhandras/delight/cli/internal/codex"
 	"github.com/bhandras/delight/cli/internal/config"
 	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
 	"github.com/bhandras/delight/cli/internal/session/runtime"
@@ -56,12 +55,6 @@ type Manager struct {
 	acpAgent             string
 	acpQueue             chan string
 	agent                string
-	codexClient          *codex.Client
-	codexQueue           chan codexMessage
-	codexStop            chan struct{}
-	codexSessionActive   bool
-	codexPermissionMode  string
-	codexModel           string
 
 	workDir string
 
@@ -91,11 +84,6 @@ type Manager struct {
 	lastMachineKeepAliveSkipAt time.Time
 }
 
-type codexMessage struct {
-	text string
-	meta map[string]interface{}
-}
-
 // NewManager creates a new session manager.
 func NewManager(cfg *config.Config, token string, debug bool) (*Manager, error) {
 	// Get or create master secret
@@ -113,8 +101,6 @@ func NewManager(cfg *config.Config, token string, debug bool) (*Manager, error) 
 		acpAgent:     cfg.ACPAgent,
 		acpQueue:     make(chan string, 64),
 		agent:        cfg.Agent,
-		codexQueue:   make(chan codexMessage, 100),
-		codexStop:    make(chan struct{}),
 		stopCh:       make(chan struct{}),
 		// Permission requests are owned by the SessionActor.
 		sessionActorClosed: make(chan struct{}),

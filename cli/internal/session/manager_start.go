@@ -24,7 +24,7 @@ import (
 	"github.com/bhandras/delight/protocol/wire"
 )
 
-// Start starts a new Delight session
+// Start starts a new Delight session.
 func (m *Manager) Start(workDir string) error {
 	// Get current working directory if not specified
 	if workDir == "" {
@@ -217,21 +217,19 @@ func (m *Manager) Start(workDir string) error {
 		log.Printf("ACP configured but disabled (agent=%s)", m.agent)
 	}
 
-	if m.agent == "codex" {
-		if err := m.startCodex(); err != nil {
-			return err
-		}
-		go m.keepAliveLoop()
-		return nil
-	}
-
 	if m.agent == "acp" {
 		go m.keepAliveLoop()
 		return nil
 	}
 
-	// Claude agent runner lifecycle is owned by the SessionActor FSM.
-	if m.agent == "claude" {
+	// Agent runner lifecycle is owned by the SessionActor FSM.
+	//
+	// Codex supports both:
+	// - remote mode (MCP server)
+	// - local mode (native TUI + rollout tail)
+	//
+	// Claude supports local PTY and remote stream-json.
+	if m.agent == "claude" || m.agent == "codex" {
 		if m.cfg != nil && m.cfg.StartingMode == "remote" {
 			if err := m.SwitchToRemote(); err != nil {
 				return err
@@ -248,6 +246,7 @@ func (m *Manager) Start(workDir string) error {
 	return nil
 }
 
+// initSessionActor initializes the SessionActor FSM and wires runtime adapters.
 func (m *Manager) initSessionActor() {
 	// Idempotent.
 	if m.sessionActor != nil {
@@ -257,6 +256,7 @@ func (m *Manager) initSessionActor() {
 				m.sessionActorRuntime.WithStateUpdater(m.wsClient)
 				m.sessionActorRuntime.WithSocketEmitter(m.wsClient)
 			}
+			m.sessionActorRuntime.WithAgent(m.agent)
 			m.sessionActorRuntime.WithEncryptFn(m.encrypt)
 		}
 		return
@@ -266,6 +266,7 @@ func (m *Manager) initSessionActor() {
 		WithSessionID(m.sessionID).
 		WithStateUpdater(m.wsClient).
 		WithSocketEmitter(m.wsClient).
+		WithAgent(m.agent).
 		WithEncryptFn(m.encrypt)
 
 	hooks := framework.Hooks[sessionactor.State]{
@@ -381,6 +382,7 @@ func (m *Manager) createSession() error {
 	return nil
 }
 
+// stableSessionTag derives a stable tag for a (machine, workdir) pair.
 func stableSessionTag(machineID, workDir string) string {
 	hash := sha256.Sum256([]byte(workDir))
 	return fmt.Sprintf("m-%s-%s", machineID, hex.EncodeToString(hash[:6]))
@@ -453,6 +455,7 @@ func (m *Manager) createMachine() error {
 }
 
 // handleMessage handles incoming messages from the server (from mobile app)
+// handleMessage routes inbound websocket messages to the appropriate handler.
 func (m *Manager) handleMessage(data map[string]interface{}) {
 	if m.debug {
 		log.Printf("Received message from server: %+v", data)
@@ -476,6 +479,7 @@ func (m *Manager) handleMessage(data map[string]interface{}) {
 	m.handleEncryptedUserMessage(cipher, localID)
 }
 
+// handleEncryptedUserMessage decrypts, parses, and routes an inbound user message.
 func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 
 	// Decrypt the message content
@@ -517,20 +521,6 @@ func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 		return
 	}
 
-	if m.agent == "codex" {
-		if text == "" {
-			return
-		}
-		select {
-		case m.codexQueue <- codexMessage{text: text, meta: meta}:
-		default:
-			if m.debug {
-				log.Printf("Codex queue full; dropping message")
-			}
-		}
-		return
-	}
-
 	messageContent := text
 	if messageContent == "" {
 		if m.debug {
@@ -551,16 +541,14 @@ func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 		return
 	}
 
-	if m.agent == "claude" {
-		if m.sessionActor == nil {
-			if m.debug {
-				log.Printf("Session actor not initialized; dropping message")
-			}
-			return
+	if m.sessionActor == nil {
+		if m.debug {
+			log.Printf("Session actor not initialized; dropping message")
 		}
-		_ = m.sessionActor.Enqueue(sessionactor.InboundUserMessage(messageContent, meta, localID, time.Now().UnixMilli()))
 		return
 	}
+	_ = m.sessionActor.Enqueue(sessionactor.InboundUserMessage(messageContent, meta, localID, time.Now().UnixMilli()))
+	return
 }
 
 // handleUpdate handles structured "update" events (new-message, etc.)
@@ -586,13 +574,14 @@ func (m *Manager) handleUpdate(data map[string]interface{}) {
 }
 
 // handleSessionUpdate handles session update events
+// handleSessionUpdate handles inbound session update events (best-effort observability).
 func (m *Manager) handleSessionUpdate(data map[string]interface{}) {
 	if m.debug {
 		log.Printf("Session update: %+v", data)
 	}
 }
 
-// keepAliveLoop sends periodic keep-alive pings for both machine and session
+// keepAliveLoop sends periodic keep-alive pings for both machine and session.
 func (m *Manager) keepAliveLoop() {
 	machineTicker := time.NewTicker(20 * time.Second)
 	sessionTicker := time.NewTicker(30 * time.Second)
@@ -636,21 +625,7 @@ func (m *Manager) keepAliveLoop() {
 // Wait waits for the current process (Claude or remote bridge) to exit
 // This blocks until the session is closed, handling mode switches
 func (m *Manager) Wait() error {
-	if m.agent == "codex" && m.codexClient != nil {
-		for {
-			select {
-			case <-m.stopCh:
-				return nil
-			default:
-			}
-			if err := m.codexClient.Wait(); err != nil {
-				return err
-			}
-			return nil
-		}
-	}
-
-	if m.agent == "claude" && m.sessionActorClosed != nil {
+	if m.sessionActorClosed != nil {
 		select {
 		case <-m.stopCh:
 			return nil
@@ -668,7 +643,7 @@ func (m *Manager) Wait() error {
 	return nil
 }
 
-// Close cleans up resources
+// Close cleans up resources.
 func (m *Manager) Close() error {
 	// Signal stop to all goroutines
 	select {
@@ -691,10 +666,6 @@ func (m *Manager) Close() error {
 
 	m.shutdownSpawnedSessions()
 
-	if m.codexClient != nil {
-		m.codexClient.Close()
-	}
-
 	if m.rt != nil {
 		m.rt.Stop()
 	}
@@ -707,6 +678,7 @@ func (m *Manager) Close() error {
 	return nil
 }
 
+// scheduleShutdown triggers a delayed manager shutdown and process exit.
 func (m *Manager) scheduleShutdown() {
 	m.shutdownOnce.Do(func() {
 		go func() {
@@ -726,6 +698,7 @@ func (m *Manager) scheduleShutdown() {
 	})
 }
 
+// forceExitAfter terminates the process after the delay, regardless of cleanup.
 func (m *Manager) forceExitAfter(delay time.Duration) {
 	go func() {
 		time.Sleep(delay)

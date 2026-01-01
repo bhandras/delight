@@ -6,13 +6,14 @@ import (
 	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
 )
 
+// GetMode returns the current session control mode derived from the SessionActor state.
 func (m *Manager) GetMode() Mode {
 	if m.sessionActor == nil {
 		return ModeLocal
 	}
-	// For non-Claude agents, treat "control" as a UI signal derived from the
-	// agent state rather than an actual local/remote runner lifecycle.
-	if m.agent != "claude" {
+	// Not all agents have a local/remote runner lifecycle yet. For legacy agents,
+	// treat "mode" as an observability signal derived from AgentState.
+	if m.agent != "claude" && m.agent != "codex" {
 		if m.sessionActor.State().AgentState.ControlledByUser {
 			return ModeLocal
 		}
@@ -30,8 +31,8 @@ func (m *Manager) GetMode() Mode {
 
 // SwitchToRemote switches to remote mode (phone control).
 func (m *Manager) SwitchToRemote() error {
-	if m.agent != "claude" {
-		return fmt.Errorf("switch mode is only supported for Claude sessions")
+	if m.agent != "claude" && m.agent != "codex" {
+		return fmt.Errorf("switch mode is not supported for agent=%s", m.agent)
 	}
 	if m.sessionActor == nil {
 		return fmt.Errorf("session actor not initialized")
@@ -52,8 +53,8 @@ func (m *Manager) SwitchToRemote() error {
 
 // SwitchToLocal switches to local mode (desktop control).
 func (m *Manager) SwitchToLocal() error {
-	if m.agent != "claude" {
-		return fmt.Errorf("switch mode is only supported for Claude sessions")
+	if m.agent != "claude" && m.agent != "codex" {
+		return fmt.Errorf("switch mode is not supported for agent=%s", m.agent)
 	}
 	if m.sessionActor == nil {
 		return fmt.Errorf("session actor not initialized")
@@ -72,10 +73,10 @@ func (m *Manager) SwitchToLocal() error {
 	}
 }
 
-// SendUserMessage sends a user message to Claude (remote mode only).
+// SendUserMessage sends a user message to the remote runner.
 func (m *Manager) SendUserMessage(content string, meta map[string]interface{}) error {
-	if m.agent != "claude" {
-		return fmt.Errorf("remote send is only supported for Claude sessions")
+	if m.agent != "claude" && m.agent != "codex" {
+		return fmt.Errorf("remote send is not supported for agent=%s", m.agent)
 	}
 	if m.sessionActor == nil {
 		return fmt.Errorf("session actor not initialized")
@@ -94,8 +95,8 @@ func (m *Manager) SendUserMessage(content string, meta map[string]interface{}) e
 
 // AbortRemote aborts the current remote query.
 func (m *Manager) AbortRemote() error {
-	if m.agent != "claude" {
-		return fmt.Errorf("abort is only supported for Claude sessions")
+	if m.agent != "claude" && m.agent != "codex" {
+		return fmt.Errorf("abort is not supported for agent=%s", m.agent)
 	}
 	if m.sessionActor == nil {
 		return fmt.Errorf("session actor not initialized")

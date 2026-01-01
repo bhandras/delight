@@ -27,6 +27,13 @@ const (
 )
 
 const (
+	// rolloutDiscoveryTimeout bounds how long we wait for Codex to create a rollout file.
+	rolloutDiscoveryTimeout = 8 * time.Second
+	// rolloutDiscoveryPollInterval bounds how often we poll for a new rollout file.
+	rolloutDiscoveryPollInterval = 200 * time.Millisecond
+)
+
+const (
 	// permissionModeDefault mirrors Codex's default permission behavior.
 	permissionModeDefault = "default"
 )
@@ -282,12 +289,10 @@ func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSp
 // startLocal starts a Codex local TUI process and a rollout tailer.
 func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpec) error {
 	_ = ctx
-	if strings.TrimSpace(spec.ResumeToken) == "" {
-		return fmt.Errorf("missing codex resume token")
-	}
+	resumeToken := strings.TrimSpace(spec.ResumeToken)
 
 	rolloutPath := spec.RolloutPath
-	if strings.TrimSpace(rolloutPath) == "" {
+	if strings.TrimSpace(rolloutPath) == "" && resumeToken != "" {
 		discovered, err := discoverLatestRolloutPath()
 		if err != nil {
 			return err
@@ -297,7 +302,12 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 
 	localCtx, cancel := context.WithCancel(context.Background())
 
-	cmd := exec.Command(codexBinary, codexResumeSubcommand, spec.ResumeToken)
+	var cmd *exec.Cmd
+	if resumeToken == "" {
+		cmd = exec.Command(codexBinary)
+	} else {
+		cmd = exec.Command(codexBinary, codexResumeSubcommand, resumeToken)
+	}
 	workDir := e.workDir
 	if spec.WorkDir != "" {
 		workDir = spec.WorkDir
@@ -312,7 +322,24 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 		return err
 	}
 
-	tailer := rollout.NewTailer(rolloutPath, rollout.TailerOptions{StartAtEnd: true})
+	startAtEnd := true
+	if resumeToken == "" {
+		// For a fresh session, read from the beginning to capture session_meta
+		// and provide the phone a transcript of what happened while local.
+		startAtEnd = false
+		rolloutPath = ""
+	}
+	if strings.TrimSpace(rolloutPath) == "" {
+		discovered, err := waitForRolloutPath(localCtx)
+		if err != nil {
+			_ = cmd.Process.Kill()
+			cancel()
+			return err
+		}
+		rolloutPath = discovered
+	}
+
+	tailer := rollout.NewTailer(rolloutPath, rollout.TailerOptions{StartAtEnd: startAtEnd})
 	if err := tailer.Start(localCtx); err != nil {
 		_ = cmd.Process.Kill()
 		cancel()
@@ -665,9 +692,42 @@ func normalizeUserText(text string) string {
 
 // discoverLatestRolloutPath scans ~/.codex/sessions for the most recently updated rollout JSONL.
 func discoverLatestRolloutPath() (string, error) {
+	path, _, err := discoverLatestRolloutPathWithMod()
+	return path, err
+}
+
+// discoverLatestRolloutPathAfter returns the most recently modified rollout JSONL after since.
+// waitForRolloutPath waits for Codex to create a rollout JSONL and returns its path.
+func waitForRolloutPath(ctx context.Context) (string, error) {
+	deadline := time.NewTimer(rolloutDiscoveryTimeout)
+	defer deadline.Stop()
+
+	ticker := time.NewTicker(rolloutDiscoveryPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-deadline.C:
+			return "", fmt.Errorf("timed out waiting for codex rollout jsonl")
+		case <-ticker.C:
+			path, _, err := discoverLatestRolloutPathWithMod()
+			if err != nil {
+				continue
+			}
+			if strings.TrimSpace(path) != "" {
+				return path, nil
+			}
+		}
+	}
+}
+
+// discoverLatestRolloutPathWithMod finds the latest rollout JSONL and returns its modtime.
+func discoverLatestRolloutPathWithMod() (string, time.Time, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	root := filepath.Join(home, rolloutRootRelative)
 
@@ -697,13 +757,13 @@ func discoverLatestRolloutPath() (string, error) {
 	})
 	if walkErr != nil {
 		if errors.Is(walkErr, os.ErrNotExist) {
-			return "", fmt.Errorf("codex rollout directory not found: %s", root)
+			return "", time.Time{}, fmt.Errorf("codex rollout directory not found: %s", root)
 		}
-		return "", walkErr
+		return "", time.Time{}, walkErr
 	}
 
 	if bestPath == "" {
-		return "", fmt.Errorf("no codex rollout jsonl found under %s", root)
+		return "", time.Time{}, fmt.Errorf("no codex rollout jsonl found under %s", root)
 	}
-	return bestPath, nil
+	return bestPath, bestMod, nil
 }
