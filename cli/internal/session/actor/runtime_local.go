@@ -110,7 +110,7 @@ func (r *Runtime) watchLocalSession(ctx context.Context, gen int64, workDir stri
 				continue
 			}
 
-			emit(evClaudeSessionDetected{Gen: gen, SessionID: sessionID})
+			emit(evEngineSessionIdentified{Gen: gen, ResumeToken: sessionID})
 
 			// Stop any previous scanner before starting a new one.
 			scanner := claude.NewScanner(workDir, sessionID, r.debug)
@@ -246,4 +246,3 @@ func extractClaudeUserText(raw json.RawMessage) string {
 
 	return normalizeRemoteInputText(walk(value))
 }
-

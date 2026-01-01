@@ -61,6 +61,14 @@ type State struct {
 	// local runner. It is used as a best-effort resume id when starting remote.
 	ClaudeSessionID string
 
+	// ResumeToken is an agent-specific session identifier that can be used to
+	// resume a conversation (e.g. Claude session id, Codex session UUID).
+	ResumeToken string
+
+	// RolloutPath is an agent-specific event-log path used by local-mode viewers.
+	// For Codex this is the rollout JSONL path.
+	RolloutPath string
+
 	// LastExitErr stores the most recently observed runner exit error string.
 	// It is used by Manager.Wait() bridging during the refactor.
 	LastExitErr string
@@ -156,6 +164,7 @@ type cmdSwitchMode struct {
 	Reply  chan error
 }
 
+// isSessionCommand marks cmdSwitchMode as a session command.
 func (cmdSwitchMode) isSessionCommand() {}
 
 // cmdRemoteSend sends a user message to the remote runner (remote mode only).
@@ -167,6 +176,7 @@ type cmdRemoteSend struct {
 	LocalID string
 }
 
+// isSessionCommand marks cmdRemoteSend as a session command.
 func (cmdRemoteSend) isSessionCommand() {}
 
 // cmdInboundUserMessage represents a user message received from the server
@@ -179,6 +189,7 @@ type cmdInboundUserMessage struct {
 	NowMs   int64
 }
 
+// isSessionCommand marks cmdInboundUserMessage as a session command.
 func (cmdInboundUserMessage) isSessionCommand() {}
 
 // cmdAbortRemote aborts the current remote turn.
@@ -187,6 +198,7 @@ type cmdAbortRemote struct {
 	Reply chan error
 }
 
+// isSessionCommand marks cmdAbortRemote as a session command.
 func (cmdAbortRemote) isSessionCommand() {}
 
 // cmdPermissionDecision submits a decision for a pending permission request.
@@ -199,6 +211,7 @@ type cmdPermissionDecision struct {
 	Reply     chan error
 }
 
+// isSessionCommand marks cmdPermissionDecision as a session command.
 func (cmdPermissionDecision) isSessionCommand() {}
 
 // cmdPermissionAwait registers a permission request, emits the permission
@@ -215,6 +228,7 @@ type cmdPermissionAwait struct {
 	Reply     chan PermissionDecision
 }
 
+// isSessionCommand marks cmdPermissionAwait as a session command.
 func (cmdPermissionAwait) isSessionCommand() {}
 
 // cmdPersistAgentState requests that the current agent state be persisted.
@@ -224,6 +238,7 @@ type cmdPersistAgentState struct {
 	AgentStateJSON string
 }
 
+// isSessionCommand marks cmdPersistAgentState as a session command.
 func (cmdPersistAgentState) isSessionCommand() {}
 
 // cmdPersistAgentStateImmediate requests that the current agent state be
@@ -233,6 +248,7 @@ type cmdPersistAgentStateImmediate struct {
 	AgentStateJSON string
 }
 
+// isSessionCommand marks cmdPersistAgentStateImmediate as a session command.
 func (cmdPersistAgentStateImmediate) isSessionCommand() {}
 
 // cmdSetControlledByUser updates AgentState.ControlledByUser and schedules
@@ -244,6 +260,7 @@ type cmdSetControlledByUser struct {
 	NowMs            int64
 }
 
+// isSessionCommand marks cmdSetControlledByUser as a session command.
 func (cmdSetControlledByUser) isSessionCommand() {}
 
 // Events emitted by the runtime back into the reducer.
@@ -254,6 +271,7 @@ type evRunnerReady struct {
 	Mode Mode
 }
 
+// isSessionEvent marks evRunnerReady as a session event.
 func (evRunnerReady) isSessionEvent() {}
 
 type evRunnerExited struct {
@@ -263,15 +281,28 @@ type evRunnerExited struct {
 	Mode Mode
 }
 
+// isSessionEvent marks evRunnerExited as a session event.
 func (evRunnerExited) isSessionEvent() {}
 
-type evClaudeSessionDetected struct {
+// evEngineSessionIdentified indicates that the engine observed an agent resume token.
+type evEngineSessionIdentified struct {
 	actor.InputBase
-	Gen       int64
-	SessionID string
+	Gen         int64
+	ResumeToken string
 }
 
-func (evClaudeSessionDetected) isSessionEvent() {}
+// isSessionEvent marks evEngineSessionIdentified as a session event.
+func (evEngineSessionIdentified) isSessionEvent() {}
+
+// evEngineRolloutPath indicates the engine observed a rollout JSONL path.
+type evEngineRolloutPath struct {
+	actor.InputBase
+	Gen  int64
+	Path string
+}
+
+// isSessionEvent marks evEngineRolloutPath as a session event.
+func (evEngineRolloutPath) isSessionEvent() {}
 
 type evPermissionRequested struct {
 	actor.InputBase
@@ -283,18 +314,21 @@ type evPermissionRequested struct {
 	NowMs int64
 }
 
+// isSessionEvent marks evPermissionRequested as a session event.
 func (evPermissionRequested) isSessionEvent() {}
 
 type evDesktopTakeback struct {
 	actor.InputBase
 }
 
+// isSessionEvent marks evDesktopTakeback as a session event.
 func (evDesktopTakeback) isSessionEvent() {}
 
 type evWSConnected struct {
 	actor.InputBase
 }
 
+// isSessionEvent marks evWSConnected as a session event.
 func (evWSConnected) isSessionEvent() {}
 
 type evWSDisconnected struct {
@@ -302,12 +336,14 @@ type evWSDisconnected struct {
 	Reason string
 }
 
+// isSessionEvent marks evWSDisconnected as a session event.
 func (evWSDisconnected) isSessionEvent() {}
 
 type evMachineConnected struct {
 	actor.InputBase
 }
 
+// isSessionEvent marks evMachineConnected as a session event.
 func (evMachineConnected) isSessionEvent() {}
 
 type evMachineDisconnected struct {
@@ -315,6 +351,7 @@ type evMachineDisconnected struct {
 	Reason string
 }
 
+// isSessionEvent marks evMachineDisconnected as a session event.
 func (evMachineDisconnected) isSessionEvent() {}
 
 type evTimerFired struct {
@@ -323,6 +360,7 @@ type evTimerFired struct {
 	NowMs int64
 }
 
+// isSessionEvent marks evTimerFired as a session event.
 func (evTimerFired) isSessionEvent() {}
 
 // evOutboundMessageReady indicates that some runtime produced an encrypted
@@ -339,6 +377,7 @@ type evOutboundMessageReady struct {
 	UserTextNormalized string
 }
 
+// isSessionEvent marks evOutboundMessageReady as a session event.
 func (evOutboundMessageReady) isSessionEvent() {}
 
 // evSessionUpdate represents an inbound session-update payload from the server.
@@ -347,6 +386,7 @@ type evSessionUpdate struct {
 	Data map[string]any
 }
 
+// isSessionEvent marks evSessionUpdate as a session event.
 func (evSessionUpdate) isSessionEvent() {}
 
 // evMessageUpdate represents an inbound update/message payload from the server.
@@ -355,6 +395,7 @@ type evMessageUpdate struct {
 	Data map[string]any
 }
 
+// isSessionEvent marks evMessageUpdate as a session event.
 func (evMessageUpdate) isSessionEvent() {}
 
 // evEphemeral represents an inbound ephemeral payload from the server.
@@ -363,6 +404,7 @@ type evEphemeral struct {
 	Data map[string]any
 }
 
+// isSessionEvent marks evEphemeral as a session event.
 func (evEphemeral) isSessionEvent() {}
 
 // cmdShutdown requests stopping all runtimes and transitioning to Closed.
@@ -371,6 +413,7 @@ type cmdShutdown struct {
 	Reply chan error
 }
 
+// isSessionCommand marks cmdShutdown as a session command.
 func (cmdShutdown) isSessionCommand() {}
 
 // EvAgentStatePersisted indicates the server accepted an agent state update.
@@ -380,6 +423,7 @@ type EvAgentStatePersisted struct {
 	NewVersion int64
 }
 
+// isSessionEvent marks EvAgentStatePersisted as a session event.
 func (EvAgentStatePersisted) isSessionEvent() {}
 
 // EvAgentStateVersionMismatch indicates the server rejected an agent state update
@@ -389,6 +433,7 @@ type EvAgentStateVersionMismatch struct {
 	ServerVersion int64
 }
 
+// isSessionEvent marks EvAgentStateVersionMismatch as a session event.
 func (EvAgentStateVersionMismatch) isSessionEvent() {}
 
 // EvAgentStatePersistFailed indicates persisting agent state failed due to a
@@ -398,6 +443,7 @@ type EvAgentStatePersistFailed struct {
 	Err error
 }
 
+// isSessionEvent marks EvAgentStatePersistFailed as a session event.
 func (EvAgentStatePersistFailed) isSessionEvent() {}
 
 // Effects
@@ -410,11 +456,13 @@ type Effect interface {
 
 type effStartLocalRunner struct {
 	actor.EffectBase
-	Gen     int64
-	WorkDir string
-	Resume  string
+	Gen         int64
+	WorkDir     string
+	Resume      string
+	RolloutPath string
 }
 
+// isSessionEffect marks effStartLocalRunner as a session effect.
 func (effStartLocalRunner) isSessionEffect() {}
 
 type effStopLocalRunner struct {
@@ -422,6 +470,7 @@ type effStopLocalRunner struct {
 	Gen int64
 }
 
+// isSessionEffect marks effStopLocalRunner as a session effect.
 func (effStopLocalRunner) isSessionEffect() {}
 
 type effStartRemoteRunner struct {
@@ -431,6 +480,7 @@ type effStartRemoteRunner struct {
 	Resume  string
 }
 
+// isSessionEffect marks effStartRemoteRunner as a session effect.
 func (effStartRemoteRunner) isSessionEffect() {}
 
 type effStopRemoteRunner struct {
@@ -438,6 +488,7 @@ type effStopRemoteRunner struct {
 	Gen int64
 }
 
+// isSessionEffect marks effStopRemoteRunner as a session effect.
 func (effStopRemoteRunner) isSessionEffect() {}
 
 type effRemoteSend struct {
@@ -448,6 +499,7 @@ type effRemoteSend struct {
 	LocalID string
 }
 
+// isSessionEffect marks effRemoteSend as a session effect.
 func (effRemoteSend) isSessionEffect() {}
 
 type effRemoteAbort struct {
@@ -455,6 +507,7 @@ type effRemoteAbort struct {
 	Gen int64
 }
 
+// isSessionEffect marks effRemoteAbort as a session effect.
 func (effRemoteAbort) isSessionEffect() {}
 
 type effLocalSendLine struct {
@@ -463,6 +516,7 @@ type effLocalSendLine struct {
 	Text string
 }
 
+// isSessionEffect marks effLocalSendLine as a session effect.
 func (effLocalSendLine) isSessionEffect() {}
 
 type effRemotePermissionDecision struct {
@@ -474,6 +528,7 @@ type effRemotePermissionDecision struct {
 	UpdatedInput json.RawMessage
 }
 
+// isSessionEffect marks effRemotePermissionDecision as a session effect.
 func (effRemotePermissionDecision) isSessionEffect() {}
 
 type effPersistAgentState struct {
@@ -482,6 +537,7 @@ type effPersistAgentState struct {
 	ExpectedVersion int64
 }
 
+// isSessionEffect marks effPersistAgentState as a session effect.
 func (effPersistAgentState) isSessionEffect() {}
 
 type effEmitEphemeral struct {
@@ -489,6 +545,7 @@ type effEmitEphemeral struct {
 	Payload any
 }
 
+// isSessionEffect marks effEmitEphemeral as a session effect.
 func (effEmitEphemeral) isSessionEffect() {}
 
 type effEmitMessage struct {
@@ -497,6 +554,7 @@ type effEmitMessage struct {
 	Ciphertext string
 }
 
+// isSessionEffect marks effEmitMessage as a session effect.
 func (effEmitMessage) isSessionEffect() {}
 
 type effStartTimer struct {
@@ -505,6 +563,7 @@ type effStartTimer struct {
 	AfterMs int64
 }
 
+// isSessionEffect marks effStartTimer as a session effect.
 func (effStartTimer) isSessionEffect() {}
 
 type effCancelTimer struct {
@@ -512,6 +571,7 @@ type effCancelTimer struct {
 	Name string
 }
 
+// isSessionEffect marks effCancelTimer as a session effect.
 func (effCancelTimer) isSessionEffect() {}
 
 // effStartDesktopTakebackWatcher starts the "press space twice" desktop watcher
@@ -520,6 +580,7 @@ type effStartDesktopTakebackWatcher struct {
 	actor.EffectBase
 }
 
+// isSessionEffect marks effStartDesktopTakebackWatcher as a session effect.
 func (effStartDesktopTakebackWatcher) isSessionEffect() {}
 
 // effStopDesktopTakebackWatcher stops the desktop takeback watcher (best-effort).
@@ -527,4 +588,5 @@ type effStopDesktopTakebackWatcher struct {
 	actor.EffectBase
 }
 
+// isSessionEffect marks effStopDesktopTakebackWatcher as a session effect.
 func (effStopDesktopTakebackWatcher) isSessionEffect() {}

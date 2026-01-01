@@ -9,8 +9,10 @@ import (
 )
 
 const (
+	// persistDebounceTimerName is the timer key used to debounce agent-state persistence.
 	persistDebounceTimerName = "persist-agent-state"
-	persistDebounceAfterMs   = 150
+	// persistDebounceAfterMs is the debounce delay for agent-state persistence (in ms).
+	persistDebounceAfterMs = 150
 )
 
 // Reduce is the SessionActor reducer.
@@ -44,9 +46,16 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 		return reduceRunnerReady(state, in)
 	case evRunnerExited:
 		return reduceRunnerExited(state, in)
-	case evClaudeSessionDetected:
+	case evEngineSessionIdentified:
 		if in.Gen == 0 || in.Gen == state.RunnerGen {
-			state.ClaudeSessionID = in.SessionID
+			state.ResumeToken = in.ResumeToken
+			// Preserve legacy ClaudeSessionID for bridging and best-effort resume.
+			state.ClaudeSessionID = in.ResumeToken
+		}
+		return state, nil
+	case evEngineRolloutPath:
+		if in.Gen == 0 || in.Gen == state.RunnerGen {
+			state.RolloutPath = in.Path
 		}
 		return state, nil
 	case evPermissionRequested:
@@ -90,6 +99,8 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 	}
 }
 
+// reduceInboundUserMessage handles a user message delivered from the server
+// update stream (typically originating from the phone).
 func reduceInboundUserMessage(state State, cmd cmdInboundUserMessage) (State, []actor.Effect) {
 	if cmd.LocalID != "" && state.isRecentlySentOutboundUserLocalID(cmd.LocalID, cmd.NowMs) {
 		return state, nil
@@ -123,6 +134,7 @@ func reduceInboundUserMessage(state State, cmd cmdInboundUserMessage) (State, []
 	}
 }
 
+// reduceOutboundMessageReady handles a runtime-produced outbound session message.
 func reduceOutboundMessageReady(state State, ev evOutboundMessageReady) (State, []actor.Effect) {
 	if ev.Gen != 0 && ev.Gen != state.RunnerGen {
 		return state, nil
@@ -145,6 +157,8 @@ func reduceOutboundMessageReady(state State, ev evOutboundMessageReady) (State, 
 	}
 }
 
+// reducePersistAgentState requests persisting the current agent state JSON
+// using an optimistic concurrency version.
 func reducePersistAgentState(state State, cmd cmdPersistAgentState) (State, []actor.Effect) {
 	if cmd.AgentStateJSON == "" {
 		return state, nil
@@ -154,6 +168,7 @@ func reducePersistAgentState(state State, cmd cmdPersistAgentState) (State, []ac
 	return schedulePersistDebounced(state)
 }
 
+// rememberOutboundUserLocalID records a recently sent user message local id for dedupe.
 func (state *State) rememberOutboundUserLocalID(localID string, nowMs int64) {
 	localID = strings.TrimSpace(localID)
 	if localID == "" || nowMs <= 0 {
@@ -178,6 +193,7 @@ func (state *State) rememberOutboundUserLocalID(localID string, nowMs int64) {
 	}
 }
 
+// isRecentlySentOutboundUserLocalID reports whether localID was recently emitted.
 func (state *State) isRecentlySentOutboundUserLocalID(localID string, nowMs int64) bool {
 	localID = strings.TrimSpace(localID)
 	if localID == "" || nowMs <= 0 {
@@ -198,6 +214,7 @@ func (state *State) isRecentlySentOutboundUserLocalID(localID string, nowMs int6
 	return false
 }
 
+// isRecentlyInjectedRemoteInput reports whether text was recently injected into remote mode.
 func (state *State) isRecentlyInjectedRemoteInput(text string, nowMs int64) bool {
 	text = normalizeRemoteInputText(text)
 	if text == "" || nowMs <= 0 {
@@ -218,6 +235,7 @@ func (state *State) isRecentlyInjectedRemoteInput(text string, nowMs int64) bool
 	return false
 }
 
+// rememberRemoteInput records a remote/mobile input to suppress echo loops.
 func (state *State) rememberRemoteInput(text string, nowMs int64) {
 	text = normalizeRemoteInputText(text)
 	if text == "" || nowMs <= 0 {
@@ -242,11 +260,13 @@ func (state *State) rememberRemoteInput(text string, nowMs int64) {
 	}
 }
 
+// normalizeRemoteInputText normalizes user text for comparison and dedupe.
 func normalizeRemoteInputText(text string) string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	return strings.TrimSpace(text)
 }
 
+// reducePersistAgentStateImmediate requests persisting agent state immediately.
 func reducePersistAgentStateImmediate(state State, cmd cmdPersistAgentStateImmediate) (State, []actor.Effect) {
 	if cmd.AgentStateJSON == "" {
 		return state, nil
@@ -260,6 +280,7 @@ func reducePersistAgentStateImmediate(state State, cmd cmdPersistAgentStateImmed
 	}
 }
 
+// reduceSetControlledByUser updates agentState.ControlledByUser without changing runners.
 func reduceSetControlledByUser(state State, cmd cmdSetControlledByUser) (State, []actor.Effect) {
 	if state.AgentState.ControlledByUser == cmd.ControlledByUser {
 		return state, nil
@@ -269,6 +290,7 @@ func reduceSetControlledByUser(state State, cmd cmdSetControlledByUser) (State, 
 	return schedulePersistDebounced(state)
 }
 
+// reduceSwitchMode transitions the session between local and remote modes.
 func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 	// Idempotent behavior.
 	if cmd.Target == state.Mode && (state.FSM == StateLocalRunning || state.FSM == StateRemoteRunning) {
@@ -304,7 +326,7 @@ func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 		effects := []actor.Effect{
 			effStopLocalRunner{Gen: gen - 1},
 			effStopDesktopTakebackWatcher{},
-			effStartRemoteRunner{Gen: gen, Resume: state.ClaudeSessionID},
+			effStartRemoteRunner{Gen: gen, Resume: state.ResumeToken},
 		}
 		effects = append(effects, persistEffects...)
 		return state, effects
@@ -323,7 +345,7 @@ func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 		effects := []actor.Effect{
 			effStopRemoteRunner{Gen: gen - 1},
 			effStopDesktopTakebackWatcher{},
-			effStartLocalRunner{Gen: gen},
+			effStartLocalRunner{Gen: gen, Resume: state.ResumeToken, RolloutPath: state.RolloutPath},
 		}
 		effects = append(effects, persistEffects...)
 		return state, effects
@@ -339,6 +361,7 @@ func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 	}
 }
 
+// reduceRunnerReady finalizes a runner start for the current generation.
 func reduceRunnerReady(state State, ev evRunnerReady) (State, []actor.Effect) {
 	if ev.Gen != state.RunnerGen {
 		return state, nil
@@ -383,6 +406,7 @@ func reduceRunnerReady(state State, ev evRunnerReady) (State, []actor.Effect) {
 	return state, nil
 }
 
+// reduceRunnerExited records runner exits and drives any pending switch replies.
 func reduceRunnerExited(state State, ev evRunnerExited) (State, []actor.Effect) {
 	if ev.Gen != state.RunnerGen {
 		return state, nil
@@ -448,7 +472,7 @@ func reduceRunnerExited(state State, ev evRunnerExited) (State, []actor.Effect) 
 		effects := []actor.Effect{
 			effStopRemoteRunner{Gen: gen - 1},
 			effStopDesktopTakebackWatcher{},
-			effStartLocalRunner{Gen: gen},
+			effStartLocalRunner{Gen: gen, Resume: state.ResumeToken, RolloutPath: state.RolloutPath},
 		}
 		effects = append(effects, persistEffects...)
 		return state, effects
@@ -468,6 +492,7 @@ func reduceRunnerExited(state State, ev evRunnerExited) (State, []actor.Effect) 
 	}
 }
 
+// reduceRemoteSend forwards a user message to the remote runner if allowed.
 func reduceRemoteSend(state State, cmd cmdRemoteSend) (State, []actor.Effect) {
 	if state.FSM != StateRemoteRunning {
 		if cmd.Reply != nil {
@@ -489,6 +514,7 @@ func reduceRemoteSend(state State, cmd cmdRemoteSend) (State, []actor.Effect) {
 	}
 }
 
+// reduceAbortRemote requests aborting the current remote turn.
 func reduceAbortRemote(state State, cmd cmdAbortRemote) (State, []actor.Effect) {
 	if state.FSM != StateRemoteRunning {
 		if cmd.Reply != nil {
@@ -508,6 +534,7 @@ func reduceAbortRemote(state State, cmd cmdAbortRemote) (State, []actor.Effect) 
 	return state, []actor.Effect{effRemoteAbort{Gen: state.RunnerGen}}
 }
 
+// reducePermissionRequested registers a new permission prompt and emits an ephemeral.
 func reducePermissionRequested(state State, ev evPermissionRequested) (State, []actor.Effect) {
 	if ev.RequestID == "" {
 		return state, nil
@@ -544,6 +571,7 @@ func reducePermissionRequested(state State, ev evPermissionRequested) (State, []
 	return state, effects
 }
 
+// reducePermissionDecision resolves a pending permission request.
 func reducePermissionDecision(state State, cmd cmdPermissionDecision) (State, []actor.Effect) {
 	if cmd.RequestID == "" {
 		if cmd.Reply != nil {
@@ -650,6 +678,7 @@ func reducePermissionDecision(state State, cmd cmdPermissionDecision) (State, []
 	return state, effects
 }
 
+// reducePermissionAwait registers a permission request and returns a decision via Reply.
 func reducePermissionAwait(state State, cmd cmdPermissionAwait) (State, []actor.Effect) {
 	if cmd.RequestID == "" || cmd.ToolName == "" || cmd.Reply == nil {
 		return state, nil
@@ -688,6 +717,7 @@ func reducePermissionAwait(state State, cmd cmdPermissionAwait) (State, []actor.
 	return state, effects
 }
 
+// reduceAgentStatePersisted applies the server-acknowledged agent state version.
 func reduceAgentStatePersisted(state State, ev EvAgentStatePersisted) (State, []actor.Effect) {
 	if ev.NewVersion > 0 {
 		state.AgentStateVersion = ev.NewVersion
@@ -696,6 +726,7 @@ func reduceAgentStatePersisted(state State, ev EvAgentStatePersisted) (State, []
 	return state, nil
 }
 
+// reduceAgentStateVersionMismatch updates local version and retries persistence.
 func reduceAgentStateVersionMismatch(state State, ev EvAgentStateVersionMismatch) (State, []actor.Effect) {
 	if ev.ServerVersion > 0 {
 		state.AgentStateVersion = ev.ServerVersion
@@ -710,6 +741,7 @@ func reduceAgentStateVersionMismatch(state State, ev EvAgentStateVersionMismatch
 	return state, []actor.Effect{effPersistAgentState{AgentStateJSON: state.AgentStateJSON, ExpectedVersion: state.AgentStateVersion}}
 }
 
+// reduceAgentStatePersistFailed records a persistence failure and clears retries.
 func reduceAgentStatePersistFailed(state State, ev EvAgentStatePersistFailed) (State, []actor.Effect) {
 	_ = ev
 	// Phase 4 minimal behavior: keep version as-is and allow a future tick/debounce
@@ -719,6 +751,7 @@ func reduceAgentStatePersistFailed(state State, ev EvAgentStatePersistFailed) (S
 	return state, nil
 }
 
+// reduceTimerFired handles internal debounce timers.
 func reduceTimerFired(state State, ev evTimerFired) (State, []actor.Effect) {
 	switch ev.Name {
 	case persistDebounceTimerName:
@@ -733,6 +766,7 @@ func reduceTimerFired(state State, ev evTimerFired) (State, []actor.Effect) {
 	}
 }
 
+// reduceShutdown transitions the actor to Closed and stops runners.
 func reduceShutdown(state State, cmd cmdShutdown) (State, []actor.Effect) {
 	state.FSM = StateClosing
 	if cmd.Reply != nil {
@@ -749,6 +783,7 @@ func reduceShutdown(state State, cmd cmdShutdown) (State, []actor.Effect) {
 	}
 }
 
+// refreshAgentStateJSON refreshes State.AgentStateJSON from State.AgentState.
 func refreshAgentStateJSON(state State) State {
 	data, err := json.Marshal(state.AgentState)
 	if err != nil {
@@ -759,6 +794,7 @@ func refreshAgentStateJSON(state State) State {
 	return state
 }
 
+// schedulePersistDebounced schedules a debounced persistence attempt.
 func schedulePersistDebounced(state State) (State, []actor.Effect) {
 	state.PersistRetryRemaining = 1
 	// If we have no websocket connection yet, still schedule persistence; the

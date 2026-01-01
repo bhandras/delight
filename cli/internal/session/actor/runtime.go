@@ -7,6 +7,8 @@ import (
 	"time"
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
+	"github.com/bhandras/delight/cli/internal/agentengine"
+	"github.com/bhandras/delight/cli/internal/agentengine/codexengine"
 	"github.com/bhandras/delight/cli/internal/claude"
 	"golang.org/x/term"
 )
@@ -21,6 +23,9 @@ type Runtime struct {
 	sessionID string
 	workDir   string
 	debug     bool
+	agent     agentengine.AgentType
+
+	emitFn func(framework.Input)
 
 	stateUpdater  StateUpdater
 	socketEmitter SocketEmitter
@@ -34,6 +39,12 @@ type Runtime struct {
 	localScanner *claude.Scanner
 	remoteBridge *claude.RemoteBridge
 	remoteGen    int64
+
+	codexEngine       *codexengine.Engine
+	codexRemoteGen    int64
+	codexRemoteActive bool
+	codexLocalGen     int64
+	codexLocalActive  bool
 
 	takebackCancel chan struct{}
 	takebackDone   chan struct{}
@@ -55,7 +66,19 @@ type SocketEmitter interface {
 
 // NewRuntime returns a Runtime that executes runner effects in the given workDir.
 func NewRuntime(workDir string, debug bool) *Runtime {
-	return &Runtime{workDir: workDir, debug: debug}
+	return &Runtime{workDir: workDir, debug: debug, agent: agentengine.AgentClaude}
+}
+
+// WithAgent configures which upstream agent implementation this runtime starts.
+func (r *Runtime) WithAgent(agent string) *Runtime {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if agent == "" {
+		r.agent = agentengine.AgentClaude
+		return r
+	}
+	r.agent = agentengine.AgentType(agent)
+	return r
 }
 
 // WithSessionID configures the session id used for state persistence effects.
@@ -105,6 +128,10 @@ func (r *Runtime) WithEncryptFn(fn func([]byte) (string, error)) *Runtime {
 
 // HandleEffects implements actor.Runtime.
 func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect, emit func(framework.Input)) {
+	r.mu.Lock()
+	r.emitFn = emit
+	r.mu.Unlock()
+
 	for _, eff := range effects {
 		select {
 		case <-ctx.Done():
@@ -114,21 +141,55 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 
 		switch e := eff.(type) {
 		case effStartLocalRunner:
-			r.startLocal(ctx, e, emit)
+			switch r.agent {
+			case agentengine.AgentCodex:
+				r.startCodexLocal(ctx, e, emit)
+			default:
+				r.startLocal(ctx, e, emit)
+			}
 		case effStopLocalRunner:
-			r.stopLocal(e)
+			switch r.agent {
+			case agentengine.AgentCodex:
+				r.stopCodexLocal(e)
+			default:
+				r.stopLocal(e)
+			}
 		case effStartRemoteRunner:
-			r.startRemote(ctx, e, emit)
+			switch r.agent {
+			case agentengine.AgentCodex:
+				r.startCodexRemote(ctx, e, emit)
+			default:
+				r.startRemote(ctx, e, emit)
+			}
 		case effStopRemoteRunner:
-			r.stopRemote(e)
+			switch r.agent {
+			case agentengine.AgentCodex:
+				r.stopCodexRemote(e)
+			default:
+				r.stopRemote(e)
+			}
 		case effLocalSendLine:
-			r.localSendLine(e)
+			// Local line injection is currently only supported for Claude.
+			if r.agent != agentengine.AgentCodex {
+				r.localSendLine(e)
+			}
 		case effRemoteSend:
-			r.remoteSend(e)
+			switch r.agent {
+			case agentengine.AgentCodex:
+				r.codexRemoteSend(ctx, e, emit)
+			default:
+				r.remoteSend(e)
+			}
 		case effRemoteAbort:
-			r.remoteAbort(e)
+			// Abort is best-effort and currently only supported for Claude remote.
+			if r.agent != agentengine.AgentCodex {
+				r.remoteAbort(e)
+			}
 		case effRemotePermissionDecision:
-			r.remotePermissionDecision(e)
+			// Claude remote requires control_response writes; Codex permissions use AwaitPermission.
+			if r.agent != agentengine.AgentCodex {
+				r.remotePermissionDecision(e)
+			}
 		case effPersistAgentState:
 			r.persistAgentState(ctx, e, emit)
 		case effStartDesktopTakebackWatcher:
@@ -157,6 +218,8 @@ func (r *Runtime) Stop() {
 		timer.Stop()
 	}
 	r.timers = nil
+	codexEngine := r.codexEngine
+	r.codexEngine = nil
 	if r.remoteBridge != nil {
 		r.remoteBridge.Kill()
 		r.remoteBridge = nil
@@ -181,5 +244,9 @@ func (r *Runtime) Stop() {
 		case <-done:
 		case <-time.After(takebackShutdownWait):
 		}
+	}
+
+	if codexEngine != nil {
+		_ = codexEngine.Close(context.Background())
 	}
 }
