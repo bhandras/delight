@@ -1,7 +1,7 @@
 -- name: CreateTerminalAuthRequest :one
 INSERT INTO terminal_auth_requests (
-    id, public_key, supports_v2
-) VALUES (?, ?, ?)
+    id, public_key
+) VALUES (?, ?)
 RETURNING *;
 
 -- name: GetTerminalAuthRequest :one

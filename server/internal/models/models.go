@@ -112,7 +112,6 @@ type SessionMessage struct {
 type TerminalAuthRequest struct {
 	ID                string         `json:"id"`
 	PublicKey         string         `json:"public_key"`
-	SupportsV2        int64          `json:"supports_v2"`
 	Response          sql.NullString `json:"response"`
 	ResponseAccountID sql.NullString `json:"response_account_id"`
 	CreatedAt         time.Time      `json:"created_at"`

@@ -38,24 +38,22 @@ func (q *Queries) CreateAccountAuthRequest(ctx context.Context, arg CreateAccoun
 
 const createTerminalAuthRequest = `-- name: CreateTerminalAuthRequest :one
 INSERT INTO terminal_auth_requests (
-    id, public_key, supports_v2
-) VALUES (?, ?, ?)
-RETURNING id, public_key, supports_v2, response, response_account_id, created_at, updated_at
+    id, public_key
+) VALUES (?, ?)
+RETURNING id, public_key, response, response_account_id, created_at, updated_at
 `
 
 type CreateTerminalAuthRequestParams struct {
-	ID         string `json:"id"`
-	PublicKey  string `json:"public_key"`
-	SupportsV2 int64  `json:"supports_v2"`
+	ID        string `json:"id"`
+	PublicKey string `json:"public_key"`
 }
 
 func (q *Queries) CreateTerminalAuthRequest(ctx context.Context, arg CreateTerminalAuthRequestParams) (TerminalAuthRequest, error) {
-	row := q.db.QueryRowContext(ctx, createTerminalAuthRequest, arg.ID, arg.PublicKey, arg.SupportsV2)
+	row := q.db.QueryRowContext(ctx, createTerminalAuthRequest, arg.ID, arg.PublicKey)
 	var i TerminalAuthRequest
 	err := row.Scan(
 		&i.ID,
 		&i.PublicKey,
-		&i.SupportsV2,
 		&i.Response,
 		&i.ResponseAccountID,
 		&i.CreatedAt,
@@ -105,7 +103,7 @@ func (q *Queries) GetAccountAuthRequest(ctx context.Context, publicKey string) (
 }
 
 const getTerminalAuthRequest = `-- name: GetTerminalAuthRequest :one
-SELECT id, public_key, supports_v2, response, response_account_id, created_at, updated_at FROM terminal_auth_requests
+SELECT id, public_key, response, response_account_id, created_at, updated_at FROM terminal_auth_requests
 WHERE public_key = ?
 LIMIT 1
 `
@@ -116,7 +114,6 @@ func (q *Queries) GetTerminalAuthRequest(ctx context.Context, publicKey string) 
 	err := row.Scan(
 		&i.ID,
 		&i.PublicKey,
-		&i.SupportsV2,
 		&i.Response,
 		&i.ResponseAccountID,
 		&i.CreatedAt,

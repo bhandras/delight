@@ -34,12 +34,8 @@ func AuthCommand(cfg *config.Config) error {
 	publicKeyB64 := base64.StdEncoding.EncodeToString(publicKey[:])
 
 	// Create auth request on server using POST /v1/auth/request (terminal auth)
-	// Note: supportsV2=false because CLI uses SecretBox encryption with masterSecret.
-	// V2 format sends contentDataKey (a derived public key for Box encryption),
-	// which is NOT compatible with SecretBox. V1 sends the raw masterSecret.
 	reqBody := map[string]interface{}{
-		"publicKey":  publicKeyB64,
-		"supportsV2": false,
+		"publicKey": publicKeyB64,
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -183,10 +179,9 @@ func pollForTerminalAuth(cfg *config.Config, publicKeyB64 string, privateKey *[3
 			}
 
 			var result struct {
-				Status     string  `json:"status"`     // "pending" or "authorized"
-				Token      *string `json:"token"`      // JWT token when authorized
-				Response   *string `json:"response"`   // Encrypted secret when authorized
-				SupportsV2 bool    `json:"supportsV2"` // Whether V2 format is supported
+				Status   string  `json:"status"`   // "pending" or "authorized"
+				Token    *string `json:"token"`    // JWT token when authorized
+				Response *string `json:"response"` // Encrypted secret when authorized
 			}
 			if err := json.Unmarshal(respBody, &result); err != nil {
 				if cfg.Debug {
@@ -202,7 +197,7 @@ func pollForTerminalAuth(cfg *config.Config, publicKeyB64 string, privateKey *[3
 				}
 
 				if cfg.Debug {
-					log.Printf("Authorization received: supportsV2=%v", result.SupportsV2)
+					log.Printf("Authorization received")
 				}
 
 				// Decrypt the secret

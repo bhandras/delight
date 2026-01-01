@@ -31,7 +31,6 @@ CREATE INDEX idx_accounts_username ON accounts(username);
 CREATE TABLE terminal_auth_requests (
     id TEXT PRIMARY KEY,
     public_key TEXT NOT NULL UNIQUE,
-    supports_v2 INTEGER NOT NULL DEFAULT 0,
     response TEXT,
     response_account_id TEXT,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

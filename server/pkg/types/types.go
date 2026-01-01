@@ -63,15 +63,13 @@ type AuthResponse struct {
 }
 
 type TerminalAuthRequestBody struct {
-	PublicKey  string `json:"publicKey" binding:"required"`
-	SupportsV2 bool   `json:"supportsV2"`
+	PublicKey string `json:"publicKey" binding:"required"`
 }
 
 type TerminalAuthStatusResponse struct {
-	Status     string  `json:"status"` // "pending" or "authorized"
-	Token      *string `json:"token,omitempty"`
-	Response   *string `json:"response,omitempty"`
-	SupportsV2 bool    `json:"supportsV2"`
+	Status   string  `json:"status"` // "pending" or "authorized"
+	Token    *string `json:"token,omitempty"`
+	Response *string `json:"response,omitempty"`
 }
 
 type TerminalAuthResponseBody struct {

@@ -111,16 +111,10 @@ func (h *AuthHandler) PostAuthRequest(c *gin.Context) {
 	}
 
 	// Create auth request
-	supportsV2 := int64(0)
-	if req.SupportsV2 {
-		supportsV2 = 1
-	}
-
 	requestID := types.NewCUID()
 	_, err = h.queries.CreateTerminalAuthRequest(c.Request.Context(), models.CreateTerminalAuthRequestParams{
 		ID:         requestID,
 		PublicKey:  publicKeyHex,
-		SupportsV2: supportsV2,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to create auth request"})
@@ -164,15 +158,13 @@ func (h *AuthHandler) GetAuthRequestStatus(c *gin.Context) {
 
 			response := authReq.Response.String
 			c.JSON(http.StatusOK, types.TerminalAuthStatusResponse{
-				Status:     "authorized",
-				Token:      &token,
-				Response:   &response,
-				SupportsV2: authReq.SupportsV2 == 1,
+				Status:   "authorized",
+				Token:    &token,
+				Response: &response,
 			})
 		} else {
 			c.JSON(http.StatusOK, types.TerminalAuthStatusResponse{
-				Status:     "pending",
-				SupportsV2: authReq.SupportsV2 == 1,
+				Status: "pending",
 			})
 		}
 		return
@@ -202,15 +194,13 @@ func (h *AuthHandler) GetAuthRequestStatus(c *gin.Context) {
 
 		response := accountReq.Response.String
 		c.JSON(http.StatusOK, types.TerminalAuthStatusResponse{
-			Status:     "authorized",
-			Token:      &token,
-			Response:   &response,
-			SupportsV2: true, // Account auth always supports V2
+			Status:   "authorized",
+			Token:    &token,
+			Response: &response,
 		})
 	} else {
 		c.JSON(http.StatusOK, types.TerminalAuthStatusResponse{
-			Status:     "pending",
-			SupportsV2: true, // Account auth always supports V2
+			Status: "pending",
 		})
 	}
 }
