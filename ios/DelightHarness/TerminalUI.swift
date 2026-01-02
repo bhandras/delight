@@ -312,16 +312,21 @@ private struct MessageComposer: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            TextField(
-                placeholder,
-                text: $model.messageText,
-                axis: .vertical
-            )
+            TextField(text: $model.messageText, axis: .vertical) {
+                Text(placeholder)
+                    .foregroundColor(Color(uiColor: .secondaryLabel))
+            }
             .font(Theme.body)
+            .foregroundColor(Theme.messageText)
+            .tint(Theme.accent)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .background(Color(uiColor: .secondarySystemBackground))
+            .background(Color(uiColor: .tertiarySystemBackground))
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color(uiColor: .separator).opacity(0.7), lineWidth: 1)
+            )
             .disabled(!isEnabled)
             Button {
                 model.sendMessage()
@@ -442,4 +447,3 @@ private let vibingMessages = [
     "Transmuting", "Unfurling", "Unravelling", "Vibing", "Wandering", "Whirring",
     "Wibbling", "Wizarding", "Working", "Wrangling"
 ]
-
