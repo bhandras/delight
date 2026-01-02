@@ -1,4 +1,5 @@
 import SwiftUI
+import MarkdownUI
 
 /// MessageBubble renders a single chat message.
 ///
@@ -9,19 +10,19 @@ struct MessageBubble: View {
     /// Layout holds display constants for the terminal transcript.
     enum Layout {
         /// cellHorizontalPadding is the inset applied by the host table cell.
-        static let cellHorizontalPadding: CGFloat = 6
+        static let cellHorizontalPadding: CGFloat = 2
 
         /// bubbleHorizontalPadding is the small gutter between the bubble and
         /// the cell edges.
-        static let bubbleHorizontalPadding: CGFloat = 1
+        static let bubbleHorizontalPadding: CGFloat = 0.5
 
         /// oppositeSideSpacerMinimum keeps bubbles from spanning the full
         /// screen width while avoiding excessive whitespace on the other side.
-        static let oppositeSideSpacerMinimum: CGFloat = 12
+        static let oppositeSideSpacerMinimum: CGFloat = 6
 
         /// incomingLeadingTextInset provides a small left inset so incoming
         /// text doesn't hug the edge when not using a colored bubble.
-        static let incomingLeadingTextInset: CGFloat = 2
+        static let incomingLeadingTextInset: CGFloat = 0.5
     }
 
     var body: some View {
@@ -32,7 +33,7 @@ struct MessageBubble: View {
                     MessageBlockView(block: block)
                 }
             }
-            .padding(message.role == .user ? 12 : 0)
+            .padding(message.role == .user ? 8 : 0)
             .padding(.leading, message.role == .user ? 0 : Layout.incomingLeadingTextInset)
             .background(message.role == .user ? Theme.userBubble : Color.clear)
             .clipIf(message.role == .user) {
@@ -52,8 +53,6 @@ private struct MessageBlockView: View {
         switch block {
         case .text(let text):
             MarkdownText(text: text)
-                .font(Theme.body)
-                .foregroundColor(Theme.messageText)
         case .code(let language, let content):
             CodeBlockView(language: language, content: content)
         case .toolCall(let summary):
@@ -65,21 +64,82 @@ private struct MessageBlockView: View {
 private struct MarkdownText: View {
     let text: String
 
+    /// Typography holds constants for Markdown rendering in the terminal
+    /// transcript.
+    enum Typography {
+        /// bodyFontFamily is the family name used by MarkdownUI's font system.
+        ///
+        /// MarkdownUI composes font families with weight/style dynamically,
+        /// which is different from `Font.custom` (that uses a PostScript face
+        /// name like "AvenirNext-Regular").
+        static let bodyFontFamily: String = "Avenir Next"
+
+        /// bodyFontSize matches `Theme.body` (see `ContentView.swift`).
+        static let bodyFontSize: CGFloat = 16
+
+        /// paragraphBottomMarginEm keeps paragraphs readable without the large
+        /// default Markdown spacing.
+        static let paragraphBottomMarginEm: Double = 0.35
+
+        /// paragraphLineSpacingEm keeps agent output compact while avoiding
+        /// dense text blocks.
+        static let paragraphLineSpacingEm: Double = 0.08
+
+        /// headingTopMarginEm is the small top inset for headings.
+        static let headingTopMarginEm: Double = 0.2
+
+        /// headingBottomMarginEm separates headings from following text.
+        static let headingBottomMarginEm: Double = 0.15
+    }
+
     var body: some View {
-        let lines = text.split(whereSeparator: \.isNewline).map(String.init)
-        if looksLikeList(text) {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(lines.indices, id: \.self) { index in
-                    listLineView(lines[index])
-                }
+        Markdown(formatMarkdownForDisplay(text))
+            // MarkdownUI's built-in GitHub theme applies a background color to
+            // all text, which reads like a "highlight" behind every paragraph
+            // in our chat UI. Keep the rendering minimal and let the bubble
+            // backgrounds define the container instead.
+            .markdownTheme(.basic)
+            .markdownTextStyle(\.text) {
+                FontFamily(.custom(Typography.bodyFontFamily))
+                FontSize(Typography.bodyFontSize)
+                ForegroundColor(Theme.messageText)
+                BackgroundColor(nil)
             }
-        } else if text.count <= 4000,
-                  let attributed = try? AttributedString(markdown: formatMarkdownForDisplay(text)) {
-            Text(attributed)
-        } else {
-            Text(text)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+            .markdownTextStyle(\.code) {
+                FontFamilyVariant(.monospaced)
+                FontSize(.em(0.9))
+                ForegroundColor(Theme.codeText)
+                BackgroundColor(Theme.codeBackground)
+            }
+            // The default MarkdownUI theme treats headings as large display
+            // elements. In chat transcripts we want headings to read as
+            // emphasized lines rather than changing the overall typography.
+            .markdownBlockStyle(\.heading1, body: compactHeading)
+            .markdownBlockStyle(\.heading2, body: compactHeading)
+            .markdownBlockStyle(\.heading3, body: compactHeading)
+            .markdownBlockStyle(\.heading4, body: compactHeading)
+            .markdownBlockStyle(\.heading5, body: compactHeading)
+            .markdownBlockStyle(\.heading6, body: compactHeading)
+            .markdownBlockStyle(\.paragraph) { configuration in
+                configuration.label
+                    .fixedSize(horizontal: false, vertical: true)
+                    .relativeLineSpacing(.em(Typography.paragraphLineSpacingEm))
+                    .markdownMargin(top: .zero, bottom: .em(Typography.paragraphBottomMarginEm))
+            }
+    }
+
+    /// compactHeading renders all Markdown heading levels using the transcript
+    /// body font size so agent output remains readable and visually consistent.
+    private func compactHeading(_ configuration: BlockConfiguration) -> some View {
+        configuration.label
+            .markdownMargin(
+                top: .em(Typography.headingTopMarginEm),
+                bottom: .em(Typography.headingBottomMarginEm)
+            )
+            .markdownTextStyle {
+                FontWeight(.semibold)
+                FontSize(.em(1))
+            }
     }
 
     /// formatMarkdownForDisplay converts soft line breaks (single `\n`) into hard
@@ -143,93 +203,6 @@ private struct MarkdownText: View {
         }
 
         return result
-    }
-
-    private func looksLikeList(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
-            return true
-        }
-        if text.contains("\n- ") || text.contains("\n* ") {
-            return true
-        }
-        if hasNumberedListPrefix(trimmed) {
-            return true
-        }
-        if text.split(whereSeparator: \.isNewline).contains(where: { hasNumberedListPrefix(String($0)) }) {
-            return true
-        }
-        return false
-    }
-
-    @ViewBuilder
-    private func listLineView(_ line: String) -> some View {
-        if line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            Text(" ")
-        } else {
-            let parsed = parseListLine(line)
-            if let marker = parsed.marker {
-                HStack(alignment: .top, spacing: 8) {
-                    Text(marker)
-                        .font(Theme.body)
-                        .foregroundColor(Theme.messageText)
-                    inlineMarkdown(parsed.content)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.leading, parsed.indent)
-            } else {
-                inlineMarkdown(parsed.content)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    private func inlineMarkdown(_ content: String) -> Text {
-        if content.count <= 4000, let attributed = try? AttributedString(markdown: content) {
-            return Text(attributed)
-        }
-        return Text(content)
-    }
-
-    private func parseListLine(_ line: String) -> (indent: CGFloat, marker: String?, content: String) {
-        let indentCount = line.prefix { $0 == " " || $0 == "\t" }.count
-        let indent = CGFloat(indentCount) * 4
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-        if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
-            let start = trimmed.index(trimmed.startIndex, offsetBy: 2)
-            return (indent, "•", String(trimmed[start...]))
-        }
-
-        if let numbered = parseNumberedListLine(trimmed) {
-            return (indent, numbered.marker, numbered.content)
-        }
-
-        return (indent, nil, trimmed)
-    }
-
-    private func hasNumberedListPrefix(_ text: String) -> Bool {
-        return parseNumberedListLine(text) != nil
-    }
-
-    private func parseNumberedListLine(_ text: String) -> (marker: String, content: String)? {
-        var index = text.startIndex
-        var hasDigits = false
-        while index < text.endIndex, text[index].isNumber {
-            hasDigits = true
-            index = text.index(after: index)
-        }
-        guard hasDigits, index < text.endIndex, text[index] == "." else {
-            return nil
-        }
-        let afterDot = text.index(after: index)
-        guard afterDot < text.endIndex, text[afterDot] == " " else {
-            return nil
-        }
-        let marker = String(text[text.startIndex...index])
-        let contentStart = text.index(after: afterDot)
-        let content = String(text[contentStart...])
-        return (marker, content)
     }
 }
 

@@ -17,6 +17,20 @@ struct TerminalMessagesView: UIViewRepresentable {
     let scrollRequest: ScrollRequest?
     let onConsumeScrollRequest: () -> Void
 
+    /// Layout holds display constants for the transcript list.
+    enum Layout {
+        /// transcriptTopBottomInset keeps a small amount of breathing room so
+        /// the first/last bubble isn't glued to the edge.
+        static let transcriptTopBottomInset: CGFloat = 4
+
+        /// messageVerticalPadding is the spacing between message rows.
+        static let messageVerticalPadding: CGFloat = 2
+
+        /// historyLoadTriggerOffset is how close to the top we start fetching
+        /// older messages.
+        static let historyLoadTriggerOffset: CGFloat = 4
+    }
+
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
     }
@@ -30,7 +44,12 @@ struct TerminalMessagesView: UIViewRepresentable {
         tableView.allowsSelection = false
         tableView.estimatedRowHeight = 120
         tableView.rowHeight = UITableView.automaticDimension
-        tableView.contentInset = UIEdgeInsets(top: 12, left: 0, bottom: 12, right: 0)
+        tableView.contentInset = UIEdgeInsets(
+            top: Layout.transcriptTopBottomInset,
+            left: 0,
+            bottom: Layout.transcriptTopBottomInset,
+            right: 0
+        )
 
         tableView.dataSource = context.coordinator
         tableView.delegate = context.coordinator
@@ -145,7 +164,7 @@ struct TerminalMessagesView: UIViewRepresentable {
             if #available(iOS 16.0, *) {
                 cell.contentConfiguration = UIHostingConfiguration {
                     MessageBubble(message: message)
-                        .padding(.vertical, 6)
+                        .padding(.vertical, Layout.messageVerticalPadding)
                         .padding(.horizontal, MessageBubble.Layout.cellHorizontalPadding)
                 }
             } else {
@@ -170,7 +189,7 @@ struct TerminalMessagesView: UIViewRepresentable {
             // Treat "near the top" as a trigger (not just overscroll), so users don't have to
             // do the awkward "scroll down then up" dance to load the next page.
             let topY = -scrollView.adjustedContentInset.top
-            if scrollView.contentOffset.y <= (topY + 8) {
+            if scrollView.contentOffset.y <= (topY + Layout.historyLoadTriggerOffset) {
                 // Make the refresh control visible even when we trigger based on position.
                 if let tableView = scrollView as? UITableView,
                    let refresh = tableView.refreshControl,

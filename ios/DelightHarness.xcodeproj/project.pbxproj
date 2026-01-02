@@ -15,6 +15,7 @@
 				E9E0F2A1BAA849A9A76A0C2B /* TerminalUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D3CBACD9E4F4A7C9E9A9F33 /* TerminalUI.swift */; };
 				30C677B406304F89BBA370D9 /* JSONCoding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A8B3A1F1BA44D15A4C89327 /* JSONCoding.swift */; };
 				A1B2C3D4E5F60718293A4B73 /* DelightSDK.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6E /* DelightSDK.xcframework */; };
+				C7D6E5F4A3B2C1D0E9F8A7B6 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = A8B7C6D5E4F3A2B1C0D9E8F7 /* MarkdownUI */; };
 				A1B2C3D4E5F60718293A4B74 /* DelightSDK.xcframework in CopyFiles */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6E /* DelightSDK.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 				A1B2C3D4E5F60718293A4B82 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B81 /* QRScannerView.swift */; };
 				A1B2C3D4E5F60718293A4B90 /* DelightHarnessApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B6B /* DelightHarnessApp.swift */; };
@@ -78,6 +79,7 @@
 		buildActionMask = 2147483647;
 		files = (
 			A1B2C3D4E5F60718293A4B73 /* DelightSDK.xcframework in Frameworks */,
+			C7D6E5F4A3B2C1D0E9F8A7B6 /* MarkdownUI in Frameworks */,
 		);
 		runOnlyForDeploymentPostprocessing = 0;
 	};
@@ -160,6 +162,9 @@
 		dependencies = (
 		);
 		name = DelightHarness;
+		packageProductDependencies = (
+			A8B7C6D5E4F3A2B1C0D9E8F7 /* MarkdownUI */,
+		);
 		productName = DelightHarness;
 		productReference = A1B2C3D4E5F60718293A4B6F /* DelightHarness.app */;
 		productType = "com.apple.product-type.application";
@@ -208,6 +213,9 @@
 				Base,
 			);
 			mainGroup = A1B2C3D4E5F60718293A4B5E;
+			packageReferences = (
+				F4C2A9D0B2E34A1C9D0E1F2A /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
+			);
 			productRefGroup = A1B2C3D4E5F60718293A4B5F /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -217,6 +225,25 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		F4C2A9D0B2E34A1C9D0E1F2A /* XCRemoteSwiftPackageReference "swift-markdown-ui" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/gonzalezreal/swift-markdown-ui";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.4.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A8B7C6D5E4F3A2B1C0D9E8F7 /* MarkdownUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F4C2A9D0B2E34A1C9D0E1F2A /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
+			productName = MarkdownUI;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin PBXResourcesBuildPhase section */
 	A1B2C3D4E5F60718293A4B62 /* Resources */ = {
