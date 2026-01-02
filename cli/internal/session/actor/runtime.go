@@ -267,7 +267,9 @@ func (r *Runtime) Stop() {
 	r.engine = nil
 	r.mu.Unlock()
 
-	termutil.ResetTTYModes()
+	if shouldMutateTTY(r.agent) {
+		termutil.ResetTTYModes()
+	}
 
 	if cancel != nil {
 		func() {

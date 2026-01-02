@@ -47,6 +47,19 @@ const (
 // startDesktopTakebackWatcher starts a raw tty watcher that emits evDesktopTakeback
 // after the user presses space twice.
 func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(framework.Input)) {
+	// Only start the watcher in truly interactive sessions. Integration tests run
+	// the CLI with stdout/stderr captured into buffers, but the process may still
+	// have a controlling terminal; opening /dev/tty + MakeRaw in that scenario
+	// can leave the developer terminal in a broken state when the test interrupts
+	// or kills the child process.
+	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+		return
+	}
+
+	if !shouldMutateTTY(r.agent) {
+		return
+	}
+
 	r.mu.Lock()
 	if r.takebackCancel != nil {
 		r.mu.Unlock()
