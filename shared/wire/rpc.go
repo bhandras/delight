@@ -94,8 +94,8 @@ type AgentCapabilitiesResponse struct {
 
 // Machine-scoped RPC payloads (server -> daemon).
 
-// SpawnHappySessionRequest requests starting a new CLI session for a directory.
-type SpawnHappySessionRequest struct {
+// SpawnSessionRequest requests starting a new CLI session for a directory.
+type SpawnSessionRequest struct {
 	// Directory is the working directory for the new session.
 	Directory string `json:"directory"`
 	// ApprovedNewDirectoryCreation indicates the user has approved mkdir.
@@ -144,9 +144,9 @@ type PingResponse struct {
 	Success bool `json:"success"`
 }
 
-// SpawnHappySessionResponse requests or reports the result of spawning a
+// SpawnSessionResponse requests or reports the result of spawning a
 // session from a machine-scoped RPC call.
-type SpawnHappySessionResponse struct {
+type SpawnSessionResponse struct {
 	// Type identifies the response kind (e.g. "success").
 	Type string `json:"type"`
 	// SessionID is the id of the spawned session on success.

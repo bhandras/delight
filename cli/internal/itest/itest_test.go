@@ -71,25 +71,25 @@ func TestFakeAgentRoundTrip(t *testing.T) {
 
 	token := authToken(t, serverURL)
 
-	happyHome := filepath.Join(tempDir, "happy-home")
-	if err := os.MkdirAll(happyHome, 0700); err != nil {
-		t.Fatalf("mkdir happy home: %v", err)
-	}
-	if _, err := storage.GetOrCreateSecretKey(filepath.Join(happyHome, "master.key")); err != nil {
-		t.Fatalf("create master.key: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(happyHome, "access.key"), []byte(token), 0600); err != nil {
-		t.Fatalf("write access.key: %v", err)
-	}
+		delightHome := filepath.Join(tempDir, "delight-home")
+		if err := os.MkdirAll(delightHome, 0700); err != nil {
+			t.Fatalf("mkdir delight home: %v", err)
+		}
+		if _, err := storage.GetOrCreateSecretKey(filepath.Join(delightHome, "master.key")); err != nil {
+			t.Fatalf("create master.key: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(delightHome, "access.key"), []byte(token), 0600); err != nil {
+			t.Fatalf("write access.key: %v", err)
+		}
 
 	cliCmd := exec.Command("go", "run", "./cmd/delight")
-	cliCmd.Dir = filepath.Join(root, "cli")
-	cliCmd.Env = append(filterEnv(os.Environ(), "DEBUG", "DELIGHT_DEBUG", "DELIGHT_FAKE_AGENT", "DELIGHT_HOME_DIR", "DELIGHT_SERVER_URL"),
-		fmt.Sprintf("DELIGHT_SERVER_URL=%s", serverURL),
-		fmt.Sprintf("DELIGHT_HOME_DIR=%s", happyHome),
-		"DELIGHT_FAKE_AGENT=1",
-		"DELIGHT_DEBUG=1",
-	)
+		cliCmd.Dir = filepath.Join(root, "cli")
+		cliCmd.Env = append(filterEnv(os.Environ(), "DEBUG", "DELIGHT_DEBUG", "DELIGHT_FAKE_AGENT", "DELIGHT_HOME_DIR", "DELIGHT_SERVER_URL"),
+			fmt.Sprintf("DELIGHT_SERVER_URL=%s", serverURL),
+			fmt.Sprintf("DELIGHT_HOME_DIR=%s", delightHome),
+			"DELIGHT_FAKE_AGENT=1",
+			"DELIGHT_DEBUG=1",
+		)
 	var cliBuf bytes.Buffer
 	cliCmd.Stdout = &cliBuf
 	cliCmd.Stderr = &cliBuf
@@ -290,24 +290,24 @@ func TestRPCRoundTrip(t *testing.T) {
 
 	token := authToken(t, serverURL)
 
-	happyHome := filepath.Join(tempDir, "happy-home")
-	if err := os.MkdirAll(happyHome, 0700); err != nil {
-		t.Fatalf("mkdir happy home: %v", err)
-	}
-	if _, err := storage.GetOrCreateSecretKey(filepath.Join(happyHome, "master.key")); err != nil {
-		t.Fatalf("create master.key: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(happyHome, "access.key"), []byte(token), 0600); err != nil {
-		t.Fatalf("write access.key: %v", err)
-	}
+		delightHome := filepath.Join(tempDir, "delight-home")
+		if err := os.MkdirAll(delightHome, 0700); err != nil {
+			t.Fatalf("mkdir delight home: %v", err)
+		}
+		if _, err := storage.GetOrCreateSecretKey(filepath.Join(delightHome, "master.key")); err != nil {
+			t.Fatalf("create master.key: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(delightHome, "access.key"), []byte(token), 0600); err != nil {
+			t.Fatalf("write access.key: %v", err)
+		}
 
-	cliCmd := exec.Command("go", "run", "./cmd/delight")
-	cliCmd.Dir = filepath.Join(root, "cli")
-	cliCmd.Env = append(os.Environ(),
-		fmt.Sprintf("DELIGHT_SERVER_URL=%s", serverURL),
-		fmt.Sprintf("DELIGHT_HOME_DIR=%s", happyHome),
-		"DELIGHT_FAKE_AGENT=1",
-	)
+		cliCmd := exec.Command("go", "run", "./cmd/delight")
+		cliCmd.Dir = filepath.Join(root, "cli")
+		cliCmd.Env = append(os.Environ(),
+			fmt.Sprintf("DELIGHT_SERVER_URL=%s", serverURL),
+			fmt.Sprintf("DELIGHT_HOME_DIR=%s", delightHome),
+			"DELIGHT_FAKE_AGENT=1",
+		)
 	var cliBuf bytes.Buffer
 	cliCmd.Stdout = &cliBuf
 	cliCmd.Stderr = &cliBuf
@@ -381,35 +381,35 @@ func TestMachineRPCRoundTrip(t *testing.T) {
 
 	token := authToken(t, serverURL)
 
-	happyHome := filepath.Join(tempDir, "happy-home")
-	if err := os.MkdirAll(happyHome, 0700); err != nil {
-		t.Fatalf("mkdir happy home: %v", err)
-	}
-	if _, err := storage.GetOrCreateSecretKey(filepath.Join(happyHome, "master.key")); err != nil {
-		t.Fatalf("create master.key: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(happyHome, "access.key"), []byte(token), 0600); err != nil {
-		t.Fatalf("write access.key: %v", err)
-	}
+		delightHome := filepath.Join(tempDir, "delight-home")
+		if err := os.MkdirAll(delightHome, 0700); err != nil {
+			t.Fatalf("mkdir delight home: %v", err)
+		}
+		if _, err := storage.GetOrCreateSecretKey(filepath.Join(delightHome, "master.key")); err != nil {
+			t.Fatalf("create master.key: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(delightHome, "access.key"), []byte(token), 0600); err != nil {
+			t.Fatalf("write access.key: %v", err)
+		}
 
 	cliCmd := exec.Command("go", "run", "./cmd/delight")
-	cliCmd.Dir = filepath.Join(root, "cli")
-	cliCmd.Env = append(filterEnv(os.Environ(), "DEBUG", "DELIGHT_DEBUG", "DELIGHT_FAKE_AGENT", "DELIGHT_HOME_DIR", "DELIGHT_SERVER_URL"),
-		fmt.Sprintf("DELIGHT_SERVER_URL=%s", serverURL),
-		fmt.Sprintf("DELIGHT_HOME_DIR=%s", happyHome),
-		"DELIGHT_FAKE_AGENT=1",
-		"DELIGHT_DEBUG=1",
-	)
+		cliCmd.Dir = filepath.Join(root, "cli")
+		cliCmd.Env = append(filterEnv(os.Environ(), "DEBUG", "DELIGHT_DEBUG", "DELIGHT_FAKE_AGENT", "DELIGHT_HOME_DIR", "DELIGHT_SERVER_URL"),
+			fmt.Sprintf("DELIGHT_SERVER_URL=%s", serverURL),
+			fmt.Sprintf("DELIGHT_HOME_DIR=%s", delightHome),
+			"DELIGHT_FAKE_AGENT=1",
+			"DELIGHT_DEBUG=1",
+		)
 	var cliBuf bytes.Buffer
 	cliCmd.Stdout = &cliBuf
-	cliCmd.Stderr = &cliBuf
+		cliCmd.Stderr = &cliBuf
 	if err := cliCmd.Start(); err != nil {
 		t.Fatalf("start cli: %v", err)
 	}
 	defer stopProcess(t, cliCmd)
 
 	_ = waitForSessionWithLogs(t, serverURL, token, 20*time.Second, &cliBuf, &serverBuf)
-	machineID := waitForMachineID(t, filepath.Join(happyHome, "machine.id"))
+		machineID := waitForMachineID(t, filepath.Join(delightHome, "machine.id"))
 
 	sock := connectUserSocket(t, serverURL, token)
 	defer sock.Close()
@@ -596,26 +596,26 @@ func TestACPFlowWithAwait(t *testing.T) {
 
 	token := authToken(t, serverURL)
 
-	happyHome := filepath.Join(tempDir, "happy-home")
-	if err := os.MkdirAll(happyHome, 0700); err != nil {
-		t.Fatalf("mkdir happy home: %v", err)
-	}
-	if _, err := storage.GetOrCreateSecretKey(filepath.Join(happyHome, "master.key")); err != nil {
-		t.Fatalf("create master.key: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(happyHome, "access.key"), []byte(token), 0600); err != nil {
-		t.Fatalf("write access.key: %v", err)
-	}
+		delightHome := filepath.Join(tempDir, "delight-home")
+		if err := os.MkdirAll(delightHome, 0700); err != nil {
+			t.Fatalf("mkdir delight home: %v", err)
+		}
+		if _, err := storage.GetOrCreateSecretKey(filepath.Join(delightHome, "master.key")); err != nil {
+			t.Fatalf("create master.key: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(delightHome, "access.key"), []byte(token), 0600); err != nil {
+			t.Fatalf("write access.key: %v", err)
+		}
 
-	cliCmd := exec.Command("go", "run", "./cmd/delight")
-	cliCmd.Dir = filepath.Join(root, "cli")
-	cliCmd.Env = append(filterEnv(os.Environ(), "DEBUG", "DELIGHT_DEBUG", "DELIGHT_FAKE_AGENT", "DELIGHT_HOME_DIR", "DELIGHT_SERVER_URL", "DELIGHT_ACP_URL", "DELIGHT_ACP_AGENT"),
-		fmt.Sprintf("DELIGHT_SERVER_URL=%s", serverURL),
-		fmt.Sprintf("DELIGHT_HOME_DIR=%s", happyHome),
-		fmt.Sprintf("DELIGHT_ACP_URL=%s", acp.server.URL),
-		"DELIGHT_ACP_AGENT=test-agent",
-		"DELIGHT_DEBUG=1",
-	)
+		cliCmd := exec.Command("go", "run", "./cmd/delight")
+		cliCmd.Dir = filepath.Join(root, "cli")
+		cliCmd.Env = append(filterEnv(os.Environ(), "DEBUG", "DELIGHT_DEBUG", "DELIGHT_FAKE_AGENT", "DELIGHT_HOME_DIR", "DELIGHT_SERVER_URL", "DELIGHT_ACP_URL", "DELIGHT_ACP_AGENT"),
+			fmt.Sprintf("DELIGHT_SERVER_URL=%s", serverURL),
+			fmt.Sprintf("DELIGHT_HOME_DIR=%s", delightHome),
+			fmt.Sprintf("DELIGHT_ACP_URL=%s", acp.server.URL),
+			"DELIGHT_ACP_AGENT=test-agent",
+			"DELIGHT_DEBUG=1",
+		)
 	var cliBuf bytes.Buffer
 	cliCmd.Stdout = &cliBuf
 	cliCmd.Stderr = &cliBuf
@@ -762,28 +762,28 @@ func startServerAndCLI(t *testing.T) *testEnv {
 
 	token := authToken(t, serverURL)
 
-	happyHome := filepath.Join(tempDir, "happy-home")
-	if err := os.MkdirAll(happyHome, 0700); err != nil {
-		stopProcess(t, serverCmd)
-		t.Fatalf("mkdir happy home: %v", err)
-	}
-	if _, err := storage.GetOrCreateSecretKey(filepath.Join(happyHome, "master.key")); err != nil {
-		stopProcess(t, serverCmd)
-		t.Fatalf("create master.key: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(happyHome, "access.key"), []byte(token), 0600); err != nil {
-		stopProcess(t, serverCmd)
-		t.Fatalf("write access.key: %v", err)
-	}
+		delightHome := filepath.Join(tempDir, "delight-home")
+		if err := os.MkdirAll(delightHome, 0700); err != nil {
+			stopProcess(t, serverCmd)
+			t.Fatalf("mkdir delight home: %v", err)
+		}
+		if _, err := storage.GetOrCreateSecretKey(filepath.Join(delightHome, "master.key")); err != nil {
+			stopProcess(t, serverCmd)
+			t.Fatalf("create master.key: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(delightHome, "access.key"), []byte(token), 0600); err != nil {
+			stopProcess(t, serverCmd)
+			t.Fatalf("write access.key: %v", err)
+		}
 
 	cliCmd := exec.Command("go", "run", "./cmd/delight")
 	cliCmd.Dir = filepath.Join(root, "cli")
-	cliCmd.Env = append(filterEnv(os.Environ(), "DEBUG", "DELIGHT_DEBUG", "DELIGHT_FAKE_AGENT", "DELIGHT_HOME_DIR", "DELIGHT_SERVER_URL"),
-		fmt.Sprintf("DELIGHT_SERVER_URL=%s", serverURL),
-		fmt.Sprintf("DELIGHT_HOME_DIR=%s", happyHome),
-		"DELIGHT_FAKE_AGENT=1",
-		"DELIGHT_DEBUG=1",
-	)
+		cliCmd.Env = append(filterEnv(os.Environ(), "DEBUG", "DELIGHT_DEBUG", "DELIGHT_FAKE_AGENT", "DELIGHT_HOME_DIR", "DELIGHT_SERVER_URL"),
+			fmt.Sprintf("DELIGHT_SERVER_URL=%s", serverURL),
+			fmt.Sprintf("DELIGHT_HOME_DIR=%s", delightHome),
+			"DELIGHT_FAKE_AGENT=1",
+			"DELIGHT_DEBUG=1",
+		)
 
 	cliBuf := &bytes.Buffer{}
 	cliCmd.Stdout = cliBuf
@@ -793,8 +793,8 @@ func startServerAndCLI(t *testing.T) *testEnv {
 		t.Fatalf("start cli: %v", err)
 	}
 
-	sessionID := waitForSessionWithLogs(t, serverURL, token, 20*time.Second, cliBuf, serverBuf)
-	machineID := waitForMachineID(t, filepath.Join(happyHome, "machine.id"))
+		sessionID := waitForSessionWithLogs(t, serverURL, token, 20*time.Second, cliBuf, serverBuf)
+		machineID := waitForMachineID(t, filepath.Join(delightHome, "machine.id"))
 
 	env := &testEnv{
 		serverURL: serverURL,

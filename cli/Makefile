@@ -6,7 +6,7 @@ build:
 
 # Run the CLI
 run: build
-	./happy
+	./delight
 
 # Run tests
 test:

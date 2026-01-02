@@ -249,8 +249,7 @@ func shouldDebugRPC() bool {
 	if val := os.Getenv("DELIGHT_DEBUG_RPC"); strings.EqualFold(val, "true") || strings.EqualFold(val, "1") {
 		return true
 	}
-	return strings.EqualFold(os.Getenv("HAPPY_DEBUG_RPC"), "true") ||
-		strings.EqualFold(os.Getenv("HAPPY_DEBUG_RPC"), "1")
+	return false
 }
 
 // Call makes an RPC call to the server

@@ -45,7 +45,7 @@ func Load() (*Config, error) {
 	}
 
 	// Check for dev mode
-	delightHome := getenvFirst("DELIGHT_HOME_DIR", "HAPPY_HOME_DIR")
+	delightHome := os.Getenv("DELIGHT_HOME_DIR")
 	if delightHome == "" {
 		delightHome = filepath.Join(homeDir, ".delight")
 	}
@@ -55,18 +55,18 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to create delight home: %w", err)
 	}
 
-	serverURL := getenvFirst("DELIGHT_SERVER_URL", "HAPPY_SERVER_URL")
+	serverURL := os.Getenv("DELIGHT_SERVER_URL")
 	if serverURL == "" {
-		serverURL = "https://happy-api.slopus.com" // Default to official server
+		serverURL = "http://localhost:3005"
 	}
 
-	acpURL := getenvFirst("DELIGHT_ACP_URL", "HAPPY_ACP_URL")
-	acpAgent := getenvFirst("DELIGHT_ACP_AGENT", "HAPPY_ACP_AGENT")
+	acpURL := os.Getenv("DELIGHT_ACP_URL")
+	acpAgent := os.Getenv("DELIGHT_ACP_AGENT")
 	acpEnable := acpURL != "" && acpAgent != ""
 
-	fakeAgent := getenvFirst("DELIGHT_FAKE_AGENT", "HAPPY_FAKE_AGENT") == "true" ||
-		getenvFirst("DELIGHT_FAKE_AGENT", "HAPPY_FAKE_AGENT") == "1"
-	agent := getenvFirst("DELIGHT_AGENT", "HAPPY_AGENT")
+	fakeAgent := os.Getenv("DELIGHT_FAKE_AGENT") == "true" ||
+		os.Getenv("DELIGHT_FAKE_AGENT") == "1"
+	agent := os.Getenv("DELIGHT_AGENT")
 	if agent == "" {
 		if acpEnable {
 			agent = "acp"
@@ -78,7 +78,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid DELIGHT_AGENT %q (expected acp, claude, or codex)", agent)
 	}
 
-	startingMode := getenvFirst("DELIGHT_STARTING_MODE", "HAPPY_STARTING_MODE")
+	startingMode := os.Getenv("DELIGHT_STARTING_MODE")
 	if startingMode == "" {
 		startingMode = "local"
 	}
@@ -104,11 +104,4 @@ func Load() (*Config, error) {
 // Save saves configuration to disk (currently just creates directories)
 func (c *Config) Save() error {
 	return os.MkdirAll(c.DelightHome, 0700)
-}
-
-func getenvFirst(primary, fallback string) string {
-	if val := os.Getenv(primary); val != "" {
-		return val
-	}
-	return os.Getenv(fallback)
 }

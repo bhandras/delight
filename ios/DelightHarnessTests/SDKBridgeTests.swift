@@ -248,7 +248,7 @@ final class SDKBridgeTests: XCTestCase {
 
     func testMachineMetadataParsesCliVersion() {
         let json = """
-        {"host":"m2.local","platform":"darwin","happyCliVersion":"1.2.3","homeDir":"/Users/test"}
+        {"host":"m2.local","platform":"darwin","cliVersion":"1.2.3","homeDir":"/Users/test"}
         """
         let metadata = MachineMetadata.fromJSON(json)
 

@@ -207,7 +207,7 @@ func (c *Client) initialize() error {
 			"elicitation": map[string]interface{}{},
 		},
 		"clientInfo": map[string]interface{}{
-			"name":    "happy-codex-client",
+			"name":    "delight-codex-client",
 			"version": "1.0.0",
 		},
 	}

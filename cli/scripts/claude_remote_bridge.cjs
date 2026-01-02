@@ -37,17 +37,17 @@ module.paths.unshift(nodeModulesPath);
 // - DELIGHT_CLAUDE_CONFIG_DIR: absolute path to a config dir
 // - DELIGHT_CLAUDE_PROFILE: shortcut to ~/.claude-<profile>
 if (!process.env.CLAUDE_CONFIG_DIR) {
-    if (process.env.DELIGHT_CLAUDE_CONFIG_DIR || process.env.HAPPY_CLAUDE_CONFIG_DIR) {
-        process.env.CLAUDE_CONFIG_DIR = process.env.DELIGHT_CLAUDE_CONFIG_DIR || process.env.HAPPY_CLAUDE_CONFIG_DIR;
-    } else if (process.env.DELIGHT_CLAUDE_PROFILE || process.env.HAPPY_CLAUDE_PROFILE) {
-        const profile = process.env.DELIGHT_CLAUDE_PROFILE || process.env.HAPPY_CLAUDE_PROFILE;
+    if (process.env.DELIGHT_CLAUDE_CONFIG_DIR) {
+        process.env.CLAUDE_CONFIG_DIR = process.env.DELIGHT_CLAUDE_CONFIG_DIR;
+    } else if (process.env.DELIGHT_CLAUDE_PROFILE) {
+        const profile = process.env.DELIGHT_CLAUDE_PROFILE;
         process.env.CLAUDE_CONFIG_DIR = path.join(os.homedir(), `.claude-${profile}`);
     }
 }
 
 // Allow overriding which Claude SDK/CLI module to load
 // Set DELIGHT_CLAUDE_CLI to a package name or absolute path
-const customCliModule = process.env.DELIGHT_CLAUDE_CLI || process.env.HAPPY_CLAUDE_CLI;
+const customCliModule = process.env.DELIGHT_CLAUDE_CLI;
 const defaultTarget = '@anthropic-ai/claude-code/cli.js';
 
 function resolveDefaultCliModule() {
@@ -630,7 +630,7 @@ async function main() {
         maybePump();
     };
 
-    // Happy parity: start Claude immediately in remote mode so we don't pay the
+    // Delight parity: start Claude immediately in remote mode so we don't pay the
     // spawn cost on the first message (and can warm caches / load context).
     //
     // Claude Code CLI will remain idle until it receives the first stream-json

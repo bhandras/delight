@@ -47,7 +47,7 @@ func deriveSecretKeyTreeChild(chainCode []byte, index string) ([]byte, []byte, e
 // DeriveContentKeyPair derives the content keypair from the master secret.
 // This mirrors Encryption.create() in the JS client.
 func DeriveContentKeyPair(master []byte) (*[32]byte, *[32]byte, error) {
-	seed, err := DeriveKey(master, "Happy EnCoder", []string{"content"})
+	seed, err := DeriveKey(master, "Delight EnCoder", []string{"content"})
 	if err != nil {
 		return nil, nil, err
 	}

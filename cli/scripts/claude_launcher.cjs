@@ -9,10 +9,10 @@ process.env.DISABLE_AUTOUPDATER = '1';
 // - DELIGHT_CLAUDE_CONFIG_DIR: absolute path to a config dir
 // - DELIGHT_CLAUDE_PROFILE: shortcut to ~/.claude-<profile>
 if (!process.env.CLAUDE_CONFIG_DIR) {
-    if (process.env.DELIGHT_CLAUDE_CONFIG_DIR || process.env.HAPPY_CLAUDE_CONFIG_DIR) {
-        process.env.CLAUDE_CONFIG_DIR = process.env.DELIGHT_CLAUDE_CONFIG_DIR || process.env.HAPPY_CLAUDE_CONFIG_DIR;
-    } else if (process.env.DELIGHT_CLAUDE_PROFILE || process.env.HAPPY_CLAUDE_PROFILE) {
-        const profile = process.env.DELIGHT_CLAUDE_PROFILE || process.env.HAPPY_CLAUDE_PROFILE;
+    if (process.env.DELIGHT_CLAUDE_CONFIG_DIR) {
+        process.env.CLAUDE_CONFIG_DIR = process.env.DELIGHT_CLAUDE_CONFIG_DIR;
+    } else if (process.env.DELIGHT_CLAUDE_PROFILE) {
+        const profile = process.env.DELIGHT_CLAUDE_PROFILE;
         process.env.CLAUDE_CONFIG_DIR = require('path').join(os.homedir(), `.claude-${profile}`);
     }
 }
@@ -120,7 +120,7 @@ module.paths.unshift(nodeModulesPath);
 // Allow overriding which Claude CLI module to load (supports multiple installs)
 // Set DELIGHT_CLAUDE_CLI to a package name or absolute path, e.g.:
 //   DELIGHT_CLAUDE_CLI=claude-work    or    DELIGHT_CLAUDE_CLI=/path/to/cli.js
-const customCliModule = process.env.DELIGHT_CLAUDE_CLI || process.env.HAPPY_CLAUDE_CLI;
+const customCliModule = process.env.DELIGHT_CLAUDE_CLI;
 const defaultTarget = '@anthropic-ai/claude-code/cli.js';
 const { execSync } = require('child_process');
 

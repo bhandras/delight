@@ -142,7 +142,7 @@ func parseTerminalURL(qrURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parse url: %w", err)
 	}
-	if parsed.Scheme != "delight" && parsed.Scheme != "happy" {
+	if parsed.Scheme != "delight" {
 		return "", fmt.Errorf("unsupported scheme: %s", parsed.Scheme)
 	}
 	if parsed.Host != "terminal" {

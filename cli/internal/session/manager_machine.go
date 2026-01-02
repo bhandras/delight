@@ -19,9 +19,9 @@ func (m *Manager) registerMachineRPCHandlers() {
 
 	prefix := m.machineID + ":"
 
-	m.machineRPC.RegisterHandler(prefix+"spawn-happy-session", func(params json.RawMessage) (json.RawMessage, error) {
-		wire.DumpToTestdata("rpc_machine_spawn_happy_session", params)
-		var req wire.SpawnHappySessionRequest
+	m.machineRPC.RegisterHandler(prefix+"spawn-session", func(params json.RawMessage) (json.RawMessage, error) {
+		wire.DumpToTestdata("rpc_machine_spawn_session", params)
+		var req wire.SpawnSessionRequest
 		if err := json.Unmarshal(params, &req); err != nil {
 			return nil, err
 		}
@@ -32,7 +32,7 @@ func (m *Manager) registerMachineRPCHandlers() {
 		if _, err := os.Stat(req.Directory); err != nil {
 			if os.IsNotExist(err) {
 				if !req.ApprovedNewDirectoryCreation {
-					return json.Marshal(wire.SpawnHappySessionResponse{
+					return json.Marshal(wire.SpawnSessionResponse{
 						Type:      "requestToApproveDirectoryCreation",
 						Directory: req.Directory,
 					})
@@ -53,7 +53,7 @@ func (m *Manager) registerMachineRPCHandlers() {
 			return nil, fmt.Errorf("session id not assigned")
 		}
 
-		return json.Marshal(wire.SpawnHappySessionResponse{
+		return json.Marshal(wire.SpawnSessionResponse{
 			Type:      "success",
 			SessionID: sessionID,
 		})

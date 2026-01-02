@@ -1,5 +1,6 @@
 cli/build/
 cli/delight
+cli/node_modules/
 ios/DelightHarness.xcodeproj/project.xcworkspace/
 ios/DelightHarness.xcodeproj/xcuserdata/
 .DS_Store

@@ -224,9 +224,9 @@ func pollForTerminalAuth(cfg *config.Config, publicKeyB64 string, privateKey *[3
 
 // saveCredentials saves the account secret and access token
 func saveCredentials(cfg *config.Config, secret []byte, token string) error {
-	// Ensure happy home directory exists
+	// Ensure Delight home directory exists
 	if err := os.MkdirAll(cfg.DelightHome, 0755); err != nil {
-		return fmt.Errorf("failed to create happy home directory: %w", err)
+		return fmt.Errorf("failed to create delight home directory: %w", err)
 	}
 
 	// Save the account secret (master.key) using storage package (which base64-encodes it)

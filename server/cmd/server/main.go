@@ -44,8 +44,8 @@ func main() {
 	defer db.Close()
 
 	// Dev-only: prune all messages to clear bad legacy payloads
-	if os.Getenv("HAPPY_DEV_PRUNE_MESSAGES") == "1" || os.Getenv("HAPPY_DEV_PRUNE_MESSAGES") == "true" {
-		logger.Warnf("HAPPY_DEV_PRUNE_MESSAGES enabled - pruning session_messages table")
+	if os.Getenv("DELIGHT_DEV_PRUNE_MESSAGES") == "1" || os.Getenv("DELIGHT_DEV_PRUNE_MESSAGES") == "true" {
+		logger.Warnf("DELIGHT_DEV_PRUNE_MESSAGES enabled - pruning session_messages table")
 		if err := debug.PruneMessages(db.DB); err != nil {
 			logger.Warnf("Failed to prune messages: %v", err)
 		}
@@ -86,7 +86,7 @@ func main() {
 
 	// Root endpoint - returns plain text for client validation
 	router.GET("/", func(c *gin.Context) {
-		c.String(200, "Welcome to Happy Server!")
+		c.String(200, "Welcome to Delight Server!")
 	})
 
 	// Initialize handlers
@@ -181,7 +181,7 @@ func main() {
 
 	// Start HTTP server
 	addr := fmt.Sprintf(":%d", cfg.Port)
-	logger.Infof("Happy Server starting on http://localhost%s", addr)
+	logger.Infof("Delight Server starting on http://localhost%s", addr)
 	logger.Infof("Database: %s", cfg.DatabasePath)
 	logger.Infof("JWT signing enabled")
 

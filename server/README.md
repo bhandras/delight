@@ -109,5 +109,4 @@ MIT - Use freely, modify as needed, self-host anywhere.
 
 ## Credits
 
-This is a clean-room implementation based on analyzing the Happy iOS app's protocol.
-Original Happy app: https://github.com/slopus/happy
+This server is part of the Delight stack and implements the Delight protocol.

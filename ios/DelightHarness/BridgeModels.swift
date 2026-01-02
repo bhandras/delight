@@ -296,9 +296,9 @@ struct MachineMetadata {
         return MachineMetadata(
             host: payload.host,
             platform: payload.platform,
-            cliVersion: payload.happyCliVersion ?? payload.cliVersion,
+            cliVersion: payload.cliVersion,
             homeDir: payload.homeDir,
-            delightHomeDir: payload.happyHomeDir
+            delightHomeDir: payload.delightHomeDir
         )
     }
 }
@@ -462,10 +462,9 @@ private struct SessionAgentRequestPayload: Decodable {
 private struct MachineMetadataPayload: Decodable {
     let host: String?
     let platform: String?
-    let happyCliVersion: String?
     let cliVersion: String?
     let homeDir: String?
-    let happyHomeDir: String?
+    let delightHomeDir: String?
 }
 
 /// DaemonStatePayload decodes daemon state JSON.

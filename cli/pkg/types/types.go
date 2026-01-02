@@ -18,7 +18,7 @@ type Metadata struct {
 	OS              string `json:"os"`
 	MachineID       string `json:"machineId"`
 	HomeDir         string `json:"homeDir"`
-	DelightHomeDir  string `json:"happyHomeDir"`
+	DelightHomeDir  string `json:"delightHomeDir"`
 	Flavor          string `json:"flavor,omitempty"`
 	ClaudeSessionID string `json:"claudeSessionId,omitempty"`
 }
@@ -105,9 +105,9 @@ type AgentMessage struct {
 type MachineMetadata struct {
 	Host              string `json:"host"`
 	Platform          string `json:"platform"`
-	DelightCliVersion string `json:"happyCliVersion"`
+	DelightCliVersion string `json:"cliVersion"`
 	HomeDir           string `json:"homeDir"`
-	DelightHomeDir    string `json:"happyHomeDir"`
+	DelightHomeDir    string `json:"delightHomeDir"`
 }
 
 // DaemonState represents daemon runtime state

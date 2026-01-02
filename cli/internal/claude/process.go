@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -117,7 +116,6 @@ func NewProcess(workDir string, debug bool) (*Process, error) {
 
 // findLauncher locates the claude_launcher.cjs script
 func findLauncher() (string, error) {
-	// Get the directory of the happy executable
 	execPath, err := os.Executable()
 	if err != nil {
 		return "", err
@@ -131,14 +129,6 @@ func findLauncher() (string, error) {
 		filepath.Join(execDir, "..", "scripts", "claude_launcher.cjs"),
 		// Development path - relative to current working directory
 		filepath.Join("scripts", "claude_launcher.cjs"),
-	}
-
-	// Also try from GOPATH/src location for development
-	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
-		homeDir, _ := os.UserHomeDir()
-		candidates = append(candidates,
-			filepath.Join(homeDir, "work", "happy-workspace", "delight", "cli", "scripts", "claude_launcher.cjs"),
-		)
 	}
 
 	for _, path := range candidates {
@@ -160,9 +150,20 @@ func buildNodePath() []string {
 	var nodePaths []string
 
 	homeDir, _ := os.UserHomeDir()
+	execPath, _ := os.Executable()
+	execDir := ""
+	if execPath != "" {
+		execDir = filepath.Dir(execPath)
+	}
+	cwd, _ := os.Getwd()
 
 	// Common locations where claude-code might be installed
 	candidates := []string{
+		// Local project install locations (useful in development and when bundled).
+		filepath.Join(execDir, "node_modules"),
+		filepath.Join(execDir, "..", "node_modules"),
+		filepath.Join(cwd, "node_modules"),
+		filepath.Join(cwd, "cli", "node_modules"),
 		// Global npm modules (homebrew on macOS)
 		"/opt/homebrew/lib/node_modules",
 		"/usr/local/lib/node_modules",
@@ -174,8 +175,13 @@ func buildNodePath() []string {
 		filepath.Join(homeDir, ".nvm/versions/node"),
 		// Also check task-master-ai's node_modules (where claude-code is often a dep)
 		"/opt/homebrew/lib/node_modules/task-master-ai/node_modules",
-		// Delight CLI's node_modules (sibling project)
-		filepath.Join(homeDir, "work/happy-workspace/delight/cli/node_modules"),
+	}
+
+	existing := filepath.SplitList(os.Getenv("NODE_PATH"))
+	for _, path := range existing {
+		if path != "" {
+			nodePaths = append(nodePaths, path)
+		}
 	}
 
 	for _, path := range candidates {
@@ -184,11 +190,26 @@ func buildNodePath() []string {
 		}
 	}
 
-	if len(nodePaths) > 0 {
-		return []string{"NODE_PATH=" + filepath.Join(nodePaths[0], "..") + ":" + strings.Join(nodePaths, ":")}
+	if len(nodePaths) == 0 {
+		return nil
 	}
 
-	return nil
+	seen := make(map[string]struct{}, len(nodePaths))
+	deduped := make([]string, 0, len(nodePaths))
+	for _, path := range nodePaths {
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		deduped = append(deduped, path)
+	}
+
+	// Only override NODE_PATH if we found at least one existing directory to
+	// include. Use the platform path list separator (':' on unix, ';' on windows).
+	return []string{"NODE_PATH=" + strings.Join(deduped, string(os.PathListSeparator))}
 }
 
 // Start starts the Claude process and begins reading fd 3 messages

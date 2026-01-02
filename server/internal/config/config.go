@@ -15,7 +15,7 @@ type Config struct {
 }
 
 func Load() (*Config, error) {
-	masterSecret := getenvFirst("DELIGHT_MASTER_SECRET", "HAPPY_MASTER_SECRET")
+	masterSecret := os.Getenv("DELIGHT_MASTER_SECRET")
 	if masterSecret == "" {
 		return nil, fmt.Errorf("DELIGHT_MASTER_SECRET environment variable is required")
 	}
@@ -44,11 +44,4 @@ func Load() (*Config, error) {
 		Debug:          debug,
 		AllowedOrigins: []string{"*"}, // For self-hosted, allow all origins
 	}, nil
-}
-
-func getenvFirst(primary, fallback string) string {
-	if val := os.Getenv(primary); val != "" {
-		return val
-	}
-	return os.Getenv(fallback)
 }

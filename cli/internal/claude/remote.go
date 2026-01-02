@@ -160,11 +160,6 @@ func findBridge() (string, error) {
 		filepath.Join("scripts", "claude_remote_bridge.cjs"),
 	}
 
-	homeDir, _ := os.UserHomeDir()
-	candidates = append(candidates,
-		filepath.Join(homeDir, "work", "happy-workspace", "delight", "cli", "scripts", "claude_remote_bridge.cjs"),
-	)
-
 	for _, path := range candidates {
 		if _, err := os.Stat(path); err == nil {
 			absPath, err := filepath.Abs(path)

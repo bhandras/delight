@@ -43,7 +43,7 @@ func (m *JWTManager) CreateToken(userID string, extras map[string]interface{}) (
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			NotBefore: jwt.NewNumericDate(time.Now()),
-			Issuer:    "happy-server",
+			Issuer:    "delight-server",
 		},
 	}
 
