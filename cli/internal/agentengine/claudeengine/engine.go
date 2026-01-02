@@ -41,6 +41,78 @@ const (
 	claudePermissionDeny = "deny"
 )
 
+const (
+	// claudeMetaKeyModel is the stream-json metadata key used to select a model.
+	claudeMetaKeyModel = "model"
+	// claudeMetaKeyPermissionMode is the stream-json metadata key used to select
+	// a permission mode preset.
+	claudeMetaKeyPermissionMode = "permissionMode"
+)
+
+const (
+	// claudePermissionModeDefault is Claude Code's default permission mode.
+	claudePermissionModeDefault = "default"
+	// claudePermissionModePlan is Claude Code's plan-only permission mode.
+	claudePermissionModePlan = "plan"
+	// claudePermissionModeAcceptEdits is Claude Code's "accept edits" permission mode.
+	claudePermissionModeAcceptEdits = "acceptEdits"
+	// claudePermissionModeBypassPermissions is Claude Code's "bypass permissions" mode.
+	claudePermissionModeBypassPermissions = "bypassPermissions"
+)
+
+// normalizeClaudeConfig returns a stable Claude config snapshot.
+//
+// Claude ignores reasoning effort; permission mode defaults to "default".
+func normalizeClaudeConfig(cfg agentengine.AgentConfig) agentengine.AgentConfig {
+	permissionMode := strings.TrimSpace(cfg.PermissionMode)
+	switch strings.ToLower(permissionMode) {
+	case "":
+		permissionMode = claudePermissionModeDefault
+	case "default":
+		permissionMode = claudePermissionModeDefault
+	case "plan":
+		permissionMode = claudePermissionModePlan
+	case "acceptedits":
+		permissionMode = claudePermissionModeAcceptEdits
+	case "bypasspermissions":
+		permissionMode = claudePermissionModeBypassPermissions
+	}
+
+	out := agentengine.AgentConfig{
+		Model:          strings.TrimSpace(cfg.Model),
+		PermissionMode: permissionMode,
+	}
+	// "default" means "no explicit override" (do not pass --model to upstream).
+	if strings.EqualFold(out.Model, "default") {
+		out.Model = ""
+	}
+	return out
+}
+
+// mergeClaudeMessageMeta returns a meta object that includes stable engine
+// settings while preserving any caller-provided metadata keys.
+func mergeClaudeMessageMeta(meta map[string]any, cfg agentengine.AgentConfig) map[string]any {
+	cfg = normalizeClaudeConfig(cfg)
+
+	if meta == nil {
+		meta = make(map[string]any, 2)
+	} else {
+		// Copy to avoid mutating caller-provided maps (which may be reused).
+		copyMeta := make(map[string]any, len(meta)+2)
+		for k, v := range meta {
+			copyMeta[k] = v
+		}
+		meta = copyMeta
+	}
+
+	// Always set permissionMode so switching back to "default" takes effect.
+	meta[claudeMetaKeyPermissionMode] = cfg.PermissionMode
+	if cfg.Model != "" {
+		meta[claudeMetaKeyModel] = cfg.Model
+	}
+	return meta
+}
+
 // Engine adapts Claude local/remote runners to agentengine.AgentEngine.
 type Engine struct {
 	mu sync.Mutex
@@ -49,6 +121,7 @@ type Engine struct {
 	debug   bool
 
 	requester agentengine.PermissionRequester
+	config    agentengine.AgentConfig
 
 	events chan agentengine.Event
 	closed chan struct{}
@@ -78,6 +151,7 @@ func New(workDir string, requester agentengine.PermissionRequester, debug bool) 
 		workDir:      workDir,
 		debug:        debug,
 		requester:    requester,
+		config:       agentengine.AgentConfig{},
 		events:       make(chan agentengine.Event, 128),
 		closed:       make(chan struct{}),
 		waitCh:       make(chan struct{}),
@@ -98,6 +172,10 @@ func (e *Engine) Start(ctx context.Context, spec agentengine.EngineStartSpec) er
 	if e == nil {
 		return fmt.Errorf("claude engine is nil")
 	}
+
+	e.mu.Lock()
+	e.config = normalizeClaudeConfig(spec.Config)
+	e.mu.Unlock()
 
 	switch spec.Mode {
 	case agentengine.ModeLocal:
@@ -163,11 +241,14 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 
 	e.mu.Lock()
 	bridge := e.remoteBridge
+	cfg := e.config
 	e.mu.Unlock()
 	if bridge == nil {
 		return fmt.Errorf("claude remote bridge not running")
 	}
-	return bridge.SendUserMessage(msg.Text, msg.Meta)
+
+	meta := mergeClaudeMessageMeta(msg.Meta, cfg)
+	return bridge.SendUserMessage(msg.Text, meta)
 }
 
 // Abort implements agentengine.AgentEngine.
@@ -183,6 +264,50 @@ func (e *Engine) Abort(ctx context.Context) error {
 		return nil
 	}
 	return bridge.Abort()
+}
+
+// Capabilities implements agentengine.AgentEngine.
+func (e *Engine) Capabilities() agentengine.AgentCapabilities {
+	// Claude supports session-scoped model selection, but the upstream CLI only
+	// applies it at process start. Delight provides best-effort application by
+	// passing the selected model as stream-json metadata; the bridge respawns
+	// the underlying Claude process when the model changes.
+	return agentengine.AgentCapabilities{
+		Models: []string{
+			"default",
+			"sonnet",
+			"opus",
+			"haiku",
+		},
+		PermissionModes: []string{
+			claudePermissionModeDefault,
+			claudePermissionModePlan,
+			claudePermissionModeAcceptEdits,
+			claudePermissionModeBypassPermissions,
+		},
+	}
+}
+
+// CurrentConfig implements agentengine.AgentEngine.
+func (e *Engine) CurrentConfig() agentengine.AgentConfig {
+	if e == nil {
+		return agentengine.AgentConfig{}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.config
+}
+
+// ApplyConfig implements agentengine.AgentEngine.
+func (e *Engine) ApplyConfig(ctx context.Context, cfg agentengine.AgentConfig) error {
+	_ = ctx
+	e.mu.Lock()
+	e.config = normalizeClaudeConfig(cfg)
+	e.mu.Unlock()
+
+	// Model/permission mode are applied to the upstream Claude process by the
+	// Node bridge when the next user message is sent.
+	return nil
 }
 
 // Wait implements agentengine.AgentEngine.

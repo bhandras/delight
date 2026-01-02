@@ -237,6 +237,10 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 			r.engineRemoteAbort(ctx, e)
 		case effPersistAgentState:
 			r.persistAgentState(ctx, e, emit)
+		case effApplyEngineConfig:
+			r.applyEngineConfig(ctx, e)
+		case effQueryAgentEngineSettings:
+			r.queryAgentEngineSettings(ctx, e, emit)
 		case effStartDesktopTakebackWatcher:
 			r.startDesktopTakebackWatcher(ctx, emit)
 		case effStopDesktopTakebackWatcher:

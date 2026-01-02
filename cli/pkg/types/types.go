@@ -25,9 +25,30 @@ type Metadata struct {
 
 // AgentState represents agent state (decrypted)
 type AgentState struct {
+	// AgentType identifies which upstream engine implementation is active for
+	// this session (e.g. "codex", "claude", "acp", "fake").
+	AgentType string `json:"agentType,omitempty"`
+
 	// ControlledByUser reports whether the desktop currently controls the
 	// session's agent loop.
 	ControlledByUser bool `json:"controlledByUser"`
+
+	// Model is the engine-specific model identifier selected for this session.
+	//
+	// An empty string means "use engine default".
+	Model string `json:"model,omitempty"`
+
+	// ReasoningEffort is the reasoning effort preset selected for this session.
+	//
+	// This is primarily used by Codex and maps to `model_reasoning_effort`:
+	// minimal|low|medium|high|xhigh.
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+
+	// PermissionMode selects the session's permission/approval mode.
+	//
+	// Canonical Delight values are: default|read-only|safe-yolo|yolo.
+	// An empty string means "default".
+	PermissionMode string `json:"permissionMode,omitempty"`
 
 	// Requests contains pending permission requests keyed by request id.
 	Requests map[string]AgentPendingRequest `json:"requests,omitempty"`

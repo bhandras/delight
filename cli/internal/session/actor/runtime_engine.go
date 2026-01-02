@@ -199,6 +199,7 @@ func (r *Runtime) startEngineLocal(ctx context.Context, eff effStartLocalRunner,
 		Mode:        agentengine.ModeLocal,
 		ResumeToken: strings.TrimSpace(eff.Resume),
 		RolloutPath: strings.TrimSpace(eff.RolloutPath),
+		Config:      eff.Config,
 	}); err != nil {
 		emit(evRunnerExited{Gen: eff.Gen, Mode: ModeLocal, Err: err})
 		return
@@ -270,6 +271,7 @@ func (r *Runtime) startEngineRemote(ctx context.Context, eff effStartRemoteRunne
 		WorkDir:     workDir,
 		Mode:        agentengine.ModeRemote,
 		ResumeToken: strings.TrimSpace(eff.Resume),
+		Config:      eff.Config,
 	}); err != nil {
 		emit(evRunnerExited{Gen: eff.Gen, Mode: ModeRemote, Err: err})
 		return
@@ -382,4 +384,77 @@ func (r *Runtime) engineRemoteAbort(ctx context.Context, eff effRemoteAbort) {
 		return
 	}
 	_ = engine.Abort(ctx)
+}
+
+// applyEngineConfig best-effort applies durable agent configuration to a
+// running engine.
+//
+// The reducer emits this only for remote-mode sessions, but the runtime still
+// validates the current generation to avoid applying stale updates after a
+// restart.
+func (r *Runtime) applyEngineConfig(ctx context.Context, eff effApplyEngineConfig) {
+	r.mu.Lock()
+	engine := r.engine
+	gen := r.engineRemoteGen
+	active := r.engineRemoteActive
+	r.mu.Unlock()
+
+	if engine == nil || !active {
+		return
+	}
+	if gen != 0 && eff.Gen != 0 && eff.Gen != gen {
+		return
+	}
+
+	// Apply synchronously under the same mutex used for remote sends so the
+	// config takes effect before the next outgoing message.
+	r.engineSendMu.Lock()
+	defer r.engineSendMu.Unlock()
+	if err := engine.ApplyConfig(ctx, eff.Config); err != nil && r.debug {
+		logger.Debugf("runtime: apply config failed: %v", err)
+	}
+}
+
+func (r *Runtime) queryAgentEngineSettings(ctx context.Context, eff effQueryAgentEngineSettings, emit func(framework.Input)) {
+	if eff.Reply == nil {
+		return
+	}
+
+	snapshot := AgentEngineSettingsSnapshot{
+		AgentType:       eff.AgentType,
+		DesiredConfig:   eff.Desired,
+		EffectiveConfig: eff.Desired,
+	}
+
+	r.mu.Lock()
+	existingEngine := r.engine
+	engineActive := r.engineLocalActive || r.engineRemoteActive
+	r.mu.Unlock()
+
+	// Only Codex/Claude are currently implemented as agentengine.AgentEngine
+	// instances. For other agent types (ACP/fake), return stable defaults.
+	engine := existingEngine
+	if engine == nil {
+		engine = r.ensureEngine(ctx, emit)
+	}
+	if engine == nil {
+		snapshot.Capabilities = agentengine.AgentCapabilities{
+			PermissionModes: []string{"default", "read-only", "safe-yolo", "yolo"},
+		}
+	} else {
+		snapshot.Capabilities = engine.Capabilities()
+		// If the engine is already running (or at least already instantiated by
+		// the runtime), treat it as the source of truth for the effective config.
+		// Otherwise, report the durable desired config as the effective snapshot
+		// to avoid accidental side effects (e.g. mutating a Codex session) during
+		// a pure "read" RPC.
+		if engineActive {
+			snapshot.EffectiveConfig = engine.CurrentConfig()
+		}
+	}
+
+	select {
+	case eff.Reply <- snapshot:
+	default:
+	}
 }

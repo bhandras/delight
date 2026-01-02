@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/bhandras/delight/cli/internal/actor"
+	"github.com/bhandras/delight/cli/internal/agentengine"
 	"github.com/bhandras/delight/cli/pkg/types"
 )
 
@@ -100,6 +101,14 @@ type State struct {
 	// PersistRetryRemaining bounds retries on version-mismatch errors. Set to 1
 	// when the reducer schedules a persist, and decremented on retry.
 	PersistRetryRemaining int
+
+	// PersistInFlight reports whether an agent state persistence request is
+	// currently in flight.
+	PersistInFlight bool
+
+	// PersistWaiters contains callers waiting for agent state persistence to
+	// complete. Reducers must never block on these channels.
+	PersistWaiters []chan error
 
 	// Connection state (observability + UI gating).
 	WSConnected      bool
@@ -255,6 +264,17 @@ type cmdPersistAgentStateImmediate struct {
 // isSessionCommand marks cmdPersistAgentStateImmediate as a session command.
 func (cmdPersistAgentStateImmediate) isSessionCommand() {}
 
+// cmdWaitForAgentStatePersist requests that the current agent state be
+// persisted immediately and completes Reply once the persistence attempt
+// succeeds or fails.
+type cmdWaitForAgentStatePersist struct {
+	actor.InputBase
+	Reply chan error
+}
+
+// isSessionCommand marks cmdWaitForAgentStatePersist as a session command.
+func (cmdWaitForAgentStatePersist) isSessionCommand() {}
+
 // cmdSetControlledByUser updates AgentState.ControlledByUser and schedules
 // persistence without affecting runner lifecycle. This is used by non-Claude
 // agents that still need the phone UI to reflect control ownership.
@@ -266,6 +286,55 @@ type cmdSetControlledByUser struct {
 
 // isSessionCommand marks cmdSetControlledByUser as a session command.
 func (cmdSetControlledByUser) isSessionCommand() {}
+
+// cmdSetAgentConfig updates durable agent configuration for the session.
+//
+// The reducer treats empty values as "no change" so callers can update a single
+// field without having to round-trip the current configuration.
+type cmdSetAgentConfig struct {
+	actor.InputBase
+
+	// Model selects the upstream model identifier.
+	Model string
+	// PermissionMode selects the approval/sandbox preset.
+	PermissionMode string
+	// ReasoningEffort selects a Codex reasoning effort preset.
+	ReasoningEffort string
+
+	// Reply is completed with an error if the config cannot be applied.
+	Reply chan error
+}
+
+// isSessionCommand marks cmdSetAgentConfig as a session command.
+func (cmdSetAgentConfig) isSessionCommand() {}
+
+// AgentEngineSettingsSnapshot is a best-effort snapshot of the agent engine's
+// supported settings and current configuration.
+//
+// The reducer does not compute this directly; it is fulfilled by the runtime so
+// the engine remains the single source of truth for capabilities.
+type AgentEngineSettingsSnapshot struct {
+	// AgentType is the session's current agent type (e.g. codex/claude).
+	AgentType agentengine.AgentType
+	// Capabilities reports which knobs are supported.
+	Capabilities agentengine.AgentCapabilities
+	// DesiredConfig is the durable config stored in agentState.
+	DesiredConfig agentengine.AgentConfig
+	// EffectiveConfig is the engine-reported current config (best-effort).
+	EffectiveConfig agentengine.AgentConfig
+	// Error contains a human-readable failure, if any.
+	Error string
+}
+
+// cmdGetAgentEngineSettings requests querying the agent engine for supported
+// settings + current configuration.
+type cmdGetAgentEngineSettings struct {
+	actor.InputBase
+	Reply chan AgentEngineSettingsSnapshot
+}
+
+// isSessionCommand marks cmdGetAgentEngineSettings as a session command.
+func (cmdGetAgentEngineSettings) isSessionCommand() {}
 
 // Events emitted by the runtime back into the reducer.
 
@@ -464,6 +533,7 @@ type effStartLocalRunner struct {
 	WorkDir     string
 	Resume      string
 	RolloutPath string
+	Config      agentengine.AgentConfig
 }
 
 // isSessionEffect marks effStartLocalRunner as a session effect.
@@ -482,10 +552,35 @@ type effStartRemoteRunner struct {
 	Gen     int64
 	WorkDir string
 	Resume  string
+	Config  agentengine.AgentConfig
 }
 
 // isSessionEffect marks effStartRemoteRunner as a session effect.
 func (effStartRemoteRunner) isSessionEffect() {}
+
+// effApplyEngineConfig requests applying the given agent configuration to the
+// currently-running engine (best-effort).
+type effApplyEngineConfig struct {
+	actor.EffectBase
+	Gen    int64
+	Config agentengine.AgentConfig
+}
+
+// isSessionEffect marks effApplyEngineConfig as a session effect.
+func (effApplyEngineConfig) isSessionEffect() {}
+
+// effQueryAgentEngineSettings requests a best-effort snapshot of engine
+// capabilities + current configuration.
+type effQueryAgentEngineSettings struct {
+	actor.EffectBase
+	Gen       int64
+	AgentType agentengine.AgentType
+	Desired   agentengine.AgentConfig
+	Reply     chan AgentEngineSettingsSnapshot
+}
+
+// isSessionEffect marks effQueryAgentEngineSettings as a session effect.
+func (effQueryAgentEngineSettings) isSessionEffect() {}
 
 type effStopRemoteRunner struct {
 	actor.EffectBase

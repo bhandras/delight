@@ -295,6 +295,7 @@ func (m *Manager) initSessionActor() {
 
 	// Initialize agent state in a server-compatible shape (plaintext JSON).
 	agentState := types.AgentState{
+		AgentType:         m.agent,
 		ControlledByUser:  true,
 		Requests:          make(map[string]types.AgentPendingRequest),
 		CompletedRequests: make(map[string]types.AgentCompletedRequest),

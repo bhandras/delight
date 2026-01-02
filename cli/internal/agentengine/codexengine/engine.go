@@ -85,12 +85,13 @@ type Engine struct {
 
 	events chan agentengine.Event
 
-	remoteClient         *codex.Client
-	remoteSessionActive  bool
-	remoteEnabled        bool
-	remotePermissionMode string
-	remoteModel          string
-	remoteWaitStarted    bool
+	remoteClient          *codex.Client
+	remoteSessionActive   bool
+	remoteEnabled         bool
+	remotePermissionMode  string
+	remoteModel           string
+	remoteReasoningEffort string
+	remoteWaitStarted     bool
 
 	localCmd               *exec.Cmd
 	localCancel            context.CancelFunc
@@ -180,6 +181,9 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 	client := e.remoteClient
 	active := e.remoteSessionActive
 	enabled := e.remoteEnabled
+	permissionMode := e.remotePermissionMode
+	model := e.remoteModel
+	reasoningEffort := e.remoteReasoningEffort
 	e.mu.Unlock()
 	if client == nil {
 		return fmt.Errorf("codex remote client not started")
@@ -188,16 +192,9 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 		return fmt.Errorf("codex remote mode not active")
 	}
 
-	permissionMode, model, modeChanged := resolveMode(e.remotePermissionMode, e.remoteModel, msg.Meta)
-	if modeChanged {
-		client.ClearSession()
-		e.mu.Lock()
-		e.remoteSessionActive = false
-		e.remotePermissionMode = permissionMode
-		e.remoteModel = model
-		active = false
-		e.mu.Unlock()
-	}
+	permissionMode = normalizePermissionMode(permissionMode)
+	model = strings.TrimSpace(model)
+	reasoningEffort = strings.TrimSpace(reasoningEffort)
 
 	cfg := codex.SessionConfig{
 		Prompt:         msg.Text,
@@ -205,6 +202,11 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 		Sandbox:        sandboxPolicy(permissionMode),
 		Cwd:            e.workDir,
 		Model:          model,
+	}
+	if reasoningEffort != "" {
+		cfg.Config = map[string]interface{}{
+			"model_reasoning_effort": reasoningEffort,
+		}
 	}
 
 	if !active {
@@ -289,13 +291,18 @@ func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSp
 
 		e.mu.Lock()
 		e.remoteClient = client
-		e.remotePermissionMode = permissionModeDefault
+		e.remotePermissionMode = normalizePermissionMode(spec.Config.PermissionMode)
+		e.remoteModel = strings.TrimSpace(spec.Config.Model)
+		e.remoteReasoningEffort = strings.TrimSpace(spec.Config.ReasoningEffort)
 		e.remoteEnabled = true
 		e.remoteWaitStarted = false
 		e.mu.Unlock()
 	} else {
 		e.mu.Lock()
 		e.remoteEnabled = true
+		e.remotePermissionMode = normalizePermissionMode(spec.Config.PermissionMode)
+		e.remoteModel = strings.TrimSpace(spec.Config.Model)
+		e.remoteReasoningEffort = strings.TrimSpace(spec.Config.ReasoningEffort)
 		e.mu.Unlock()
 	}
 
@@ -311,6 +318,93 @@ func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSp
 
 	e.tryEmit(agentengine.EvReady{Mode: agentengine.ModeRemote})
 	return nil
+}
+
+// Capabilities implements agentengine.AgentEngine.
+func (e *Engine) Capabilities() agentengine.AgentCapabilities {
+	e.mu.Lock()
+	model := strings.TrimSpace(e.remoteModel)
+	e.mu.Unlock()
+
+	reasoningEfforts := []string{
+		"low",
+		"medium",
+		"high",
+		"xhigh",
+	}
+	if model == "gpt-5.1-codex-mini" {
+		// Codex mini only supports medium/high.
+		reasoningEfforts = []string{
+			"medium",
+			"high",
+		}
+	}
+
+	return agentengine.AgentCapabilities{
+		Models: []string{
+			"gpt-5.2-codex",
+			"gpt-5.1-codex-max",
+			"gpt-5.1-codex-mini",
+			"gpt-5.2",
+		},
+		PermissionModes: []string{
+			"default",
+			"read-only",
+			"safe-yolo",
+			"yolo",
+		},
+		ReasoningEfforts: reasoningEfforts,
+	}
+}
+
+// CurrentConfig implements agentengine.AgentEngine.
+func (e *Engine) CurrentConfig() agentengine.AgentConfig {
+	if e == nil {
+		return agentengine.AgentConfig{}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return agentengine.AgentConfig{
+		Model:           e.remoteModel,
+		PermissionMode:  e.remotePermissionMode,
+		ReasoningEffort: e.remoteReasoningEffort,
+	}
+}
+
+// ApplyConfig implements agentengine.AgentEngine.
+func (e *Engine) ApplyConfig(ctx context.Context, cfg agentengine.AgentConfig) error {
+	_ = ctx
+
+	model := strings.TrimSpace(cfg.Model)
+	permissionMode := normalizePermissionMode(cfg.PermissionMode)
+	reasoningEffort := strings.TrimSpace(cfg.ReasoningEffort)
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.remoteModel == model && e.remotePermissionMode == permissionMode && e.remoteReasoningEffort == reasoningEffort {
+		return nil
+	}
+
+	// Best-effort: Codex applies model/effort/approval policy at session start.
+	// Clearing the session ensures subsequent turns use the updated config.
+	if e.remoteClient != nil {
+		e.remoteClient.ClearSession()
+	}
+	e.remoteSessionActive = false
+	e.remoteModel = model
+	e.remotePermissionMode = permissionMode
+	e.remoteReasoningEffort = reasoningEffort
+	return nil
+}
+
+// normalizePermissionMode returns a stable permission mode value for Codex.
+func normalizePermissionMode(mode string) string {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		return permissionModeDefault
+	}
+	return mode
 }
 
 // startLocal starts a Codex local TUI process and a rollout tailer.

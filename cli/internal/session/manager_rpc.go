@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
 	"github.com/bhandras/delight/shared/wire"
 )
 
@@ -59,5 +60,85 @@ func (m *Manager) registerRPCHandlers() {
 
 		m.HandlePermissionResponse(req.RequestID, req.Allow, req.Message)
 		return json.Marshal(wire.SuccessResponse{Success: true})
+	})
+
+	// Agent-config handler - update model/effort/permission mode (remote-only).
+	m.rpcManager.RegisterHandler(prefix+"agent-config", func(params json.RawMessage) (json.RawMessage, error) {
+		wire.DumpToTestdata("rpc_session_agent_config", params)
+		var req wire.SetAgentConfigRequest
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, err
+		}
+
+		// Remote-only: require phone control before allowing changes.
+		if m.GetMode() != ModeRemote {
+			return nil, fmt.Errorf("cannot update agent config: not in remote mode")
+		}
+		if m.sessionActor != nil && m.sessionActor.State().AgentState.ControlledByUser {
+			return nil, fmt.Errorf("cannot update agent config: session not phone-controlled")
+		}
+
+		if err := m.SetAgentConfig(req.Model, req.PermissionMode, req.ReasoningEffort); err != nil {
+			// Return a typed response instead of relying on implicit RPC errors.
+			// Some SDK clients treat errors as regular payloads.
+			return json.Marshal(wire.SetAgentConfigResponse{Success: false, Error: err.Error()})
+		}
+
+		agentStateJSON := ""
+		agentStateVersion := int64(0)
+		if m.sessionActor != nil {
+			st := m.sessionActor.State()
+			agentStateJSON = st.AgentStateJSON
+			agentStateVersion = st.AgentStateVersion
+		}
+		return json.Marshal(wire.SetAgentConfigResponse{
+			Success:           true,
+			AgentState:        agentStateJSON,
+			AgentStateVersion: agentStateVersion,
+		})
+	})
+
+	// Agent-capabilities handler - query supported settings + current config.
+	m.rpcManager.RegisterHandler(prefix+"agent-capabilities", func(params json.RawMessage) (json.RawMessage, error) {
+		wire.DumpToTestdata("rpc_session_agent_capabilities", params)
+
+		if m.sessionActor == nil {
+			return json.Marshal(wire.AgentCapabilitiesResponse{Success: false, Error: "session actor not initialized"})
+		}
+
+		reply := make(chan sessionactor.AgentEngineSettingsSnapshot, 1)
+		if !m.sessionActor.Enqueue(sessionactor.GetAgentEngineSettings(reply)) {
+			return json.Marshal(wire.AgentCapabilitiesResponse{Success: false, Error: "failed to schedule agent capabilities query"})
+		}
+
+		select {
+		case <-m.stopCh:
+			return json.Marshal(wire.AgentCapabilitiesResponse{Success: false, Error: "session closed"})
+		case snapshot := <-reply:
+			resp := wire.AgentCapabilitiesResponse{
+				Success:   snapshot.Error == "",
+				AgentType: string(snapshot.AgentType),
+				Error:     snapshot.Error,
+				Capabilities: wire.AgentCapabilities{
+					Models:           snapshot.Capabilities.Models,
+					PermissionModes:  snapshot.Capabilities.PermissionModes,
+					ReasoningEfforts: snapshot.Capabilities.ReasoningEfforts,
+				},
+				DesiredConfig: wire.AgentConfig{
+					Model:           snapshot.DesiredConfig.Model,
+					ReasoningEffort: snapshot.DesiredConfig.ReasoningEffort,
+					PermissionMode:  snapshot.DesiredConfig.PermissionMode,
+				},
+				EffectiveConfig: wire.AgentConfig{
+					Model:           snapshot.EffectiveConfig.Model,
+					ReasoningEffort: snapshot.EffectiveConfig.ReasoningEffort,
+					PermissionMode:  snapshot.EffectiveConfig.PermissionMode,
+				},
+			}
+			if !resp.Success && resp.Error == "" {
+				resp.Error = "failed to fetch agent capabilities"
+			}
+			return json.Marshal(resp)
+		}
 	})
 }

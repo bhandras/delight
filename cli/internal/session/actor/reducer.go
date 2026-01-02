@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/bhandras/delight/cli/internal/actor"
+	"github.com/bhandras/delight/cli/internal/agentengine"
 	"github.com/bhandras/delight/cli/pkg/types"
 )
 
@@ -37,8 +38,14 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 		return reducePersistAgentState(state, in)
 	case cmdPersistAgentStateImmediate:
 		return reducePersistAgentStateImmediate(state, in)
+	case cmdWaitForAgentStatePersist:
+		return reduceWaitForAgentStatePersist(state, in)
 	case cmdSetControlledByUser:
 		return reduceSetControlledByUser(state, in)
+	case cmdSetAgentConfig:
+		return reduceSetAgentConfig(state, in)
+	case cmdGetAgentEngineSettings:
+		return reduceGetAgentEngineSettings(state, in)
 	case cmdShutdown:
 		return reduceShutdown(state, in)
 
@@ -284,6 +291,37 @@ func reducePersistAgentStateImmediate(state State, cmd cmdPersistAgentStateImmed
 	state.AgentStateJSON = cmd.AgentStateJSON
 	state.PersistRetryRemaining = 1
 	state.PersistDebounceTimerArmed = false
+	state.PersistInFlight = true
+	return state, []actor.Effect{
+		effCancelTimer{Name: persistDebounceTimerName},
+		effPersistAgentState{AgentStateJSON: state.AgentStateJSON, ExpectedVersion: state.AgentStateVersion},
+	}
+}
+
+// reduceWaitForAgentStatePersist requests persisting the current agent state
+// immediately and notifies cmd.Reply once persistence succeeds or fails.
+func reduceWaitForAgentStatePersist(state State, cmd cmdWaitForAgentStatePersist) (State, []actor.Effect) {
+	if cmd.Reply == nil {
+		return state, nil
+	}
+	if state.AgentStateJSON == "" {
+		select {
+		case cmd.Reply <- nil:
+		default:
+		}
+		return state, nil
+	}
+
+	state.PersistWaiters = append(state.PersistWaiters, cmd.Reply)
+
+	// If a persist is already in flight, just wait for the eventual ack/fail.
+	if state.PersistInFlight {
+		return state, nil
+	}
+
+	state.PersistRetryRemaining = 1
+	state.PersistDebounceTimerArmed = false
+	state.PersistInFlight = true
 	return state, []actor.Effect{
 		effCancelTimer{Name: persistDebounceTimerName},
 		effPersistAgentState{AgentStateJSON: state.AgentStateJSON, ExpectedVersion: state.AgentStateVersion},
@@ -298,6 +336,93 @@ func reduceSetControlledByUser(state State, cmd cmdSetControlledByUser) (State, 
 	state.AgentState.ControlledByUser = cmd.ControlledByUser
 	state = refreshAgentStateJSON(state)
 	return schedulePersistDebounced(state)
+}
+
+// currentAgentConfig returns the engine configuration derived from the durable
+// session agent state.
+func currentAgentConfig(state State) agentengine.AgentConfig {
+	return agentengine.AgentConfig{
+		Model:           strings.TrimSpace(state.AgentState.Model),
+		PermissionMode:  strings.TrimSpace(state.AgentState.PermissionMode),
+		ReasoningEffort: strings.TrimSpace(state.AgentState.ReasoningEffort),
+	}
+}
+
+// reduceSetAgentConfig updates durable agent configuration (model, permission
+// mode, reasoning effort) and, when a remote runner is active, requests that
+// the engine apply the updated configuration.
+func reduceSetAgentConfig(state State, cmd cmdSetAgentConfig) (State, []actor.Effect) {
+	// Remote-only: config changes must only happen when the phone controls the
+	// session. This prevents surprising local TUI behavior.
+	if state.Mode != ModeRemote || state.AgentState.ControlledByUser {
+		if cmd.Reply != nil {
+			select {
+			case cmd.Reply <- ErrNotRemote:
+			default:
+			}
+		}
+		return state, nil
+	}
+
+	changed := false
+	if model := strings.TrimSpace(cmd.Model); model != "" && model != state.AgentState.Model {
+		state.AgentState.Model = model
+		changed = true
+	}
+	if permissionMode := strings.TrimSpace(cmd.PermissionMode); permissionMode != "" && permissionMode != state.AgentState.PermissionMode {
+		state.AgentState.PermissionMode = permissionMode
+		changed = true
+	}
+	if effort := strings.TrimSpace(cmd.ReasoningEffort); effort != "" && effort != state.AgentState.ReasoningEffort {
+		state.AgentState.ReasoningEffort = effort
+		changed = true
+	}
+
+	if !changed {
+		if cmd.Reply != nil {
+			select {
+			case cmd.Reply <- nil:
+			default:
+			}
+		}
+		return state, nil
+	}
+
+	state = refreshAgentStateJSON(state)
+
+	// Persist immediately so mobile clients see the update after pressing Apply.
+	state, effects := persistAgentStateImmediately(state)
+
+	// If a remote runner is active, request that the engine apply the updated
+	// config best-effort.
+	if state.FSM == StateRemoteRunning {
+		effects = append(effects, effApplyEngineConfig{Gen: state.RunnerGen, Config: currentAgentConfig(state)})
+	}
+
+	if cmd.Reply != nil {
+		select {
+		case cmd.Reply <- nil:
+		default:
+		}
+	}
+	return state, effects
+}
+
+// reduceGetAgentEngineSettings schedules a runtime query for the current agent
+// engine capabilities and configuration.
+func reduceGetAgentEngineSettings(state State, cmd cmdGetAgentEngineSettings) (State, []actor.Effect) {
+	if cmd.Reply == nil {
+		return state, nil
+	}
+
+	return state, []actor.Effect{
+		effQueryAgentEngineSettings{
+			Gen:       state.RunnerGen,
+			AgentType: agentengine.AgentType(state.AgentState.AgentType),
+			Desired:   currentAgentConfig(state),
+			Reply:     cmd.Reply,
+		},
+	}
 }
 
 // reduceSwitchMode transitions the session between local and remote modes.
@@ -336,7 +461,7 @@ func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 		effects := []actor.Effect{
 			effStopLocalRunner{Gen: gen - 1},
 			effStopDesktopTakebackWatcher{},
-			effStartRemoteRunner{Gen: gen, Resume: state.ResumeToken},
+			effStartRemoteRunner{Gen: gen, Resume: state.ResumeToken, Config: currentAgentConfig(state)},
 		}
 		effects = append(effects, persistEffects...)
 		return state, effects
@@ -355,7 +480,7 @@ func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 		effects := []actor.Effect{
 			effStopRemoteRunner{Gen: gen - 1},
 			effStopDesktopTakebackWatcher{},
-			effStartLocalRunner{Gen: gen, Resume: state.ResumeToken, RolloutPath: state.RolloutPath},
+			effStartLocalRunner{Gen: gen, Resume: state.ResumeToken, RolloutPath: state.RolloutPath, Config: currentAgentConfig(state)},
 		}
 		effects = append(effects, persistEffects...)
 		return state, effects
@@ -395,6 +520,11 @@ func reduceRunnerReady(state State, ev evRunnerReady) (State, []actor.Effect) {
 	var effects []actor.Effect
 	if ev.Mode == ModeRemote {
 		effects = append(effects, effStartDesktopTakebackWatcher{})
+
+		// Best-effort: ensure the running engine has the latest durable agent
+		// configuration, even if it was updated while remote startup was still
+		// in progress.
+		effects = append(effects, effApplyEngineConfig{Gen: state.RunnerGen, Config: currentAgentConfig(state)})
 	}
 
 	if ev.Mode == ModeRemote && len(state.PendingRemoteSends) > 0 {
@@ -482,7 +612,7 @@ func reduceRunnerExited(state State, ev evRunnerExited) (State, []actor.Effect) 
 		effects := []actor.Effect{
 			effStopRemoteRunner{Gen: gen - 1},
 			effStopDesktopTakebackWatcher{},
-			effStartLocalRunner{Gen: gen, Resume: state.ResumeToken, RolloutPath: state.RolloutPath},
+			effStartLocalRunner{Gen: gen, Resume: state.ResumeToken, RolloutPath: state.RolloutPath, Config: currentAgentConfig(state)},
 		}
 		effects = append(effects, persistEffects...)
 		return state, effects
@@ -668,6 +798,66 @@ func reducePermissionAwait(state State, cmd cmdPermissionAwait) (State, []actor.
 		return state, nil
 	}
 
+	permissionMode := strings.TrimSpace(state.AgentState.PermissionMode)
+	switch permissionMode {
+	case "yolo", "safe-yolo":
+		// Auto-approve: bypass UI prompts entirely.
+		if state.AgentState.CompletedRequests == nil {
+			state.AgentState.CompletedRequests = make(map[string]types.AgentCompletedRequest)
+		}
+		state.AgentState.CompletedRequests[cmd.RequestID] = types.AgentCompletedRequest{
+			ToolName:   cmd.ToolName,
+			Input:      string(cmd.Input),
+			Allow:      true,
+			Message:    "",
+			ResolvedAt: cmd.NowMs,
+		}
+		state = refreshAgentStateJSON(state)
+		state, effects := persistAgentStateImmediately(state)
+
+		// Resolve the synchronous promise.
+		select {
+		case cmd.Reply <- PermissionDecision{Allow: true, Message: ""}:
+		default:
+		}
+		// Notify ack (registered) to unblock runtime loop.
+		if cmd.Ack != nil {
+			select {
+			case cmd.Ack <- struct{}{}:
+			default:
+			}
+		}
+		return state, effects
+	case "read-only":
+		// Auto-deny: in read-only mode, no tools should run.
+		if state.AgentState.CompletedRequests == nil {
+			state.AgentState.CompletedRequests = make(map[string]types.AgentCompletedRequest)
+		}
+		state.AgentState.CompletedRequests[cmd.RequestID] = types.AgentCompletedRequest{
+			ToolName:   cmd.ToolName,
+			Input:      string(cmd.Input),
+			Allow:      false,
+			Message:    "denied (read-only mode)",
+			ResolvedAt: cmd.NowMs,
+		}
+		state = refreshAgentStateJSON(state)
+		state, effects := persistAgentStateImmediately(state)
+
+		select {
+		case cmd.Reply <- PermissionDecision{Allow: false, Message: "denied (read-only mode)"}:
+		default:
+		}
+		if cmd.Ack != nil {
+			select {
+			case cmd.Ack <- struct{}{}:
+			default:
+			}
+		}
+		return state, effects
+	default:
+		// default: prompt user via phone UI
+	}
+
 	if state.AgentState.Requests == nil {
 		state.AgentState.Requests = make(map[string]types.AgentPendingRequest)
 	}
@@ -725,6 +915,19 @@ func reduceAgentStatePersisted(state State, ev EvAgentStatePersisted) (State, []
 		state.AgentStateVersion = ev.NewVersion
 	}
 	state.PersistRetryRemaining = 0
+	state.PersistInFlight = false
+	if len(state.PersistWaiters) > 0 {
+		for _, waiter := range state.PersistWaiters {
+			if waiter == nil {
+				continue
+			}
+			select {
+			case waiter <- nil:
+			default:
+			}
+		}
+		state.PersistWaiters = nil
+	}
 	return state, nil
 }
 
@@ -740,12 +943,25 @@ func reduceAgentStateVersionMismatch(state State, ev EvAgentStateVersionMismatch
 	// Retry immediately (no debounce) on version mismatch; the new expected version
 	// must be applied promptly to avoid leaving stateDirty set.
 	state.PersistDebounceTimerArmed = false
+	state.PersistInFlight = true
 	return state, []actor.Effect{effPersistAgentState{AgentStateJSON: state.AgentStateJSON, ExpectedVersion: state.AgentStateVersion}}
 }
 
 // reduceAgentStatePersistFailed records a persistence failure and clears retries.
 func reduceAgentStatePersistFailed(state State, ev EvAgentStatePersistFailed) (State, []actor.Effect) {
-	_ = ev
+	state.PersistInFlight = false
+	if len(state.PersistWaiters) > 0 {
+		for _, waiter := range state.PersistWaiters {
+			if waiter == nil {
+				continue
+			}
+			select {
+			case waiter <- ev.Err:
+			default:
+			}
+		}
+		state.PersistWaiters = nil
+	}
 	// If the websocket is disconnected, we rely on evWSConnected to trigger a
 	// best-effort re-persist. Avoid retry loops while offline.
 	if !state.WSConnected {
@@ -801,12 +1017,32 @@ func refreshAgentStateJSON(state State) State {
 	return state
 }
 
+// persistAgentStateImmediately requests persisting agent state immediately.
+//
+// This is used for low-frequency updates (like model / permission changes)
+// where the mobile UI expects the state to round-trip quickly after an RPC
+// call.
+func persistAgentStateImmediately(state State) (State, []actor.Effect) {
+	if state.AgentStateJSON == "" {
+		return state, nil
+	}
+
+	state.PersistRetryRemaining = 1
+	state.PersistDebounceTimerArmed = false
+	state.PersistInFlight = true
+	return state, []actor.Effect{
+		effCancelTimer{Name: persistDebounceTimerName},
+		effPersistAgentState{AgentStateJSON: state.AgentStateJSON, ExpectedVersion: state.AgentStateVersion},
+	}
+}
+
 // schedulePersistDebounced schedules a debounced persistence attempt.
 func schedulePersistDebounced(state State) (State, []actor.Effect) {
 	state.PersistRetryRemaining = 1
 	// If we have no websocket connection yet, still schedule persistence; the
 	// runtime can treat it as a no-op, but the state remains marked dirty.
 	state.PersistDebounceTimerArmed = true
+	state.PersistInFlight = false
 	return state, []actor.Effect{
 		effCancelTimer{Name: persistDebounceTimerName},
 		effStartTimer{Name: persistDebounceTimerName, AfterMs: persistDebounceAfterMs},

@@ -117,6 +117,7 @@ struct TerminalDetailView: View {
         // keep the UX consistent: user must tap "Take Control" first.
         let controlledByDesktop = ui?.controlledByUser ?? (currentSession.agentState?.controlledByUser ?? true)
         let isComposerEnabled = (ui?.canSend ?? false) && !controlledByDesktop
+        let isPhoneControlled = (uiState == "remote") && !controlledByDesktop
         let placeholder: String = {
             switch ui?.state {
             case "disconnected":
@@ -158,12 +159,20 @@ struct TerminalDetailView: View {
                     activityText: currentSession.thinking ? vibingMessage(for: currentSession.id) : nil
                 )
                 .background(Theme.cardBackground)
+                TerminalAgentConfigControls(model: model, session: currentSession, isEnabled: isPhoneControlled)
+                    .background(Theme.cardBackground)
                 MessageComposer(model: model, isEnabled: isComposerEnabled, placeholder: placeholder)
                     .background(Theme.cardBackground)
             }
         }
         .navigationTitle(session.title ?? "Terminal")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
+        .alert("Error", isPresented: $model.showErrorAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(model.errorAlertMessage)
+        }
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 2) {
@@ -188,6 +197,272 @@ struct TerminalDetailView: View {
         .onAppear {
             initialScrollDone = false
             model.selectSession(session.id)
+        }
+    }
+}
+
+private struct TerminalAgentConfigControls: View {
+    @ObservedObject var model: HarnessViewModel
+    let session: SessionSummary
+    let isEnabled: Bool
+    @State private var showModelSheet = false
+    @State private var showPermissionsSheet = false
+    @State private var isFetchingSettings = false
+
+    private enum PendingSheet {
+        case model
+        case permissions
+    }
+
+    @State private var pendingSheet: PendingSheet?
+
+    var body: some View {
+        let settings = model.agentEngineSettings[session.id]
+        let isOnline = (session.uiState?.connected ?? false) && ((session.uiState?.state ?? "") != "offline")
+
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 14) {
+                Button {
+                    pendingSheet = .model
+                    isFetchingSettings = true
+                    model.fetchAgentCapabilities(sessionID: session.id, suppressErrors: false) {
+                        isFetchingSettings = false
+                        showModelSheet = true
+                    }
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .disabled(!isEnabled || !isOnline || isFetchingSettings)
+
+                Button {
+                    pendingSheet = .permissions
+                    isFetchingSettings = true
+                    model.fetchAgentCapabilities(sessionID: session.id, suppressErrors: false) {
+                        isFetchingSettings = false
+                        showPermissionsSheet = true
+                    }
+                } label: {
+                    Image(systemName: "exclamationmark.circle")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .disabled(!isEnabled || !isOnline || isFetchingSettings)
+
+                Spacer()
+            }
+            .foregroundColor(Theme.mutedText)
+
+            if !isEnabled {
+                Text("Take Control to change agent settings.")
+                    .font(Theme.caption)
+                    .foregroundColor(Theme.mutedText)
+            } else if !isOnline {
+                Text("Agent settings are available once the CLI is online.")
+                    .font(Theme.caption)
+                    .foregroundColor(Theme.mutedText)
+            } else if isFetchingSettings {
+                Text("Fetching agent settings…")
+                    .font(Theme.caption)
+                    .foregroundColor(Theme.mutedText)
+            } else if pendingSheet != nil && settings == nil {
+                Text("Fetching agent settings…")
+                    .font(Theme.caption)
+                    .foregroundColor(Theme.mutedText)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .sheet(isPresented: $showModelSheet) {
+            let fresh = model.agentEngineSettings[session.id]
+            let caps = fresh?.capabilities
+            TerminalModelEffortSheet(
+                currentModel: fresh?.desiredConfig.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+                currentEffort: fresh?.desiredConfig.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines),
+                onApply: { modelSelection, effortSelection in
+                    model.setAgentConfig(
+                        model: modelSelection,
+                        permissionMode: nil,
+                        reasoningEffort: effortSelection,
+                        sessionID: session.id
+                    )
+                },
+                models: caps?.models ?? [],
+                reasoningEfforts: caps?.reasoningEfforts ?? []
+            )
+        }
+        .sheet(isPresented: $showPermissionsSheet) {
+            let fresh = model.agentEngineSettings[session.id]
+            let caps = fresh?.capabilities
+            TerminalPermissionsSheet(
+                currentPermissionMode: fresh?.desiredConfig.permissionMode?.trimmingCharacters(in: .whitespacesAndNewlines),
+                onApply: { selected in
+                    model.setAgentConfig(
+                        model: nil,
+                        permissionMode: selected,
+                        reasoningEffort: nil,
+                        sessionID: session.id
+                    )
+                },
+                permissionModes: caps?.permissionModes ?? []
+            )
+        }
+        .onChange(of: showModelSheet) { newValue in
+            if !newValue {
+                pendingSheet = nil
+            }
+        }
+        .onChange(of: showPermissionsSheet) { newValue in
+            if !newValue {
+                pendingSheet = nil
+            }
+        }
+    }
+}
+
+private struct TerminalModelEffortSheet: View {
+    let currentModel: String?
+    let currentEffort: String?
+    let onApply: (String?, String?) -> Void
+    let models: [String]
+    let reasoningEfforts: [String]
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedModel: String = ""
+    @State private var selectedEffort: String = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Model") {
+                    if !models.isEmpty {
+                        ForEach(models, id: \.self) { item in
+                            Button {
+                                selectedModel = item
+                            } label: {
+                                HStack {
+                                    Text(item)
+                                    Spacer()
+                                    if selectedModel == item {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    } else {
+                        Text("Model selection is not available for this agent.")
+                            .foregroundColor(Theme.mutedText)
+                    }
+                }
+
+                Section("Reasoning effort") {
+                    if !reasoningEfforts.isEmpty {
+                        ForEach(reasoningEfforts, id: \.self) { effort in
+                            Button {
+                                selectedEffort = effort
+                            } label: {
+                                HStack {
+                                    Text(effort)
+                                    Spacer()
+                                    if selectedEffort == effort {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    } else {
+                        Text("Reasoning effort is not available for this agent.")
+                            .foregroundColor(Theme.mutedText)
+                    }
+                }
+            }
+            .navigationTitle("Model & Effort")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Apply") {
+                        let nextModel: String? = selectedModel.isEmpty ? nil : selectedModel
+                        let nextEffort: String? =
+                            reasoningEfforts.isEmpty ? nil : (selectedEffort.isEmpty ? nil : selectedEffort)
+                        onApply(nextModel, nextEffort)
+                        dismiss()
+                    }
+                    .disabled(
+                        (models.isEmpty && reasoningEfforts.isEmpty)
+                            || (!models.isEmpty && selectedModel.isEmpty)
+                    )
+                }
+            }
+            .onAppear {
+                if selectedModel.isEmpty {
+                    selectedModel = currentModel ?? models.first ?? ""
+                }
+                if selectedEffort.isEmpty {
+                    selectedEffort = currentEffort ?? reasoningEfforts.first ?? ""
+                }
+            }
+        }
+    }
+}
+
+private struct TerminalPermissionsSheet: View {
+    let currentPermissionMode: String?
+    let onApply: (String) -> Void
+    let permissionModes: [String]
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected: String = "default"
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Permission level") {
+                    if permissionModes.isEmpty {
+                        Text("Permission selection is not available for this agent.")
+                            .foregroundColor(Theme.mutedText)
+                    } else {
+                        ForEach(permissionModes, id: \.self) { mode in
+                            Button {
+                                selected = mode
+                            } label: {
+                                HStack {
+                                    Text(mode)
+                                    Spacer()
+                                    if selected == mode {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Permissions")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Apply") {
+                        onApply(selected)
+                        dismiss()
+                    }
+                    .disabled(permissionModes.isEmpty)
+                }
+            }
+            .onAppear {
+                if let currentPermissionMode, !currentPermissionMode.isEmpty {
+                    selected = currentPermissionMode
+                } else if selected.isEmpty, let first = permissionModes.first {
+                    selected = first
+                }
+            }
         }
     }
 }

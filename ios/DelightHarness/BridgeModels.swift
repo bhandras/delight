@@ -94,10 +94,26 @@ struct SessionMetadata {
 
 /// SessionAgentState represents the durable agentState persisted by the CLI.
 struct SessionAgentState {
+    let agentType: String?
     let controlledByUser: Bool
+    let model: String?
+    let reasoningEffort: String?
+    let permissionMode: String?
     let requests: [String: SessionAgentPendingRequest]
 
     var hasPendingRequests: Bool { !requests.isEmpty }
+
+    /// updating returns a copy with optional config overrides applied.
+    func updating(model: String?, reasoningEffort: String?, permissionMode: String?) -> SessionAgentState {
+        SessionAgentState(
+            agentType: agentType,
+            controlledByUser: controlledByUser,
+            model: model ?? self.model,
+            reasoningEffort: reasoningEffort ?? self.reasoningEffort,
+            permissionMode: permissionMode ?? self.permissionMode,
+            requests: requests
+        )
+    }
 
     struct SessionAgentPendingRequest {
         let toolName: String
@@ -113,7 +129,11 @@ struct SessionAgentState {
         guard let payload: SessionAgentStatePayload = BridgeJSONDecoder.decode(json) else {
             return nil
         }
+        let agentType = payload.agentType
         let controlledByUser = payload.controlledByUser ?? true
+        let model = payload.model
+        let reasoningEffort = payload.reasoningEffort
+        let permissionMode = payload.permissionMode
         let rawRequests = payload.requests ?? [:]
         var parsed: [String: SessionAgentPendingRequest] = [:]
         parsed.reserveCapacity(rawRequests.count)
@@ -127,8 +147,39 @@ struct SessionAgentState {
                 createdAt: createdAt
             )
         }
-        return SessionAgentState(controlledByUser: controlledByUser, requests: parsed)
+        return SessionAgentState(
+            agentType: agentType,
+            controlledByUser: controlledByUser,
+            model: model,
+            reasoningEffort: reasoningEffort,
+            permissionMode: permissionMode,
+            requests: parsed
+        )
     }
+}
+
+/// SessionAgentCapabilities describes which agent configuration knobs are
+/// supported by the current engine (best-effort).
+struct SessionAgentCapabilities: Equatable {
+    let models: [String]
+    let permissionModes: [String]
+    let reasoningEfforts: [String]
+}
+
+/// SessionAgentConfigSnapshot is a best-effort snapshot of agent configuration.
+struct SessionAgentConfigSnapshot: Equatable {
+    let model: String?
+    let reasoningEffort: String?
+    let permissionMode: String?
+}
+
+/// SessionAgentEngineSettings is the capability/config snapshot returned by the
+/// session-scoped `agent-capabilities` RPC.
+struct SessionAgentEngineSettings: Equatable {
+    let agentType: String
+    let capabilities: SessionAgentCapabilities
+    let desiredConfig: SessionAgentConfigSnapshot
+    let effectiveConfig: SessionAgentConfigSnapshot
 }
 
 /// SessionUIState is the SDK-derived, view-friendly UI state injected into session summaries.
@@ -382,7 +433,11 @@ private struct SessionMetadataPayload: Decodable {
 
 /// SessionAgentStatePayload decodes the JSON wire payload for agent state.
 private struct SessionAgentStatePayload: Decodable {
+    let agentType: String?
     let controlledByUser: Bool?
+    let model: String?
+    let reasoningEffort: String?
+    let permissionMode: String?
     let requests: [String: SessionAgentRequestPayload]?
 }
 

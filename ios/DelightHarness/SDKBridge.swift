@@ -14,6 +14,54 @@ private struct SwitchControlParams: Encodable {
     let mode: String
 }
 
+/// AgentConfigParams is the payload sent to `sessionID:agent-config` RPC calls.
+private struct AgentConfigParams: Encodable {
+    let model: String?
+    let permissionMode: String?
+    let reasoningEffort: String?
+}
+
+/// AgentConfigRPCResponse is the best-effort response schema for agent-config RPC calls.
+private struct AgentConfigRPCResponse: Decodable {
+    struct Result: Decodable {
+        let success: Bool?
+        let agentState: String?
+        let agentStateVersion: Int64?
+        let error: String?
+    }
+
+    let result: Result?
+    let error: String?
+}
+
+/// AgentCapabilitiesRPCResponse is the best-effort response schema for
+/// agent-capabilities RPC calls.
+private struct AgentCapabilitiesRPCResponse: Decodable {
+    struct Result: Decodable {
+        struct Capabilities: Decodable {
+            let models: [String]?
+            let permissionModes: [String]?
+            let reasoningEfforts: [String]?
+        }
+
+        struct ConfigSnapshot: Decodable {
+            let model: String?
+            let reasoningEffort: String?
+            let permissionMode: String?
+        }
+
+        let success: Bool?
+        let agentType: String?
+        let capabilities: Capabilities?
+        let desiredConfig: ConfigSnapshot?
+        let effectiveConfig: ConfigSnapshot?
+        let error: String?
+    }
+
+    let result: Result?
+    let error: String?
+}
+
 /// SwitchControlResponse is the best-effort response schema for switch RPC calls.
 private struct SwitchControlResponse: Decodable {
     struct Result: Decodable {
@@ -240,6 +288,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var showAccountCreatedReceipt: Bool = false
     @Published var showTerminalPairingReceipt: Bool = false
     @Published var showLogoutConfirm: Bool = false
+    @Published var showErrorAlert: Bool = false
+    @Published var errorAlertMessage: String = ""
+
+    /// agentEngineSettings caches engine capabilities + config snapshots, keyed
+    /// by session id.
+    @Published var agentEngineSettings: [String: SessionAgentEngineSettings] = [:]
 
     @Published var lastAccountCreatedReceipt: AccountCreatedReceipt?
     @Published var lastTerminalPairingReceipt: TerminalPairingReceipt?
@@ -590,6 +644,156 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 self.logSwiftOnly("Switch control error: \(error)")
             }
         }
+    }
+
+    func setAgentConfig(model: String?, permissionMode: String?, reasoningEffort: String?, sessionID: String? = nil) {
+        let targetID = sessionID ?? self.sessionID
+        guard !targetID.isEmpty else { return }
+
+        sdkCallAsync {
+            do {
+                let paramsJSON = try JSONCoding.encode(
+                    AgentConfigParams(model: model, permissionMode: permissionMode, reasoningEffort: reasoningEffort)
+                )
+                let method = targetID + ":agent-config"
+                let responseBuf = try self.sdkCallSync {
+                    try self.client.callRPCBuffer(method, paramsJSON: paramsJSON)
+                }
+
+                let responseJSON = self.stringFromBuffer(responseBuf) ?? ""
+                if let decoded = try? JSONCoding.decode(AgentConfigRPCResponse.self, from: responseJSON) {
+                    let errorMessage = decoded.error ?? decoded.result?.error
+                    if let errorMessage, !errorMessage.isEmpty {
+                        DispatchQueue.main.async {
+                            self.presentErrorAlert(message: errorMessage)
+                        }
+                        return
+                    }
+                    if decoded.result?.success != true {
+                        DispatchQueue.main.async {
+                            self.presentErrorAlert(message: "Failed to apply agent settings.")
+                        }
+                        return
+                    }
+
+                    // Best-effort: update local UI state from the returned agentState.
+                    if let agentStateJSON = decoded.result?.agentState,
+                       let agentState = SessionAgentState.fromJSON(agentStateJSON) {
+                        DispatchQueue.main.async {
+                            if let index = self.sessions.firstIndex(where: { $0.id == targetID }) {
+                                let existing = self.sessions[index]
+                                self.sessions[index] = SessionSummary(
+                                    id: existing.id,
+                                    updatedAt: existing.updatedAt,
+                                    active: existing.active,
+                                    activeAt: existing.activeAt,
+                                    title: existing.title,
+                                    subtitle: existing.subtitle,
+                                    metadata: existing.metadata,
+                                    agentState: agentState,
+                                    uiState: existing.uiState,
+                                    thinking: existing.thinking
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Refresh sessions to converge on the server's authoritative state.
+                self.listSessions()
+            } catch {
+                DispatchQueue.main.async {
+                    self.presentErrorAlert(message: "Agent config error: \(error)")
+                }
+            }
+        }
+    }
+
+    /// fetchAgentCapabilities queries the CLI for the agent engine's supported
+    /// settings and current configuration snapshot.
+    func fetchAgentCapabilities(sessionID: String? = nil, suppressErrors: Bool = true, onDone: (() -> Void)? = nil) {
+        let targetID = sessionID ?? self.sessionID
+        guard !targetID.isEmpty else {
+            DispatchQueue.main.async { onDone?() }
+            return
+        }
+
+        sdkCallAsync {
+            defer {
+                DispatchQueue.main.async { onDone?() }
+            }
+            do {
+                // `callRPCBuffer` always expects a JSON payload; use an empty object.
+                let paramsJSON = try JSONCoding.encode([String: String]())
+                let method = targetID + ":agent-capabilities"
+                let responseBuf = try self.sdkCallSync {
+                    try self.client.callRPCBuffer(method, paramsJSON: paramsJSON)
+                }
+
+                let responseJSON = self.stringFromBuffer(responseBuf) ?? ""
+                guard let decoded = try? JSONCoding.decode(AgentCapabilitiesRPCResponse.self, from: responseJSON) else {
+                    return
+                }
+
+                let errorMessage = decoded.error ?? decoded.result?.error
+                if let errorMessage, !errorMessage.isEmpty {
+                    if !suppressErrors {
+                        DispatchQueue.main.async {
+                            self.presentErrorAlert(message: errorMessage)
+                        }
+                    }
+                    return
+                }
+                if decoded.result?.success != true {
+                    if !suppressErrors {
+                        DispatchQueue.main.async {
+                            self.presentErrorAlert(message: "Failed to fetch agent settings.")
+                        }
+                    }
+                    return
+                }
+
+                let agentType = decoded.result?.agentType ?? "unknown"
+                let caps = decoded.result?.capabilities
+                let desired = decoded.result?.desiredConfig
+                let effective = decoded.result?.effectiveConfig
+
+                let settings = SessionAgentEngineSettings(
+                    agentType: agentType,
+                    capabilities: SessionAgentCapabilities(
+                        models: caps?.models ?? [],
+                        permissionModes: caps?.permissionModes ?? [],
+                        reasoningEfforts: caps?.reasoningEfforts ?? []
+                    ),
+                    desiredConfig: SessionAgentConfigSnapshot(
+                        model: desired?.model,
+                        reasoningEffort: desired?.reasoningEffort,
+                        permissionMode: desired?.permissionMode
+                    ),
+                    effectiveConfig: SessionAgentConfigSnapshot(
+                        model: effective?.model,
+                        reasoningEffort: effective?.reasoningEffort,
+                        permissionMode: effective?.permissionMode
+                    )
+                )
+
+                DispatchQueue.main.async {
+                    self.agentEngineSettings[targetID] = settings
+                }
+            } catch {
+                if !suppressErrors {
+                    DispatchQueue.main.async {
+                        self.presentErrorAlert(message: "Agent settings error: \(error)")
+                    }
+                }
+            }
+        }
+    }
+
+    private func presentErrorAlert(message: String) {
+        errorAlertMessage = message
+        showErrorAlert = true
+        logSwiftOnly(message)
     }
 
     private func completePermissionRequest(requestID: String) {

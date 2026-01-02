@@ -45,8 +45,35 @@ type EngineStartSpec struct {
 	// RolloutPath is an agent-specific event-log path (Codex rollout JSONL).
 	RolloutPath string
 
-	// Config holds agent-specific knobs (model, permission mode, etc.).
-	Config map[string]any
+	// Config holds durable agent configuration (model, permission mode, etc.).
+	Config AgentConfig
+}
+
+// AgentConfig represents durable, session-scoped agent configuration.
+//
+// Fields are engine-specific best-effort; engines must tolerate empty values
+// (meaning "use default").
+type AgentConfig struct {
+	// Model selects the upstream model identifier (engine-specific).
+	Model string
+	// PermissionMode selects the approval/sandbox preset for the engine.
+	//
+	// Canonical Delight values are: default|read-only|safe-yolo|yolo.
+	PermissionMode string
+	// ReasoningEffort selects the reasoning effort preset (Codex-specific).
+	//
+	// Canonical Codex values are: minimal|low|medium|high|xhigh.
+	ReasoningEffort string
+}
+
+// AgentCapabilities describes which settings are supported by an engine.
+type AgentCapabilities struct {
+	// Models is the list of supported model identifiers (if known).
+	Models []string
+	// PermissionModes is the list of supported permission modes (if supported).
+	PermissionModes []string
+	// ReasoningEfforts is the list of supported reasoning effort presets (if supported).
+	ReasoningEfforts []string
 }
 
 // UserMessage is a single user-authored message to send to an engine.
@@ -165,6 +192,16 @@ type AgentEngine interface {
 	SendUserMessage(ctx context.Context, msg UserMessage) error
 	// Abort aborts an in-flight turn in remote mode (best-effort).
 	Abort(ctx context.Context) error
+
+	// Capabilities reports which configuration knobs are supported.
+	Capabilities() AgentCapabilities
+	// CurrentConfig reports the engine's current configuration (best-effort).
+	//
+	// Implementations should return the most recently applied config even when
+	// not currently running, so callers can render UI without forcing a start.
+	CurrentConfig() AgentConfig
+	// ApplyConfig applies session-scoped configuration to subsequent turns.
+	ApplyConfig(ctx context.Context, cfg AgentConfig) error
 
 	// Events returns a channel of engine events. Implementations must not block
 	// indefinitely on sends to this channel.

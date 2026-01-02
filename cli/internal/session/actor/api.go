@@ -120,8 +120,35 @@ func PersistAgentStateImmediate(agentStateJSON string) framework.Input {
 	return cmdPersistAgentStateImmediate{AgentStateJSON: agentStateJSON}
 }
 
+// WaitForAgentStatePersist returns a command input that forces the current
+// agent state to be persisted immediately and completes reply once persistence
+// succeeds or fails.
+func WaitForAgentStatePersist(reply chan error) framework.Input {
+	return cmdWaitForAgentStatePersist{Reply: reply}
+}
+
 // SetControlledByUser returns a command input that updates AgentState's
 // ControlledByUser flag without changing runner lifecycle.
 func SetControlledByUser(controlledByUser bool, nowMs int64) framework.Input {
 	return cmdSetControlledByUser{ControlledByUser: controlledByUser, NowMs: nowMs}
+}
+
+// SetAgentConfig returns a command input that updates durable agent settings
+// (model, permission mode, reasoning effort).
+//
+// This command is remote-only: callers should enforce that the phone controls
+// the session before enqueueing it.
+func SetAgentConfig(model string, permissionMode string, reasoningEffort string, reply chan error) framework.Input {
+	return cmdSetAgentConfig{
+		Model:           model,
+		PermissionMode:  permissionMode,
+		ReasoningEffort: reasoningEffort,
+		Reply:           reply,
+	}
+}
+
+// GetAgentEngineSettings returns a command input that queries the agent engine
+// for its supported settings and current configuration (best-effort).
+func GetAgentEngineSettings(reply chan AgentEngineSettingsSnapshot) framework.Input {
+	return cmdGetAgentEngineSettings{Reply: reply}
 }
