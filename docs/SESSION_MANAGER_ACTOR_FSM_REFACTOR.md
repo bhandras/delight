@@ -4,10 +4,6 @@ This document proposes a refactor of the Delight CLI session manager to a
 single-threaded **actor-style control loop** with an explicit **finite state
 machine (FSM)**.
 
-Progress tracking:
-
-- `docs/SESSION_MANAGER_ACTOR_FSM_TODO.md`
-
 The goal is to eliminate the current class of concurrency races that arise from
 shared mutable state guarded by multiple mutexes across many goroutines. These
 races have already surfaced as production bugs (e.g. `process not started` on
