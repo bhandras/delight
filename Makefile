@@ -8,7 +8,8 @@ APP_PATH := $(DERIVED_DATA)/Build/Products/$(CONFIGURATION)-iphonesimulator/Deli
 SIMULATOR_UDID_FILE := $(DERIVED_DATA)/booted_simulator_udid
 
 .PHONY: ios-sdk ios-build ios-sim-boot ios-install ios-run
-GO_TEST_PKGS ?= ./sdk ./internal/crypto
+CLI_TEST_PKGS ?= ./...
+SERVER_TEST_PKGS ?= ./...
 GO_TEST_ARGS ?= -cover
 IOS_TEST_RESULT ?= $(DERIVED_DATA)/TestResults
 
@@ -57,4 +58,5 @@ ios-test: ios-sdk ios-sim-boot
 		test
 
 test:
-	(cd cli && go test $(GO_TEST_ARGS) $(GO_TEST_PKGS))
+	(cd cli && go test $(GO_TEST_ARGS) $(CLI_TEST_PKGS))
+	(cd server && go test $(GO_TEST_ARGS) $(SERVER_TEST_PKGS))
