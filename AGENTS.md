@@ -38,6 +38,19 @@ Sign commits with GPG when possible:
 
 `git commit -S -m "message"`
 
+### Commit Message Newlines (Important)
+
+When creating multi-line commit messages, do **not** include literal `\n`
+sequences inside a `-m "..."` string. Git does not interpret escape sequences
+in `-m` arguments; it will store the backslash and `n` characters literally.
+
+Use one of these instead:
+
+- Multiple `-m` flags (preferred): `git commit -S -m "subject" -m "body paragraph 1" -m "body paragraph 2"`
+  - Note: each `-m` adds a real newline between paragraphs.
+- Shell $-quoting (zsh/bash): `git commit -S -m $'subject\n\nbody line 1\nbody line 2'`
+- Commit message file: `git commit -S -F /path/to/message.txt`
+
 ## Go Documentation Requirements
 
 For Go code:
