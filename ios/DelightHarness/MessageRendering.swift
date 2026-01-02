@@ -88,42 +88,61 @@ private struct MarkdownText: View {
     /// This keeps agent output readable on iOS while preserving fenced code
     /// blocks as-is (no trailing whitespace injected into code).
     private func formatMarkdownForDisplay(_ raw: String) -> String {
-        // Split while preserving empty lines.
-        let parts = raw.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
-        if parts.count <= 1 {
-            return raw
+        let normalized = raw
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+
+        // Split while preserving empty lines so we can keep paragraph breaks.
+        let lines = normalized
+            .split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+            .map(String.init)
+        if lines.count <= 1 {
+            return normalized
         }
 
-        var out: [String] = []
-        out.reserveCapacity(parts.count)
+        // Rebuild content inserting either:
+        // - "\n" for paragraph breaks / code fences, or
+        // - "  \n" for soft line breaks we want to keep visually.
+        var result = ""
+        result.reserveCapacity(normalized.count + lines.count*2)
 
         var inFence = false
-        for (index, line) in parts.enumerated() {
-            let trimmed = line.trimmingCharacters(in: CharacterSet.whitespaces)
-            let isFence = trimmed.hasPrefix("```")
+        for i in lines.indices {
+            let line = lines[i]
+            result += line
 
-            out.append(line)
-
-            if index == parts.count - 1 {
+            if i == lines.index(before: lines.endIndex) {
                 continue
             }
 
-            if isFence {
-                // Fence delimiter lines should not be given trailing spaces.
-                out.append("\n")
+            let trimmed = line.trimmingCharacters(in: CharacterSet.whitespaces)
+            let isFenceLine = trimmed.hasPrefix("```")
+            let nextLine = lines[lines.index(after: i)]
+
+            // Fence delimiter lines should never get hard-break whitespace.
+            if isFenceLine {
+                result += "\n"
                 inFence.toggle()
                 continue
             }
 
-            if inFence {
-                out.append("\n")
-            } else {
-                // Two spaces before newline is a Markdown hard line break.
-                out.append("  \n")
+            // Preserve true paragraph breaks as-is.
+            if line.isEmpty || nextLine.isEmpty {
+                result += "\n"
+                continue
             }
+
+            // Never inject hard-break whitespace inside fenced code blocks.
+            if inFence {
+                result += "\n"
+                continue
+            }
+
+            // Two spaces before newline is a Markdown hard line break.
+            result += "  \n"
         }
 
-        return out.joined()
+        return result
     }
 
     private func looksLikeList(_ text: String) -> Bool {
