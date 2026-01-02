@@ -7,7 +7,7 @@ import (
 
 	"github.com/bhandras/delight/cli/internal/claude"
 	"github.com/bhandras/delight/cli/internal/crypto"
-	"github.com/bhandras/delight/protocol/logger"
+	"github.com/bhandras/delight/shared/logger"
 )
 
 // min returns the smaller of a and b.

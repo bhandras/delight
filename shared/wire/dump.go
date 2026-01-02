@@ -20,7 +20,7 @@ var base64Like = regexp.MustCompile(`^[A-Za-z0-9+/=_-]+$`)
 // DumpToTestdata writes a sanitized JSON fixture for a wire payload.
 //
 // This is intended for capturing real payloads during development, so they can
-// be checked into `cli/internal/protocol/wire/testdata/` and used as golden
+// be checked into `shared/wire/testdata/` and used as golden
 // tests.
 //
 // Enable by setting either:
@@ -35,7 +35,7 @@ func DumpToTestdata(kind string, payload any) {
 		if os.Getenv(dumpEnableEnv) == "" {
 			return
 		}
-		dir = filepath.Join("protocol", "wire", "testdata", "captured")
+		dir = filepath.Join("shared", "wire", "testdata", "captured")
 	}
 
 	if kind == "" {

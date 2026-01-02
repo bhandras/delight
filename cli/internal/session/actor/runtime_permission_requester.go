@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/bhandras/delight/cli/internal/agentengine"
-	"github.com/bhandras/delight/protocol/logger"
+	"github.com/bhandras/delight/shared/logger"
 )
 
 // AwaitPermission implements agentengine.PermissionRequester for synchronous engines.

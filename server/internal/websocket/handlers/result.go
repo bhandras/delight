@@ -1,6 +1,6 @@
 package handlers
 
-import protocolwire "github.com/bhandras/delight/protocol/wire"
+import protocolwire "github.com/bhandras/delight/shared/wire"
 
 // UpdateScope describes where an update should be emitted.
 type UpdateScope int

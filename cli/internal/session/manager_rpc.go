@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/bhandras/delight/protocol/wire"
+	"github.com/bhandras/delight/shared/wire"
 )
 
 // registerRPCHandlers sets up RPC handlers for mobile app commands

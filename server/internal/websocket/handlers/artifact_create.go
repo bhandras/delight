@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"encoding/base64"
 
-	"github.com/bhandras/delight/protocol/logger"
-	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/models"
+	"github.com/bhandras/delight/shared/logger"
+	protocolwire "github.com/bhandras/delight/shared/wire"
 )
 
 // ArtifactCreate creates a new artifact (or returns an existing one) and emits a

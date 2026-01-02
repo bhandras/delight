@@ -1,6 +1,6 @@
 package handlers
 
-import protocolwire "github.com/bhandras/delight/protocol/wire"
+import protocolwire "github.com/bhandras/delight/shared/wire"
 
 // EnqueueMessageInstruction describes a validated message ingest operation.
 type EnqueueMessageInstruction struct {

@@ -5,11 +5,11 @@ import (
 	"net/http"
 	"time"
 
-	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/api/middleware"
 	"github.com/bhandras/delight/server/internal/models"
 	"github.com/bhandras/delight/server/internal/websocket"
 	"github.com/bhandras/delight/server/pkg/types"
+	protocolwire "github.com/bhandras/delight/shared/wire"
 	"github.com/gin-gonic/gin"
 )
 

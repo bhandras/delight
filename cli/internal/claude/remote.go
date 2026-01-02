@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bhandras/delight/protocol/logger"
+	"github.com/bhandras/delight/shared/logger"
 )
 
 // RemoteMessage represents a message to/from the bridge script

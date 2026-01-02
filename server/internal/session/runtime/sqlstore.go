@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"time"
 
-	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/models"
 	pkgtypes "github.com/bhandras/delight/server/pkg/types"
+	protocolwire "github.com/bhandras/delight/shared/wire"
 )
 
 // SQLStore implements Store on top of sqlc queries.

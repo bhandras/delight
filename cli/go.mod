@@ -24,7 +24,7 @@ require (
 
 require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
-	github.com/bhandras/delight/protocol v0.0.0
+	github.com/bhandras/delight/shared v0.0.0
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/gookit/color v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
@@ -49,4 +49,4 @@ require (
 	resty.dev/v3 v3.0.0-beta.4 // indirect
 )
 
-replace github.com/bhandras/delight/protocol => ../protocol
+replace github.com/bhandras/delight/shared => ../shared

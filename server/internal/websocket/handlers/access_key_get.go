@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 
-	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/models"
+	protocolwire "github.com/bhandras/delight/shared/wire"
 )
 
 // AccessKeyGet returns the access key for a session+machine pair.

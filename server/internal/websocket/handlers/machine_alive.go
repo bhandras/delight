@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/models"
+	protocolwire "github.com/bhandras/delight/shared/wire"
 )
 
 // MachineAlive records a machine keep-alive and emits a machine-activity

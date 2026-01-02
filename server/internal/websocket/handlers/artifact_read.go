@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 
-	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/models"
+	protocolwire "github.com/bhandras/delight/shared/wire"
 )
 
 // ArtifactRead returns the artifact object for a single artifact id.

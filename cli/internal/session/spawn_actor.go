@@ -11,7 +11,7 @@ import (
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/config"
-	"github.com/bhandras/delight/protocol/logger"
+	"github.com/bhandras/delight/shared/logger"
 )
 
 // spawnEntry is a durable record describing a spawned child session.

@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/bhandras/delight/protocol/logger"
+	"github.com/bhandras/delight/shared/logger"
 )
 
 // PruneMessages deletes all session_messages (dev-only helper).

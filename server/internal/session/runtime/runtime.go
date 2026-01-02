@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/bhandras/delight/protocol/logger"
+	"github.com/bhandras/delight/shared/logger"
 )
 
 // Manager owns per-session runtimes and provides serialized entrypoints.

@@ -3,7 +3,7 @@ package handlers
 import (
 	"time"
 
-	protocolwire "github.com/bhandras/delight/protocol/wire"
+	protocolwire "github.com/bhandras/delight/shared/wire"
 )
 
 // RPCMethodLocator provides read-only lookup for an RPC method target socket.

@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/bhandras/delight/protocol/wire"
+	"github.com/bhandras/delight/shared/wire"
 	"golang.org/x/term"
 )
 

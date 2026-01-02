@@ -3,9 +3,9 @@ package websocket
 import (
 	"context"
 
-	"github.com/bhandras/delight/protocol/logger"
-	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/websocket/handlers"
+	"github.com/bhandras/delight/shared/logger"
+	protocolwire "github.com/bhandras/delight/shared/wire"
 	socket "github.com/zishang520/socket.io/servers/socket/v3"
 )
 

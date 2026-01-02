@@ -16,7 +16,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/bhandras/delight/protocol/logger"
+	"github.com/bhandras/delight/shared/logger"
 )
 
 // Input is an item delivered to an actor mailbox.

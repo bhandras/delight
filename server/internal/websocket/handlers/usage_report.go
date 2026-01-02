@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	protocolwire "github.com/bhandras/delight/protocol/wire"
+	protocolwire "github.com/bhandras/delight/shared/wire"
 )
 
 // UsageReport validates and forwards usage report events as ephemerals.

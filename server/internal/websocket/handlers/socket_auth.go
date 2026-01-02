@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	protocolwire "github.com/bhandras/delight/protocol/wire"
+	protocolwire "github.com/bhandras/delight/shared/wire"
 )
 
 // SocketHandshake is the validated Socket.IO handshake auth payload.

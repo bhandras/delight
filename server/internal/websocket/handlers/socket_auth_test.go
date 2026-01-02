@@ -3,7 +3,7 @@ package handlers
 import (
 	"testing"
 
-	protocolwire "github.com/bhandras/delight/protocol/wire"
+	protocolwire "github.com/bhandras/delight/shared/wire"
 	"github.com/stretchr/testify/require"
 )
 

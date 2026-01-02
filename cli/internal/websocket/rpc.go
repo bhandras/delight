@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bhandras/delight/protocol/logger"
-	"github.com/bhandras/delight/protocol/wire"
+	"github.com/bhandras/delight/shared/logger"
+	"github.com/bhandras/delight/shared/wire"
 	"github.com/zishang520/socket.io/v3/pkg/types"
 )
 

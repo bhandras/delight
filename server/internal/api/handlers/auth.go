@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/bhandras/delight/protocol/logger"
 	"github.com/bhandras/delight/server/internal/crypto"
 	"github.com/bhandras/delight/server/internal/models"
 	"github.com/bhandras/delight/server/pkg/types"
+	"github.com/bhandras/delight/shared/logger"
 	"github.com/gin-gonic/gin"
 )
 

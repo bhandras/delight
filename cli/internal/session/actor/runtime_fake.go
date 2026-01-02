@@ -9,7 +9,7 @@ import (
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/pkg/types"
-	"github.com/bhandras/delight/protocol/wire"
+	"github.com/bhandras/delight/shared/wire"
 )
 
 const (

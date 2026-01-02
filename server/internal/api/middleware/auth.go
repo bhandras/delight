@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/bhandras/delight/protocol/logger"
 	"github.com/bhandras/delight/server/internal/crypto"
+	"github.com/bhandras/delight/shared/logger"
 	"github.com/gin-gonic/gin"
 )
 

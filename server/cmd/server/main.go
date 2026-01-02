@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/bhandras/delight/protocol/logger"
 	"github.com/bhandras/delight/server/internal/api/handlers"
 	"github.com/bhandras/delight/server/internal/api/middleware"
 	"github.com/bhandras/delight/server/internal/config"
@@ -13,6 +12,7 @@ import (
 	"github.com/bhandras/delight/server/internal/database/migrations"
 	"github.com/bhandras/delight/server/internal/debug"
 	"github.com/bhandras/delight/server/internal/websocket"
+	"github.com/bhandras/delight/shared/logger"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )

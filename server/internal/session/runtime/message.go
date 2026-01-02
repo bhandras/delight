@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/bhandras/delight/protocol/logger"
-	protocolwire "github.com/bhandras/delight/protocol/wire"
 	pkgtypes "github.com/bhandras/delight/server/pkg/types"
+	"github.com/bhandras/delight/shared/logger"
+	protocolwire "github.com/bhandras/delight/shared/wire"
 )
 
 func (r *sessionRuntime) handleMessage(e messageEvent) {

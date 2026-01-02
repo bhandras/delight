@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bhandras/delight/protocol/logger"
+	"github.com/bhandras/delight/shared/logger"
 )
 
 // SessionMessage represents a message from Claude's session file

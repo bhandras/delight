@@ -14,7 +14,7 @@ import (
 
 	"github.com/bhandras/delight/cli/internal/crypto"
 	"github.com/bhandras/delight/cli/internal/websocket"
-	"github.com/bhandras/delight/protocol/wire"
+	"github.com/bhandras/delight/shared/wire"
 )
 
 const (

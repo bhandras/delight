@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bhandras/delight/protocol/logger"
+	"github.com/bhandras/delight/shared/logger"
 	"github.com/creack/pty"
 	"golang.org/x/term"
 )

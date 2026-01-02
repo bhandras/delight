@@ -3,9 +3,9 @@ package handlers
 import (
 	"context"
 
-	"github.com/bhandras/delight/protocol/logger"
-	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/models"
+	"github.com/bhandras/delight/shared/logger"
+	protocolwire "github.com/bhandras/delight/shared/wire"
 )
 
 // ArtifactDelete deletes a single artifact and emits a user-scoped update on

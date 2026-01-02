@@ -8,7 +8,7 @@ import (
 
 	"github.com/bhandras/delight/cli/internal/agentengine"
 	"github.com/bhandras/delight/cli/internal/claude"
-	"github.com/bhandras/delight/protocol/wire"
+	"github.com/bhandras/delight/shared/wire"
 )
 
 type fakePermissionRequester struct {

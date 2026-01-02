@@ -1,4 +1,4 @@
-module github.com/bhandras/delight/protocol
+module github.com/bhandras/delight/shared
 
 go 1.24.1
 

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/models"
+	protocolwire "github.com/bhandras/delight/shared/wire"
 	"github.com/stretchr/testify/require"
 )
 

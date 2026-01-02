@@ -21,8 +21,8 @@ import (
 	"github.com/bhandras/delight/cli/internal/storage"
 	"github.com/bhandras/delight/cli/internal/websocket"
 	"github.com/bhandras/delight/cli/pkg/types"
-	"github.com/bhandras/delight/protocol/logger"
-	"github.com/bhandras/delight/protocol/wire"
+	"github.com/bhandras/delight/shared/logger"
+	"github.com/bhandras/delight/shared/wire"
 )
 
 const (

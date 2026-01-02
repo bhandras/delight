@@ -10,12 +10,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/bhandras/delight/protocol/logger"
-	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/api/middleware"
 	"github.com/bhandras/delight/server/internal/models"
 	"github.com/bhandras/delight/server/internal/websocket"
 	"github.com/bhandras/delight/server/pkg/types"
+	"github.com/bhandras/delight/shared/logger"
+	protocolwire "github.com/bhandras/delight/shared/wire"
 	"github.com/gin-gonic/gin"
 )
 

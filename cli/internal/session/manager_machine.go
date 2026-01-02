@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/bhandras/delight/cli/internal/crypto"
-	"github.com/bhandras/delight/protocol/logger"
-	"github.com/bhandras/delight/protocol/wire"
+	"github.com/bhandras/delight/shared/logger"
+	"github.com/bhandras/delight/shared/wire"
 )
 
 func (m *Manager) registerMachineRPCHandlers() {
