@@ -3,6 +3,7 @@ package actor
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -10,6 +11,14 @@ import (
 	"github.com/bhandras/delight/cli/internal/agentengine"
 	"github.com/bhandras/delight/cli/internal/agentengine/claudeengine"
 	"github.com/bhandras/delight/cli/internal/agentengine/codexengine"
+)
+
+const (
+	// engineStopTimeout bounds how long we wait when stopping the opposite mode
+	// runner during a mode switch (e.g. local->remote). This prevents leftover
+	// foreground TUIs (notably Codex) from stealing Ctrl+C and tty input after a
+	// switch.
+	engineStopTimeout = 2 * time.Second
 )
 
 type localLineInjector interface {
@@ -171,7 +180,11 @@ func (r *Runtime) startEngineLocal(ctx context.Context, eff effStartLocalRunner,
 	r.mu.Unlock()
 
 	// Best-effort: ensure remote is stopped before starting local.
-	_ = engine.Stop(context.Background(), agentengine.ModeRemote)
+	stopCtx, cancel := context.WithTimeout(context.Background(), engineStopTimeout)
+	if err := engine.Stop(stopCtx, agentengine.ModeRemote); err != nil && r.debug {
+		log.Printf("runtime: failed to stop remote runner: %v", err)
+	}
+	cancel()
 
 	if err := engine.Start(ctx, agentengine.EngineStartSpec{
 		Agent:       r.agent,
@@ -224,7 +237,22 @@ func (r *Runtime) startEngineRemote(ctx context.Context, eff effStartRemoteRunne
 	r.mu.Unlock()
 
 	// Best-effort: ensure local is stopped before starting remote.
-	_ = engine.Stop(context.Background(), agentengine.ModeLocal)
+	stopCtx, cancel := context.WithTimeout(context.Background(), engineStopTimeout)
+	if err := engine.Stop(stopCtx, agentengine.ModeLocal); err != nil && r.debug {
+		log.Printf("runtime: failed to stop local runner: %v", err)
+	}
+	cancel()
+
+	// TUIs can leave input-related terminal modes enabled (kitty keyboard
+	// protocol, bracketed paste, mouse reporting). Reset them before we rely on
+	// Ctrl+C and raw key scanning in remote mode.
+	resetTTYModes()
+	// Ensure Delight receives tty input (Ctrl+C / takeback) after switching away
+	// from a local TUI that may have owned the foreground process group.
+	if r.debug {
+		log.Printf("runtime: ensure tty foreground (remote start)")
+	}
+	ensureTTYForegroundSelf()
 
 	if err := engine.Start(ctx, agentengine.EngineStartSpec{
 		Agent:       r.agent,

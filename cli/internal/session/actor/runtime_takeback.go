@@ -2,7 +2,10 @@ package actor
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
@@ -72,6 +75,14 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 	go func() {
 		defer close(done)
 
+		// If Delight is (briefly) not the controlling tty foreground process group
+		// during a mode switch, reads from /dev/tty can trigger SIGTTIN and stop
+		// the entire Delight process, making remote mode appear unresponsive.
+		// Ignore job-control signals so we can keep running, reclaim the foreground,
+		// and restore correct terminal state.
+		signal.Ignore(syscall.SIGTTIN, syscall.SIGTTOU)
+		defer signal.Reset(syscall.SIGTTIN, syscall.SIGTTOU)
+
 		restored := false
 		oldState, err := term.MakeRaw(fd)
 		if err != nil {
@@ -96,6 +107,9 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 		// In remote mode we still want Ctrl+C to exit Delight reliably (even after
 		// repeated mode switches), so re-enable ISIG best-effort.
 		enableISIG(fd)
+		// Also ensure Delight is the foreground process group so we continue
+		// receiving tty input after switching away from a local TUI.
+		ensureTTYForegroundSelf()
 
 		defer func() {
 			if !restored {
@@ -138,6 +152,16 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 
 			n, err := tty.Read(buf)
 			if err != nil || n <= 0 {
+				// If Delight is not the tty foreground process group (job control got
+				// disrupted by a prior local TUI), reads from /dev/tty can fail with
+				// EIO (or the process can be stopped with SIGTTIN). Best-effort reclaim
+				// the foreground and keep the watcher alive so Ctrl+C/takeback still
+				// works after repeated mode switches.
+				if errors.Is(err, syscall.EIO) || errors.Is(err, unix.EIO) {
+					ensureTTYForegroundSelf()
+					time.Sleep(50 * time.Millisecond)
+					continue
+				}
 				return
 			}
 

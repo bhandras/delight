@@ -266,6 +266,8 @@ func (r *Runtime) Stop() {
 	r.engine = nil
 	r.mu.Unlock()
 
+	resetTTYModes()
+
 	if cancel != nil {
 		func() {
 			defer func() { recover() }()
