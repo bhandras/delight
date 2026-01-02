@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 
 	"github.com/bhandras/delight/shared/logger"
+	"github.com/bhandras/delight/shared/wire"
 )
 
 // WrapLegacyMessageContent migrates session_messages.content from plain strings to JSON envelopes
@@ -50,10 +51,7 @@ func WrapLegacyMessageContent(db *sql.DB) error {
 
 	for _, it := range items {
 		// Wrap legacy string into encrypted envelope
-		env, _ := json.Marshal(map[string]any{
-			"t": "encrypted",
-			"c": it.content,
-		})
+		env, _ := json.Marshal(wire.EncryptedEnvelope{T: "encrypted", C: it.content})
 		if _, err := stmt.ExecContext(ctx, string(env), it.id); err != nil {
 			tx.Rollback()
 			return err

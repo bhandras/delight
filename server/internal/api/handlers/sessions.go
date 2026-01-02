@@ -517,9 +517,9 @@ func (h *SessionHandler) toMessageResponse(msg models.SessionMessage) MessageRes
 	}
 
 	if needsWrap {
-		fallback, _ := json.Marshal(map[string]any{
-			"t": "encrypted",
-			"c": msg.Content,
+		fallback, _ := json.Marshal(protocolwire.EncryptedEnvelope{
+			T: "encrypted",
+			C: msg.Content,
 		})
 		rawContent = fallback
 	}

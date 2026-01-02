@@ -61,6 +61,9 @@ func TestUsageReport_EmitsEphemeral(t *testing.T) {
 	require.Equal(t, "usage", payload.Type)
 	require.Equal(t, "s1", payload.ID)
 	require.Equal(t, "k", payload.Key)
-	require.NotNil(t, payload.Tokens)
-	require.NotNil(t, payload.Cost)
+	require.Equal(t, 3, payload.Tokens.Total)
+	require.Equal(t, 1, payload.Tokens.Input)
+	require.Equal(t, 2, payload.Tokens.Output)
+	require.Equal(t, 0.01, payload.Cost.Total)
+	require.Equal(t, 0.002, payload.Cost.Input)
 }

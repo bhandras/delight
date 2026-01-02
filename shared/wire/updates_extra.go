@@ -38,10 +38,10 @@ type EphemeralUsagePayload struct {
 	ID string `json:"id"`
 	// Key identifies the usage source.
 	Key string `json:"key"`
-	// Tokens is a JSON object containing token counts.
-	Tokens map[string]any `json:"tokens"`
-	// Cost is a JSON object containing cost information.
-	Cost map[string]any `json:"cost"`
+	// Tokens contains token counts.
+	Tokens UsageReportTokens `json:"tokens"`
+	// Cost contains cost information when available.
+	Cost UsageReportCost `json:"cost"`
 	// Timestamp is when the report was recorded, in ms since epoch.
 	Timestamp int64 `json:"timestamp"`
 }
