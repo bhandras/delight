@@ -146,7 +146,7 @@ struct TerminalMessagesView: UIViewRepresentable {
                 cell.contentConfiguration = UIHostingConfiguration {
                     MessageBubble(message: message)
                         .padding(.vertical, 6)
-                        .padding(.horizontal, 16)
+                        .padding(.horizontal, MessageBubble.Layout.cellHorizontalPadding)
                 }
             } else {
                 // iOS 16+ only in this app, but keep a safe fallback.

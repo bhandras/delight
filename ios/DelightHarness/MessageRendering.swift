@@ -6,24 +6,42 @@ import SwiftUI
 struct MessageBubble: View {
     let message: MessageItem
 
+    /// Layout holds display constants for the terminal transcript.
+    enum Layout {
+        /// cellHorizontalPadding is the inset applied by the host table cell.
+        static let cellHorizontalPadding: CGFloat = 6
+
+        /// bubbleHorizontalPadding is the small gutter between the bubble and
+        /// the cell edges.
+        static let bubbleHorizontalPadding: CGFloat = 1
+
+        /// oppositeSideSpacerMinimum keeps bubbles from spanning the full
+        /// screen width while avoiding excessive whitespace on the other side.
+        static let oppositeSideSpacerMinimum: CGFloat = 12
+
+        /// incomingLeadingTextInset provides a small left inset so incoming
+        /// text doesn't hug the edge when not using a colored bubble.
+        static let incomingLeadingTextInset: CGFloat = 2
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            if message.role == .user { Spacer(minLength: 48) }
+            if message.role == .user { Spacer(minLength: Layout.oppositeSideSpacerMinimum) }
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(Array(message.blocks.enumerated()), id: \.offset) { _, block in
                     MessageBlockView(block: block)
                 }
             }
             .padding(message.role == .user ? 12 : 0)
-            .padding(.leading, message.role == .user ? 0 : 4)
+            .padding(.leading, message.role == .user ? 0 : Layout.incomingLeadingTextInset)
             .background(message.role == .user ? Theme.userBubble : Color.clear)
             .clipIf(message.role == .user) {
                 $0.clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
-            if message.role != .user { Spacer(minLength: 48) }
+            if message.role != .user { Spacer(minLength: Layout.oppositeSideSpacerMinimum) }
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
-        .padding(.horizontal, 4)
+        .padding(.horizontal, Layout.bubbleHorizontalPadding)
     }
 }
 
@@ -265,4 +283,3 @@ private struct AnimatedDots: View {
         }
     }
 }
-
