@@ -490,6 +490,9 @@ func (effStartRemoteRunner) isSessionEffect() {}
 type effStopRemoteRunner struct {
 	actor.EffectBase
 	Gen int64
+	// Silent suppresses UX banners when the runner is being stopped as part of a
+	// full shutdown rather than an interactive mode switch.
+	Silent bool
 }
 
 // isSessionEffect marks effStopRemoteRunner as a session effect.
@@ -522,18 +525,6 @@ type effLocalSendLine struct {
 
 // isSessionEffect marks effLocalSendLine as a session effect.
 func (effLocalSendLine) isSessionEffect() {}
-
-type effRemotePermissionDecision struct {
-	actor.EffectBase
-	Gen          int64
-	RequestID    string
-	Allow        bool
-	Message      string
-	UpdatedInput json.RawMessage
-}
-
-// isSessionEffect marks effRemotePermissionDecision as a session effect.
-func (effRemotePermissionDecision) isSessionEffect() {}
 
 type effPersistAgentState struct {
 	actor.EffectBase

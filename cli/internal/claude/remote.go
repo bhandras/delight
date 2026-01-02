@@ -536,6 +536,10 @@ func (b *RemoteBridge) Kill() error {
 		log.Println("Killing bridge process...")
 	}
 
+	// Best-effort: send Ctrl+C first so Node can flush and exit cleanly.
+	_ = b.cmd.Process.Signal(os.Interrupt)
+	time.Sleep(200 * time.Millisecond)
+
 	return b.cmd.Process.Kill()
 }
 

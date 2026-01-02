@@ -85,13 +85,18 @@ type Event interface {
 }
 
 // EvReady indicates the engine process/protocol is ready to accept input.
-type EvReady struct{}
+type EvReady struct {
+	// Mode indicates whether the engine is ready in local or remote mode.
+	Mode Mode
+}
 
 // isAgentEngineEvent marks EvReady as an Event.
 func (EvReady) isAgentEngineEvent() {}
 
 // EvExited indicates the engine stopped.
 type EvExited struct {
+	// Mode indicates which mode runner exited.
+	Mode Mode
 	// Err is the process exit error, if any.
 	Err error
 }
@@ -102,6 +107,8 @@ func (EvExited) isAgentEngineEvent() {}
 // EvOutboundRecord indicates the engine produced a plaintext record that should
 // be encrypted and sent to the server.
 type EvOutboundRecord struct {
+	// Mode indicates which mode produced the record.
+	Mode Mode
 	// LocalID is the record-local identifier, used for dedupe and correlation.
 	LocalID string
 	// Payload is the plaintext JSON to encrypt (raw record bytes).
@@ -118,6 +125,8 @@ func (EvOutboundRecord) isAgentEngineEvent() {}
 
 // EvSessionIdentified carries an agent-specific resume token.
 type EvSessionIdentified struct {
+	// Mode indicates which mode identified the token.
+	Mode Mode
 	// ResumeToken is the agent session identifier (e.g. Codex UUID).
 	ResumeToken string
 }
@@ -127,6 +136,8 @@ func (EvSessionIdentified) isAgentEngineEvent() {}
 
 // EvRolloutPath carries an agent-specific event-log path (Codex rollout JSONL).
 type EvRolloutPath struct {
+	// Mode indicates which mode owns the rollout path.
+	Mode Mode
 	// Path is the absolute path to the rollout JSONL file.
 	Path string
 }

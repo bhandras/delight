@@ -2,7 +2,6 @@ package actor
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"time"
 
@@ -32,6 +31,13 @@ const (
 
 	// takebackPrompt is printed after the first space to confirm takeback.
 	takebackPrompt = "Press space again to take back control on desktop."
+
+	// takebackCtrlCByte is the ASCII ETX byte emitted by Ctrl+C in raw mode.
+	//
+	// Note: when we put the terminal into raw mode (term.MakeRaw), ISIG is
+	// disabled, so Ctrl+C no longer generates SIGINT. We must treat it as an
+	// explicit shutdown request here.
+	takebackCtrlCByte = 3
 )
 
 // startDesktopTakebackWatcher starts a raw tty watcher that emits evDesktopTakeback
@@ -136,7 +142,12 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 			}
 
 			shouldSwitch := false
+			shouldShutdown := false
 			for _, b := range buf[:n] {
+				if b == takebackCtrlCByte {
+					shouldShutdown = true
+					break
+				}
 				if b == ' ' {
 					if pendingSpace {
 						shouldSwitch = true
@@ -144,16 +155,24 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 					}
 					pendingSpace = true
 					pendingSpaceAt = now
-					fmt.Fprintln(os.Stdout, takebackPrompt)
+					// Don't print prompts while a local interactive TUI is active;
+					// it would corrupt the user's screen.
+					r.mu.Lock()
+					localActive := r.engineLocalInteractive
+					r.mu.Unlock()
+					if !localActive {
+						writeLine(takebackPrompt)
+					}
 					continue
 				}
-
-				if pendingSpace {
-					pendingSpace = false
-				}
+				// Intentionally do not clear pendingSpace on other bytes. Some
+				// terminals (or input methods) can inject non-space bytes that would
+				// make the UX unreliable. Only the confirm window controls expiry.
 			}
 			if !shouldSwitch {
-				continue
+				if !shouldShutdown {
+					continue
+				}
 			}
 
 			_ = term.Restore(fd, oldState)
@@ -164,7 +183,13 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 			}
 			r.mu.Unlock()
 
-			emit(evDesktopTakeback{})
+			// Emit asynchronously so tty restoration and watcher teardown cannot
+			// deadlock on actor mailbox backpressure.
+			if shouldShutdown {
+				go emit(Shutdown(nil))
+			} else {
+				go emit(evDesktopTakeback{})
+			}
 			return
 		}
 	}()
@@ -208,4 +233,3 @@ func (r *Runtime) stopDesktopTakebackWatcherLocked() (chan struct{}, chan struct
 	r.takebackState = nil
 	return cancel, done, tty, state
 }
-

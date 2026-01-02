@@ -476,7 +476,16 @@ func (p *Process) Kill() error {
 		log.Println("Killing Claude process...")
 	}
 
-	return p.cmd.Process.Kill()
+	// Best-effort: send Ctrl+C first so Claude can restore terminal state.
+	_ = p.cmd.Process.Signal(os.Interrupt)
+	go func(cmd *exec.Cmd) {
+		time.Sleep(500 * time.Millisecond)
+		if cmd == nil || cmd.Process == nil {
+			return
+		}
+		_ = cmd.Process.Kill()
+	}(p.cmd)
+	return nil
 }
 
 // SendInput injects input into the Claude TUI (as if typed by the user).

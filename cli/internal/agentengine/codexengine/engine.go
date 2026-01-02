@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -34,8 +35,24 @@ const (
 )
 
 const (
+	// localStartupExitProbeDelay bounds how long we wait after starting Codex local
+	// before considering it "ready enough" to switch the CLI into local mode.
+	localStartupExitProbeDelay = 150 * time.Millisecond
+)
+
+const (
 	// permissionModeDefault mirrors Codex's default permission behavior.
 	permissionModeDefault = "default"
+)
+
+const (
+	// remoteShutdownTimeout bounds how long we wait for the Codex MCP server to exit
+	// after requesting a shutdown when switching away from remote mode.
+	remoteShutdownTimeout = 2 * time.Second
+
+	// localShutdownTimeout bounds how long we wait for the Codex local TUI to exit
+	// after requesting a stop when switching away from local mode.
+	localShutdownTimeout = 2 * time.Second
 )
 
 const (
@@ -73,10 +90,13 @@ type Engine struct {
 	remoteEnabled        bool
 	remotePermissionMode string
 	remoteModel          string
+	remoteWaitStarted    bool
 
-	localCmd    *exec.Cmd
-	localCancel context.CancelFunc
-	localTailer *rollout.Tailer
+	localCmd               *exec.Cmd
+	localCancel            context.CancelFunc
+	localTailer            *rollout.Tailer
+	localRestoreForeground func()
+	localWaitCh            chan error
 
 	waitOnce sync.Once
 	waitErr  error
@@ -123,20 +143,11 @@ func (e *Engine) Stop(ctx context.Context, mode agentengine.Mode) error {
 
 	switch mode {
 	case agentengine.ModeLocal:
-		e.stopLocal()
+		return e.stopLocalAndWait(ctx)
 	case agentengine.ModeRemote:
-		e.mu.Lock()
-		e.remoteEnabled = false
-		e.mu.Unlock()
+		return e.stopRemoteAndWait(ctx)
 	default:
 		return fmt.Errorf("unsupported stop mode: %q", mode)
-	}
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		return nil
 	}
 }
 
@@ -146,15 +157,13 @@ func (e *Engine) Close(ctx context.Context) error {
 		return nil
 	}
 
-	e.stopLocal()
-
-	e.mu.Lock()
-	client := e.remoteClient
-	e.remoteClient = nil
-	e.remoteEnabled = false
-	e.mu.Unlock()
-	if client != nil {
-		_ = client.Close()
+	localErr := e.stopLocalAndWait(ctx)
+	remoteErr := e.stopRemoteAndWait(ctx)
+	if localErr != nil {
+		return localErr
+	}
+	if remoteErr != nil {
+		return remoteErr
 	}
 
 	select {
@@ -234,12 +243,12 @@ func (e *Engine) Wait() error {
 		defer close(e.waitCh)
 
 		e.mu.Lock()
-		localCmd := e.localCmd
+		localWaitCh := e.localWaitCh
 		client := e.remoteClient
 		e.mu.Unlock()
 
-		if localCmd != nil {
-			e.waitErr = localCmd.Wait()
+		if localWaitCh != nil {
+			e.waitErr = <-localWaitCh
 			return
 		}
 		if client != nil {
@@ -282,6 +291,7 @@ func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSp
 		e.remoteClient = client
 		e.remotePermissionMode = permissionModeDefault
 		e.remoteEnabled = true
+		e.remoteWaitStarted = false
 		e.mu.Unlock()
 	} else {
 		e.mu.Lock()
@@ -289,7 +299,17 @@ func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSp
 		e.mu.Unlock()
 	}
 
-	e.tryEmit(agentengine.EvReady{})
+	e.mu.Lock()
+	if e.remoteClient == client && !e.remoteWaitStarted {
+		e.remoteWaitStarted = true
+		go func(c *codex.Client) {
+			err := c.Wait()
+			e.tryEmit(agentengine.EvExited{Mode: agentengine.ModeRemote, Err: err})
+		}(client)
+	}
+	e.mu.Unlock()
+
+	e.tryEmit(agentengine.EvReady{Mode: agentengine.ModeRemote})
 	return nil
 }
 
@@ -323,11 +343,30 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// Ensure we can tear down the full Codex local process tree on stop. Some
+	// Codex builds may spawn child processes; killing only the parent can leave
+	// the child running in the background after a mode switch.
+	//
+	// On Unix-like systems we start Codex in its own process group and kill the
+	// process group on stop. On Windows, we fall back to killing the parent.
+	if runtime.GOOS != "windows" {
+		configureLocalCmdProcessGroup(cmd)
+	}
 
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return err
 	}
+
+	restoreForeground := acquireTTYForeground(cmd)
+
+	// Use a single wait goroutine so:
+	// - we can detect immediate startup failures (no TUI appears)
+	// - stopLocalCmd never calls cmd.Wait (avoids double-wait panics)
+	waitErrCh := make(chan error, 1)
+	go func() {
+		waitErrCh <- cmd.Wait()
+	}()
 
 	startAtEnd := true
 	if resumeToken == "" {
@@ -353,50 +392,147 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 		return err
 	}
 
+	// If Codex exits immediately (e.g. invalid resume token), fail the mode switch
+	// instead of emitting EvReady and "switching" into a dead TUI.
+	select {
+	case err := <-waitErrCh:
+		cancel()
+		return fmt.Errorf("codex local exited early: %w", err)
+	case <-time.After(localStartupExitProbeDelay):
+	}
+
 	e.mu.Lock()
-	e.stopLocalLocked()
+	old := e.detachLocalLocked()
 	e.localCmd = cmd
 	e.localCancel = cancel
 	e.localTailer = tailer
+	e.localRestoreForeground = restoreForeground
+	e.localWaitCh = waitErrCh
 	e.mu.Unlock()
+	old.stop(context.Background())
 
-	e.tryEmit(agentengine.EvReady{})
+	e.tryEmit(agentengine.EvReady{Mode: agentengine.ModeLocal})
 
 	go e.forwardRollout(localCtx, tailer)
 	go func() {
-		err := cmd.Wait()
+		err := <-waitErrCh
 		cancel()
-		e.tryEmit(agentengine.EvExited{Err: err})
+		if restoreForeground != nil {
+			restoreForeground()
+		}
+		e.tryEmit(agentengine.EvExited{Mode: agentengine.ModeLocal, Err: err})
 	}()
 
 	return nil
 }
 
-// stopLocal stops the local process and rollout tailer, if present.
-func (e *Engine) stopLocal() {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.stopLocalLocked()
+type localStopHandle struct {
+	cancel            context.CancelFunc
+	cmd               *exec.Cmd
+	tailer            *rollout.Tailer
+	restoreForeground func()
+	waitCh            chan error
 }
 
-// stopLocalLocked is stopLocal under Engine.mu.
-func (e *Engine) stopLocalLocked() {
-	cancel := e.localCancel
-	cmd := e.localCmd
-	tailer := e.localTailer
+func (h localStopHandle) stop(ctx context.Context) error {
+	if h.cancel != nil {
+		h.cancel()
+	}
+	if h.tailer != nil {
+		// Tailer exits on ctx cancellation.
+	}
+	if h.restoreForeground != nil {
+		h.restoreForeground()
+	}
+	if h.cmd != nil && h.cmd.Process != nil {
+		stopLocalCmd(h.cmd)
+	}
+	if h.waitCh == nil {
+		return nil
+	}
+
+	waitCtx := ctx
+	if waitCtx == nil {
+		waitCtx = context.Background()
+	}
+	if deadline, ok := waitCtx.Deadline(); !ok || time.Until(deadline) > localShutdownTimeout {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(waitCtx, localShutdownTimeout)
+		defer cancel()
+	}
+
+	select {
+	case <-waitCtx.Done():
+		return waitCtx.Err()
+	case err := <-h.waitCh:
+		return err
+	}
+}
+
+// stopLocalAndWait stops the local Codex TUI and bounds how long we wait for exit.
+func (e *Engine) stopLocalAndWait(ctx context.Context) error {
+	e.mu.Lock()
+	handle := e.detachLocalLocked()
+	e.mu.Unlock()
+	return handle.stop(ctx)
+}
+
+// detachLocalLocked clears local state and returns a handle to stop the process
+// without holding Engine.mu.
+func (e *Engine) detachLocalLocked() localStopHandle {
+	handle := localStopHandle{
+		cancel:            e.localCancel,
+		cmd:               e.localCmd,
+		tailer:            e.localTailer,
+		restoreForeground: e.localRestoreForeground,
+		waitCh:            e.localWaitCh,
+	}
 
 	e.localCancel = nil
 	e.localCmd = nil
 	e.localTailer = nil
+	e.localRestoreForeground = nil
+	e.localWaitCh = nil
 
-	if cancel != nil {
-		cancel()
+	return handle
+}
+
+func (e *Engine) stopRemoteAndWait(ctx context.Context) error {
+	e.mu.Lock()
+	client := e.remoteClient
+	e.remoteClient = nil
+	e.remoteEnabled = false
+	e.remoteSessionActive = false
+	e.remoteWaitStarted = false
+	e.mu.Unlock()
+
+	// Only one Codex process should be active at a time. When leaving remote
+	// mode, fully close the MCP server so switching to local doesn't leave
+	// a background `codex mcp-server` running.
+	if client == nil {
+		return nil
 	}
-	if tailer != nil {
-		// Tailer exits on ctx cancellation.
+	_ = client.Shutdown(ctx)
+
+	waitCtx := ctx
+	if waitCtx == nil {
+		waitCtx = context.Background()
 	}
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
+	if deadline, ok := waitCtx.Deadline(); !ok || time.Until(deadline) > remoteShutdownTimeout {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(waitCtx, remoteShutdownTimeout)
+		defer cancel()
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- client.Wait() }()
+	select {
+	case <-waitCtx.Done():
+		// Best-effort: if graceful shutdown timed out, hard-kill and return the timeout.
+		_ = client.Close()
+		return waitCtx.Err()
+	case err := <-done:
+		return err
 	}
 }
 
@@ -419,13 +555,14 @@ func (e *Engine) forwardRollout(ctx context.Context, tailer *rollout.Tailer) {
 func (e *Engine) handleRolloutEvent(ev rollout.Event) {
 	switch v := ev.(type) {
 	case rollout.EvSessionMeta:
-		e.tryEmit(agentengine.EvSessionIdentified{ResumeToken: v.SessionID})
+		e.tryEmit(agentengine.EvSessionIdentified{Mode: agentengine.ModeLocal, ResumeToken: v.SessionID})
 	case rollout.EvUserMessage:
 		raw, err := marshalUserTextRecord(v.Text, nil)
 		if err != nil {
 			return
 		}
 		e.tryEmit(agentengine.EvOutboundRecord{
+			Mode:               agentengine.ModeLocal,
 			LocalID:            types.NewCUID(),
 			Payload:            raw,
 			UserTextNormalized: normalizeUserText(v.Text),
@@ -440,6 +577,7 @@ func (e *Engine) handleRolloutEvent(ev rollout.Event) {
 			return
 		}
 		e.tryEmit(agentengine.EvOutboundRecord{
+			Mode:    agentengine.ModeLocal,
 			LocalID: types.NewCUID(),
 			Payload: raw,
 			AtMs:    v.AtMs,
@@ -508,6 +646,7 @@ func (e *Engine) emitCodexRecord(record wire.CodexRecord) {
 		return
 	}
 	e.tryEmit(agentengine.EvOutboundRecord{
+		Mode:    agentengine.ModeRemote,
 		LocalID: types.NewCUID(),
 		Payload: raw,
 		AtMs:    time.Now().UnixMilli(),
@@ -523,13 +662,13 @@ func (e *Engine) emitIdentifiers() {
 		return
 	}
 
-	sessionID := client.SessionID()
-	if strings.TrimSpace(sessionID) != "" {
-		e.tryEmit(agentengine.EvSessionIdentified{ResumeToken: sessionID})
+	resumeToken := client.ResumeToken()
+	if strings.TrimSpace(resumeToken) != "" {
+		e.tryEmit(agentengine.EvSessionIdentified{Mode: agentengine.ModeRemote, ResumeToken: resumeToken})
 	}
 	rolloutPath := client.RolloutPath()
 	if strings.TrimSpace(rolloutPath) != "" {
-		e.tryEmit(agentengine.EvRolloutPath{Path: rolloutPath})
+		e.tryEmit(agentengine.EvRolloutPath{Mode: agentengine.ModeRemote, Path: rolloutPath})
 	}
 }
 

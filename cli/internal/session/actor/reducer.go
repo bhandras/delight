@@ -656,36 +656,10 @@ func reducePermissionDecision(state State, cmd cmdPermissionDecision) (State, []
 	state = refreshAgentStateJSON(state)
 	state, persistEffects := schedulePersistDebounced(state)
 
-	var updatedInput json.RawMessage
-	if cmd.Allow && input != "" {
-		// Best-effort: Claude expects allow responses to include updatedInput
-		// matching the original request input. If it's invalid JSON, omit it.
-		var probe any
-		if json.Unmarshal([]byte(input), &probe) == nil {
-			updatedInput = json.RawMessage(input)
-		}
-	}
-	var effects []actor.Effect
-	// Only Claude remote mode expects control responses to be written to the
-	// remote runner's stdin. Other agents (ACP/Codex) use PendingPermissionPromises.
-	if state.FSM == StateRemoteRunning || state.FSM == StateRemoteStarting {
-		message := cmd.Message
-		// Match legacy behavior: for Claude tool permissions, allow responses
-		// should omit the message to satisfy the SDK schema, but we still keep
-		// the user-entered message in CompletedRequests.
-		if cmd.Allow {
-			message = ""
-		}
-		effects = append(effects, effRemotePermissionDecision{
-			Gen:          state.RunnerGen,
-			RequestID:    cmd.RequestID,
-			Allow:        cmd.Allow,
-			Message:      message,
-			UpdatedInput: updatedInput,
-		})
-	}
-	effects = append(effects, persistEffects...)
-	return state, effects
+	// Engines (Codex/Claude remote) that need to block on approvals use
+	// PendingPermissionPromises. The engine itself is responsible for writing
+	// any upstream protocol response once the promise resolves.
+	return state, persistEffects
 }
 
 // reducePermissionAwait registers a permission request and returns a decision via Reply.
@@ -811,7 +785,7 @@ func reduceShutdown(state State, cmd cmdShutdown) (State, []actor.Effect) {
 	// Stop both runners; runtime will emit exit events.
 	return state, []actor.Effect{
 		effStopLocalRunner{Gen: state.RunnerGen},
-		effStopRemoteRunner{Gen: state.RunnerGen},
+		effStopRemoteRunner{Gen: state.RunnerGen, Silent: true},
 		effStopDesktopTakebackWatcher{},
 	}
 }

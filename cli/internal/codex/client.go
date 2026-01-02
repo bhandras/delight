@@ -100,6 +100,7 @@ type Client struct {
 	session  string
 	convo    string
 	rollout  string
+	shutdown bool
 	waitOnce sync.Once
 	waitErr  error
 	waitCh   chan struct{}
@@ -162,6 +163,7 @@ func (c *Client) Start() error {
 	if c.workDir != "" {
 		c.cmd.Dir = c.workDir
 	}
+	configureCodexMCPProcess(c.cmd)
 
 	stdin, err := c.cmd.StdinPipe()
 	if err != nil {
@@ -302,6 +304,24 @@ func (c *Client) ConversationID() string {
 	return c.convo
 }
 
+// ResumeToken returns the best identifier for resuming a Codex session.
+//
+// Codex uses both "sessionId" and "conversationId" in different contexts:
+//   - The MCP tool protocol typically returns a session id plus (sometimes) a
+//     conversation id for follow-up turns.
+//   - The `codex resume <id>` CLI expects a stable conversation/session id to
+//     restore the local TUI.
+//
+// Prefer conversation id when available because it is stable across turns.
+func (c *Client) ResumeToken() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.convo != "" {
+		return c.convo
+	}
+	return c.session
+}
+
 // RolloutPath returns the current rollout JSONL path recorded for the active Codex session.
 //
 // When Codex is running as an MCP server, responses and events may include a `rolloutPath`
@@ -311,6 +331,47 @@ func (c *Client) RolloutPath() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.rollout
+}
+
+// Shutdown requests that the Codex MCP server process exit gracefully.
+//
+// This is best-effort because Codex builds vary in their MCP method support.
+// When successful, it allows Codex to flush state and exit without leaving
+// background processes running.
+func (c *Client) Shutdown(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil
+	}
+	if c.shutdown {
+		c.mu.Unlock()
+		return nil
+	}
+	c.shutdown = true
+	c.mu.Unlock()
+
+	shutdownCtx := ctx
+	if shutdownCtx == nil {
+		shutdownCtx = context.Background()
+	}
+	shutdownCtx, cancel := context.WithTimeout(shutdownCtx, 2*time.Second)
+	defer cancel()
+
+	_, _ = c.call(shutdownCtx, "shutdown", map[string]interface{}{}, 0)
+	_ = c.notify("exit", map[string]interface{}{})
+
+	c.mu.Lock()
+	stdin := c.stdin
+	c.mu.Unlock()
+	if stdin != nil {
+		_ = stdin.Close()
+	}
+	return nil
 }
 
 func (c *Client) Close() error {
@@ -327,7 +388,7 @@ func (c *Client) Close() error {
 		_ = c.stdin.Close()
 	}
 	if c.cmd != nil && c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
+		stopCodexMCPProcess(c.cmd)
 	}
 	return nil
 }

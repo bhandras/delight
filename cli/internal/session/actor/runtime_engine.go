@@ -1,0 +1,346 @@
+package actor
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	framework "github.com/bhandras/delight/cli/internal/actor"
+	"github.com/bhandras/delight/cli/internal/agentengine"
+	"github.com/bhandras/delight/cli/internal/agentengine/claudeengine"
+	"github.com/bhandras/delight/cli/internal/agentengine/codexengine"
+)
+
+type localLineInjector interface {
+	InjectLine(text string) error
+}
+
+func (r *Runtime) ensureEngine(ctx context.Context, emit func(framework.Input)) agentengine.AgentEngine {
+	r.mu.Lock()
+	engine := r.engine
+	engineType := r.engineType
+	requested := r.agent
+	r.mu.Unlock()
+
+	if engine != nil && engineType == requested {
+		return engine
+	}
+
+	var next agentengine.AgentEngine
+	switch requested {
+	case agentengine.AgentClaude:
+		next = claudeengine.New(r.workDir, r, r.debug)
+	case agentengine.AgentCodex:
+		next = codexengine.New(r.workDir, r, r.debug)
+	default:
+		return nil
+	}
+
+	r.mu.Lock()
+	if r.engine != nil {
+		old := r.engine
+		r.engine = nil
+		r.engineType = ""
+		r.mu.Unlock()
+		_ = old.Close(context.Background())
+		r.mu.Lock()
+	}
+	// Another goroutine may have created the engine while we were closing old.
+	if r.engine != nil {
+		existing := r.engine
+		r.mu.Unlock()
+		_ = next.Close(context.Background())
+		return existing
+	}
+	r.engine = next
+	r.engineType = requested
+	r.mu.Unlock()
+
+	go r.runEngineEvents(ctx, next, emit)
+	return next
+}
+
+func (r *Runtime) runEngineEvents(ctx context.Context, engine agentengine.AgentEngine, emit func(framework.Input)) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-engine.Events():
+			if !ok || ev == nil {
+				return
+			}
+			r.handleEngineEvent(ev, emit)
+		}
+	}
+}
+
+func (r *Runtime) handleEngineEvent(ev agentengine.Event, emit func(framework.Input)) {
+	switch v := ev.(type) {
+	case agentengine.EvReady:
+		gen, mode := r.engineGenForMode(v.Mode)
+		if mode == ModeLocal {
+			r.mu.Lock()
+			r.engineLocalInteractive = true
+			r.mu.Unlock()
+		}
+		emit(evRunnerReady{Gen: gen, Mode: mode})
+	case agentengine.EvExited:
+		gen, mode := r.engineGenForMode(v.Mode)
+		if mode == ModeLocal {
+			r.mu.Lock()
+			r.engineLocalInteractive = false
+			r.mu.Unlock()
+		}
+		emit(evRunnerExited{Gen: gen, Mode: mode, Err: v.Err})
+	case agentengine.EvSessionIdentified:
+		gen, _ := r.engineGenForMode(v.Mode)
+		emit(evEngineSessionIdentified{Gen: gen, ResumeToken: v.ResumeToken})
+	case agentengine.EvRolloutPath:
+		gen, _ := r.engineGenForMode(v.Mode)
+		emit(evEngineRolloutPath{Gen: gen, Path: v.Path})
+	case agentengine.EvOutboundRecord:
+		gen, mode := r.engineGenForMode(v.Mode)
+
+		r.mu.Lock()
+		encryptFn := r.encryptFn
+		localActive := r.engineLocalInteractive
+		r.mu.Unlock()
+
+		if encryptFn == nil || len(v.Payload) == 0 {
+			return
+		}
+		if mode == ModeRemote && !localActive {
+			r.printRemoteRecordIfApplicable(v.Payload)
+		}
+
+		ciphertext, err := encryptFn(append([]byte(nil), v.Payload...))
+		if err != nil {
+			return
+		}
+
+		nowMs := v.AtMs
+		if nowMs == 0 {
+			nowMs = time.Now().UnixMilli()
+		}
+		emit(evOutboundMessageReady{
+			Gen:                gen,
+			LocalID:            v.LocalID,
+			Ciphertext:         ciphertext,
+			NowMs:              nowMs,
+			UserTextNormalized: v.UserTextNormalized,
+		})
+	default:
+		return
+	}
+}
+
+func (r *Runtime) engineGenForMode(mode agentengine.Mode) (gen int64, sessionMode Mode) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch mode {
+	case agentengine.ModeLocal:
+		return r.engineLocalGen, ModeLocal
+	case agentengine.ModeRemote:
+		return r.engineRemoteGen, ModeRemote
+	default:
+		return r.engineRemoteGen, ModeRemote
+	}
+}
+
+func (r *Runtime) startEngineLocal(ctx context.Context, eff effStartLocalRunner, emit func(framework.Input)) {
+	engine := r.ensureEngine(ctx, emit)
+	if engine == nil {
+		emit(evRunnerExited{Gen: eff.Gen, Mode: ModeLocal, Err: fmt.Errorf("engine unavailable")})
+		return
+	}
+
+	workDir := strings.TrimSpace(eff.WorkDir)
+	if workDir == "" {
+		workDir = r.workDir
+	}
+
+	// Clear any prior remote-mode transcript before handing control to a local
+	// full-screen TUI.
+	r.clearScreenIfApplicable()
+
+	r.mu.Lock()
+	r.engineLocalGen = eff.Gen
+	r.engineLocalActive = true
+	r.engineLocalInteractive = false
+	r.mu.Unlock()
+
+	// Best-effort: ensure remote is stopped before starting local.
+	_ = engine.Stop(context.Background(), agentengine.ModeRemote)
+
+	if err := engine.Start(ctx, agentengine.EngineStartSpec{
+		Agent:       r.agent,
+		WorkDir:     workDir,
+		Mode:        agentengine.ModeLocal,
+		ResumeToken: strings.TrimSpace(eff.Resume),
+		RolloutPath: strings.TrimSpace(eff.RolloutPath),
+	}); err != nil {
+		emit(evRunnerExited{Gen: eff.Gen, Mode: ModeLocal, Err: err})
+		return
+	}
+}
+
+func (r *Runtime) stopEngineLocal(eff effStopLocalRunner) {
+	r.mu.Lock()
+	engine := r.engine
+	gen := r.engineLocalGen
+	active := r.engineLocalActive
+	r.mu.Unlock()
+
+	if !active || engine == nil {
+		return
+	}
+	if gen != 0 && eff.Gen != 0 && eff.Gen != gen {
+		return
+	}
+
+	r.mu.Lock()
+	r.engineLocalActive = false
+	r.engineLocalInteractive = false
+	r.mu.Unlock()
+	_ = engine.Stop(context.Background(), agentengine.ModeLocal)
+}
+
+func (r *Runtime) startEngineRemote(ctx context.Context, eff effStartRemoteRunner, emit func(framework.Input)) {
+	engine := r.ensureEngine(ctx, emit)
+	if engine == nil {
+		emit(evRunnerExited{Gen: eff.Gen, Mode: ModeRemote, Err: fmt.Errorf("engine unavailable")})
+		return
+	}
+
+	workDir := strings.TrimSpace(eff.WorkDir)
+	if workDir == "" {
+		workDir = r.workDir
+	}
+
+	r.mu.Lock()
+	r.engineRemoteGen = eff.Gen
+	r.engineRemoteActive = true
+	r.mu.Unlock()
+
+	// Best-effort: ensure local is stopped before starting remote.
+	_ = engine.Stop(context.Background(), agentengine.ModeLocal)
+
+	if err := engine.Start(ctx, agentengine.EngineStartSpec{
+		Agent:       r.agent,
+		WorkDir:     workDir,
+		Mode:        agentengine.ModeRemote,
+		ResumeToken: strings.TrimSpace(eff.Resume),
+	}); err != nil {
+		emit(evRunnerExited{Gen: eff.Gen, Mode: ModeRemote, Err: err})
+		return
+	}
+
+	// Clear any remnants of a previously-running local full-screen TUI before
+	// printing the remote-mode transcript UI.
+	r.clearScreenIfApplicable()
+	r.printRemoteBannerIfApplicable()
+}
+
+func (r *Runtime) stopEngineRemote(eff effStopRemoteRunner) {
+	r.mu.Lock()
+	engine := r.engine
+	gen := r.engineRemoteGen
+	active := r.engineRemoteActive
+	r.mu.Unlock()
+
+	if !active || engine == nil {
+		return
+	}
+	if gen != 0 && eff.Gen != 0 && eff.Gen != gen {
+		return
+	}
+
+	r.mu.Lock()
+	r.engineRemoteActive = false
+	r.mu.Unlock()
+	_ = engine.Stop(context.Background(), agentengine.ModeRemote)
+	if !eff.Silent {
+		r.printLocalBannerIfApplicable()
+	}
+}
+
+func (r *Runtime) engineLocalSendLine(eff effLocalSendLine) {
+	r.mu.Lock()
+	engine := r.engine
+	gen := r.engineLocalGen
+	r.mu.Unlock()
+
+	if engine == nil {
+		return
+	}
+	if gen != 0 && eff.Gen != 0 && eff.Gen != gen {
+		return
+	}
+
+	injector, ok := engine.(localLineInjector)
+	if !ok {
+		return
+	}
+	_ = injector.InjectLine(eff.Text)
+}
+
+func (r *Runtime) engineRemoteSend(ctx context.Context, eff effRemoteSend) {
+	r.mu.Lock()
+	engine := r.engine
+	gen := r.engineRemoteGen
+	active := r.engineRemoteActive
+	r.mu.Unlock()
+	if engine == nil {
+		return
+	}
+	if !active {
+		return
+	}
+	if gen != 0 && eff.Gen != 0 && eff.Gen != gen {
+		return
+	}
+
+	r.printRemoteUserInputIfApplicable(eff.Text)
+
+	// Always send asynchronously so we never deadlock the runtime loop while an
+	// engine is blocked on tool approvals (AwaitPermission emits effects).
+	go func() {
+		r.engineSendMu.Lock()
+		defer r.engineSendMu.Unlock()
+
+		err := engine.SendUserMessage(ctx, agentengine.UserMessage{
+			Text:    eff.Text,
+			Meta:    eff.Meta,
+			LocalID: eff.LocalID,
+			AtMs:    time.Now().UnixMilli(),
+		})
+		if err == nil {
+			return
+		}
+
+		// Fail loud: if remote sends consistently fail, the user experiences a
+		// "stuck" remote mode. Emit a runner exit so the FSM can recover (fall
+		// back to local or allow a clean restart).
+		r.mu.Lock()
+		emitFn := r.emitFn
+		currentGen := r.engineRemoteGen
+		remoteActive := r.engineRemoteActive
+		r.mu.Unlock()
+		if emitFn == nil || !remoteActive || currentGen != gen {
+			return
+		}
+		emitFn(evRunnerExited{Gen: gen, Mode: ModeRemote, Err: err})
+	}()
+}
+
+func (r *Runtime) engineRemoteAbort(ctx context.Context, eff effRemoteAbort) {
+	_ = eff
+	r.mu.Lock()
+	engine := r.engine
+	r.mu.Unlock()
+	if engine == nil {
+		return
+	}
+	_ = engine.Abort(ctx)
+}

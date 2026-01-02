@@ -224,7 +224,7 @@ func TestReducePermissionRequested_AddsDurableRequest(t *testing.T) {
 	require.True(t, foundEphemeral, "expected effEmitEphemeral, got: %+v", effects)
 }
 
-func TestReducePermissionDecision_RemovesDurableAndEmitsDecisionEffect(t *testing.T) {
+func TestReducePermissionDecision_RemovesDurableAndPersists(t *testing.T) {
 	t.Parallel()
 
 	state := State{
@@ -252,14 +252,7 @@ func TestReducePermissionDecision_RemovesDurableAndEmitsDecisionEffect(t *testin
 	require.False(t, ok)
 	_, ok = next.AgentState.CompletedRequests["r1"]
 	require.True(t, ok)
-	foundDecision := false
-	for _, eff := range effects {
-		if d, ok := eff.(effRemotePermissionDecision); ok {
-			foundDecision = true
-			require.Equal(t, int64(9), d.Gen)
-		}
-	}
-	require.True(t, foundDecision, "expected effRemotePermissionDecision, got: %+v", effects)
+	require.NotEmpty(t, effects, "expected persistence-related effects")
 	select {
 	case err := <-reply:
 		require.NoError(t, err)
@@ -418,11 +411,7 @@ func TestReducePermissionDecision_CompletesAwaitPromiseWithoutRemoteEffect(t *te
 		}
 	}
 
-	for _, eff := range effects {
-		if _, ok := eff.(effRemotePermissionDecision); ok {
-			t.Fatalf("did not expect effRemotePermissionDecision for non-remote mode")
-		}
-	}
+	_ = effects
 }
 
 func TestReduceSetControlledByUser_SchedulesPersist(t *testing.T) {

@@ -10,7 +10,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/bhandras/delight/cli/internal/cli"
@@ -22,6 +24,16 @@ import (
 
 const (
 	authChallenge = "delight-auth-challenge"
+)
+
+const (
+	// signalShutdownTimeout bounds how long we wait after the first Ctrl+C for
+	// the session manager to stop runners and restore terminal state.
+	signalShutdownTimeout = 3 * time.Second
+
+	// signalChannelDepth allows capturing a second Ctrl+C while a graceful
+	// shutdown is in progress.
+	signalChannelDepth = 2
 )
 
 // AuthRequest is the request payload for the Delight auth endpoint.
@@ -145,9 +157,40 @@ func run() error {
 
 	logger.Infof("Delight session started! Press Ctrl+C to exit.")
 
-	// Wait for Claude to exit
-	if err := sessionMgr.Wait(); err != nil {
-		logger.Warnf("Session ended with error: %v", err)
+	sigCh := make(chan os.Signal, signalChannelDepth)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- sessionMgr.Wait()
+	}()
+
+	select {
+	case err := <-waitCh:
+		if err != nil {
+			logger.Warnf("Session ended with error: %v", err)
+		}
+	case <-sigCh:
+		// Graceful shutdown on first Ctrl+C so:
+		// - agent subprocesses (Codex/Claude) are stopped,
+		// - terminal state (raw mode, process groups) is restored.
+		//
+		// If shutdown hangs, a second Ctrl+C forces exit.
+		go func() {
+			<-sigCh
+			os.Exit(1)
+		}()
+		_ = sessionMgr.Close()
+		select {
+		case err := <-waitCh:
+			if err != nil {
+				logger.Warnf("Session ended with error: %v", err)
+			}
+		case <-time.After(signalShutdownTimeout):
+			os.Exit(1)
+		}
+		fmt.Fprint(os.Stdout, "\r\n")
 	}
 
 	return nil

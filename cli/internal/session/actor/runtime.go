@@ -9,8 +9,6 @@ import (
 	"github.com/bhandras/delight/cli/internal/acp"
 	framework "github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/agentengine"
-	"github.com/bhandras/delight/cli/internal/agentengine/codexengine"
-	"github.com/bhandras/delight/cli/internal/claude"
 	"golang.org/x/term"
 )
 
@@ -35,18 +33,16 @@ type Runtime struct {
 
 	timers map[string]*time.Timer
 
-	localProc    *claude.Process
-	localGen     int64
-	localScanner *claude.Scanner
-	remoteBridge *claude.RemoteBridge
-	remoteGen    int64
+	engineType agentengine.AgentType
+	engine     agentengine.AgentEngine
 
-	codexEngine       *codexengine.Engine
-	codexRemoteGen    int64
-	codexRemoteActive bool
-	codexLocalGen     int64
-	codexLocalActive  bool
-	codexSendMu       sync.Mutex
+	engineLocalGen         int64
+	engineRemoteGen        int64
+	engineLocalActive      bool
+	engineRemoteActive     bool
+	engineLocalInteractive bool
+
+	engineSendMu sync.Mutex
 
 	acpURL          string
 	acpAgent        string
@@ -170,74 +166,74 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 		switch e := eff.(type) {
 		case effStartLocalRunner:
 			switch r.agent {
+			case agentengine.AgentClaude:
+				r.startEngineLocal(ctx, e, emit)
 			case agentengine.AgentCodex:
-				r.startCodexLocal(ctx, e, emit)
+				r.startEngineLocal(ctx, e, emit)
 			case agentengine.AgentACP:
 				r.startACPLocal(ctx, e, emit)
 			case agentengine.AgentFake:
 				r.startFakeLocal(ctx, e, emit)
 			default:
-				r.startLocal(ctx, e, emit)
+				r.startEngineLocal(ctx, e, emit)
 			}
 		case effStopLocalRunner:
 			switch r.agent {
+			case agentengine.AgentClaude:
+				r.stopEngineLocal(e)
 			case agentengine.AgentCodex:
-				r.stopCodexLocal(e)
+				r.stopEngineLocal(e)
 			case agentengine.AgentACP:
 				r.stopACPLocal(e)
 			case agentengine.AgentFake:
 				r.stopFakeLocal(e)
 			default:
-				r.stopLocal(e)
+				r.stopEngineLocal(e)
 			}
 		case effStartRemoteRunner:
 			switch r.agent {
+			case agentengine.AgentClaude:
+				r.startEngineRemote(ctx, e, emit)
 			case agentengine.AgentCodex:
-				r.startCodexRemote(ctx, e, emit)
+				r.startEngineRemote(ctx, e, emit)
 			case agentengine.AgentACP:
 				r.startACPRemote(ctx, e, emit)
 			case agentengine.AgentFake:
 				r.startFakeRemote(ctx, e, emit)
 			default:
-				r.startRemote(ctx, e, emit)
+				r.startEngineRemote(ctx, e, emit)
 			}
 		case effStopRemoteRunner:
 			switch r.agent {
+			case agentengine.AgentClaude:
+				r.stopEngineRemote(e)
 			case agentengine.AgentCodex:
-				r.stopCodexRemote(e)
+				r.stopEngineRemote(e)
 			case agentengine.AgentACP:
 				r.stopACPRemote(e)
 			case agentengine.AgentFake:
 				r.stopFakeRemote(e)
 			default:
-				r.stopRemote(e)
+				r.stopEngineRemote(e)
 			}
 		case effLocalSendLine:
 			// Local line injection is currently only supported for Claude.
-			if r.agent != agentengine.AgentCodex {
-				r.localSendLine(e)
-			}
+			r.engineLocalSendLine(e)
 		case effRemoteSend:
 			switch r.agent {
+			case agentengine.AgentClaude:
+				r.engineRemoteSend(ctx, e)
 			case agentengine.AgentCodex:
-				r.codexRemoteSend(ctx, e, emit)
+				r.engineRemoteSend(ctx, e)
 			case agentengine.AgentACP:
 				r.acpRemoteSend(ctx, e, emit)
 			case agentengine.AgentFake:
 				r.fakeRemoteSend(ctx, e, emit)
 			default:
-				r.remoteSend(e)
+				r.engineRemoteSend(ctx, e)
 			}
 		case effRemoteAbort:
-			// Abort is best-effort and currently only supported for Claude remote.
-			if r.agent != agentengine.AgentCodex {
-				r.remoteAbort(e)
-			}
-		case effRemotePermissionDecision:
-			// Claude remote requires control_response writes; Codex permissions use AwaitPermission.
-			if r.agent != agentengine.AgentCodex {
-				r.remotePermissionDecision(e)
-			}
+			r.engineRemoteAbort(ctx, e)
 		case effPersistAgentState:
 			r.persistAgentState(ctx, e, emit)
 		case effStartDesktopTakebackWatcher:
@@ -266,16 +262,8 @@ func (r *Runtime) Stop() {
 		timer.Stop()
 	}
 	r.timers = nil
-	codexEngine := r.codexEngine
-	r.codexEngine = nil
-	if r.remoteBridge != nil {
-		r.remoteBridge.Kill()
-		r.remoteBridge = nil
-	}
-	if r.localProc != nil {
-		r.localProc.Kill()
-		r.localProc = nil
-	}
+	engine := r.engine
+	r.engine = nil
 	r.mu.Unlock()
 
 	if cancel != nil {
@@ -294,7 +282,7 @@ func (r *Runtime) Stop() {
 		}
 	}
 
-	if codexEngine != nil {
-		_ = codexEngine.Close(context.Background())
+	if engine != nil {
+		_ = engine.Close(context.Background())
 	}
 }
