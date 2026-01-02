@@ -73,12 +73,57 @@ private struct MarkdownText: View {
                     listLineView(lines[index])
                 }
             }
-        } else if text.count <= 4000, let attributed = try? AttributedString(markdown: text) {
+        } else if text.count <= 4000,
+                  let attributed = try? AttributedString(markdown: formatMarkdownForDisplay(text)) {
             Text(attributed)
         } else {
             Text(text)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// formatMarkdownForDisplay converts soft line breaks (single `\n`) into hard
+    /// breaks so SwiftUI doesn't collapse them into spaces.
+    ///
+    /// This keeps agent output readable on iOS while preserving fenced code
+    /// blocks as-is (no trailing whitespace injected into code).
+    private func formatMarkdownForDisplay(_ raw: String) -> String {
+        // Split while preserving empty lines.
+        let parts = raw.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
+        if parts.count <= 1 {
+            return raw
+        }
+
+        var out: [String] = []
+        out.reserveCapacity(parts.count)
+
+        var inFence = false
+        for (index, line) in parts.enumerated() {
+            let trimmed = line.trimmingCharacters(in: CharacterSet.whitespaces)
+            let isFence = trimmed.hasPrefix("```")
+
+            out.append(line)
+
+            if index == parts.count - 1 {
+                continue
+            }
+
+            if isFence {
+                // Fence delimiter lines should not be given trailing spaces.
+                out.append("\n")
+                inFence.toggle()
+                continue
+            }
+
+            if inFence {
+                out.append("\n")
+            } else {
+                // Two spaces before newline is a Markdown hard line break.
+                out.append("  \n")
+            }
+        }
+
+        return out.joined()
     }
 
     private func looksLikeList(_ text: String) -> Bool {
