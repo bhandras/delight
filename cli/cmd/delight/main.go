@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -58,144 +59,123 @@ func main() {
 }
 
 func run() error {
-	workDir, err := os.Getwd()
-	if err != nil {
-		workDir = "."
+	rawArgs := os.Args[1:]
+	if wantsHelp(rawArgs) {
+		printUsage()
+		return nil
 	}
-	logClose, err := setupLogging(workDir)
-	if err != nil {
-		return err
-	}
-	defer logClose()
-
-	// Load configuration
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+	if wantsVersion(rawArgs) {
+		fmt.Println("delight-cli-go v1.0.0")
+		return nil
 	}
 
-	args, err := parseFlags(cfg, os.Args[1:])
-	if err != nil {
-		return err
+	cmdIndex, cmd := findCommand(rawArgs)
+	if cmd == "" {
+		printUsage()
+		return nil
 	}
 
-	// Check for subcommands
-	if len(args) > 0 {
-		switch args[0] {
-		case "acp":
-			cfg.Agent = "acp"
-			args = args[1:]
-		case "claude":
-			cfg.Agent = "claude"
-			args = args[1:]
-		case "codex":
-			cfg.Agent = "codex"
-			args = args[1:]
-		case "auth":
-			return cli.AuthCommand(cfg)
-		case "help", "--help", "-h":
+	cfg, err := config.Default()
+	if err != nil {
+		return fmt.Errorf("failed to initialize config: %w", err)
+	}
+
+	leadingFlags := rawArgs[:cmdIndex]
+	trailingArgs := rawArgs[cmdIndex+1:]
+
+	switch cmd {
+	case "help":
+		printUsage()
+		return nil
+	case "auth":
+		if err := parseFlags(cfg, append([]string(nil), leadingFlags...)); err != nil {
+			return err
+		}
+		if err := parseFlags(cfg, append([]string(nil), trailingArgs...)); err != nil {
+			return err
+		}
+		if err := cfg.EnsureHome(); err != nil {
+			return err
+		}
+		logClose, err := setupLogging(".")
+		if err != nil {
+			return err
+		}
+		defer logClose()
+		return cli.AuthCommand(cfg)
+	case "daemon":
+		if len(trailingArgs) == 0 || trailingArgs[0] != "stop" {
 			printUsage()
 			return nil
-		case "version", "--version", "-v":
-			fmt.Println("delight-cli-go v1.0.0")
-			return nil
-		case "daemon":
-			if len(args) > 1 && args[1] == "stop" {
-				return cli.StopDaemonCommand(cfg)
-			}
-			fmt.Println("Usage: delight daemon stop")
-			return nil
-		case "stop-daemon":
-			return cli.StopDaemonCommand(cfg)
 		}
-	}
-
-	// Check if we have account credentials (master.key and access.key)
-	masterKeyPath := filepath.Join(cfg.DelightHome, "master.key")
-	if _, err := os.Stat(masterKeyPath); os.IsNotExist(err) {
-		// No account credentials - trigger QR code authentication
-		logger.Infof("No account credentials found. Starting authentication...")
-		logger.Infof("")
-		if err := cli.AuthCommand(cfg); err != nil {
-			return fmt.Errorf("authentication failed: %w", err)
+		if err := parseFlags(cfg, append([]string(nil), leadingFlags...)); err != nil {
+			return err
 		}
-		logger.Infof("")
-	}
-
-	// Load access token
-	tokenData, err := os.ReadFile(cfg.AccessKey)
-	if err != nil {
-		return fmt.Errorf("failed to read access token: %w", err)
-	}
-	token := string(tokenData)
-
-	if cfg.Debug {
-		logger.Debugf("Access token: %s...", token[:20])
-	}
-
-	if cfg.Debug {
-		logger.Debugf("Config: ServerURL=%s, DelightHome=%s", cfg.ServerURL, cfg.DelightHome)
-	}
-
-	logger.Infof("Authentication successful!")
-	logger.Infof("Delight home: %s", cfg.DelightHome)
-	logger.Infof("Server: %s", cfg.ServerURL)
-
-	logger.Infof("Starting Delight session in: %s", workDir)
-	logger.Infof("Agent: %s", cfg.Agent)
-
-	// Create and start session manager
-	sessionMgr, err := session.NewManager(cfg, token, cfg.Debug)
-	if err != nil {
-		return fmt.Errorf("failed to create session manager: %w", err)
-	}
-	defer sessionMgr.Close()
-
-	if err := sessionMgr.Start(workDir); err != nil {
-		return fmt.Errorf("failed to start session: %w", err)
-	}
-
-	logger.Infof("Delight session started! Press Ctrl+C to exit.")
-
-	sigCh := make(chan os.Signal, signalChannelDepth)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
-
-	waitCh := make(chan error, 1)
-	go func() {
-		waitCh <- sessionMgr.Wait()
-	}()
-
-	select {
-	case err := <-waitCh:
+		if err := parseFlags(cfg, append([]string(nil), trailingArgs[1:]...)); err != nil {
+			return err
+		}
+		if err := cfg.EnsureHome(); err != nil {
+			return err
+		}
+		logClose, err := setupLogging(".")
 		if err != nil {
-			logger.Warnf("Session ended with error: %v", err)
+			return err
 		}
-	case <-sigCh:
-		// Graceful shutdown on first Ctrl+C so:
-		// - agent subprocesses (Codex/Claude) are stopped,
-		// - terminal state (raw mode, process groups) is restored.
-		//
-		// If shutdown hangs, a second Ctrl+C forces exit.
-		go func() {
-			<-sigCh
-			os.Exit(1)
-		}()
-		_ = sessionMgr.Close()
-		select {
-		case err := <-waitCh:
-			if err != nil {
-				logger.Warnf("Session ended with error: %v", err)
-			}
-		case <-time.After(signalShutdownTimeout):
-			os.Exit(1)
+		defer logClose()
+		return cli.StopDaemonCommand(cfg)
+	case "stop-daemon":
+		if err := parseFlags(cfg, append([]string(nil), leadingFlags...)); err != nil {
+			return err
 		}
-		fmt.Fprint(os.Stdout, "\r\n")
+		if err := parseFlags(cfg, append([]string(nil), trailingArgs...)); err != nil {
+			return err
+		}
+		if err := cfg.EnsureHome(); err != nil {
+			return err
+		}
+		logClose, err := setupLogging(".")
+		if err != nil {
+			return err
+		}
+		defer logClose()
+		return cli.StopDaemonCommand(cfg)
+	case "run":
+		if err := parseFlags(cfg, append([]string(nil), leadingFlags...)); err != nil {
+			return err
+		}
+		if err := parseFlags(cfg, append([]string(nil), trailingArgs...)); err != nil {
+			return err
+		}
+		return runSession(cfg)
+	case "acp", "claude", "codex":
+		cfg.Agent = cmd
+		subCmdIndex, subCmd := findCommand(trailingArgs)
+		if subCmd == "" {
+			printUsage()
+			return nil
+		}
+		if subCmd != "run" {
+			return fmt.Errorf("unknown command: %s %s", cmd, subCmd)
+		}
+		agentLeading := append([]string(nil), leadingFlags...)
+		agentTrailing := append([]string(nil), trailingArgs[:subCmdIndex]...)
+		agentRunArgs := append([]string(nil), trailingArgs[subCmdIndex+1:]...)
+		if err := parseFlags(cfg, agentLeading); err != nil {
+			return err
+		}
+		if err := parseFlags(cfg, agentTrailing); err != nil {
+			return err
+		}
+		if err := parseFlags(cfg, agentRunArgs); err != nil {
+			return err
+		}
+		return runSession(cfg)
+	default:
+		return fmt.Errorf("unknown command: %s", cmd)
 	}
-
-	return nil
 }
 
+// setupLogging configures log output to a file under workDir.
 func setupLogging(workDir string) (func(), error) {
 	logPath := filepath.Join(workDir, "delight.log")
 	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
@@ -212,7 +192,8 @@ func setupLogging(workDir string) (func(), error) {
 	return func() { _ = file.Close() }, nil
 }
 
-func parseFlags(cfg *config.Config, args []string) ([]string, error) {
+// parseFlags applies CLI flags to cfg and configures the shared logger.
+func parseFlags(cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("delight", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
@@ -221,18 +202,17 @@ func parseFlags(cfg *config.Config, args []string) ([]string, error) {
 	acpURL := fs.String("acp-url", "", "ACP server URL")
 	acpAgent := fs.String("acp-agent", "", "ACP agent name")
 	agent := fs.String("agent", "", "Agent backend (acp|claude|codex)")
+	model := fs.String("model", "", "Model identifier (engine-specific)")
+	reasoningEffort := fs.String("reasoning-effort", "", "Reasoning effort preset (low|medium|high|xhigh)")
+	permissionMode := fs.String("permission-mode", "", "Permission mode (default|read-only|safe-yolo|yolo)")
+	fakeAgent := fs.Bool("fake-agent", false, "Use the fake agent backend (integration tests)")
 	forceNewSession := fs.Bool("new-session", false, "Force creation of a new session")
 	logLevel := fs.String("log-level", "info", "Log level (trace|debug|info|warn|error)")
 	socketIOTransport := fs.String("socketio-transport", "websocket", "Socket.IO transport (websocket|polling)")
-	showHelp := fs.Bool("help", false, "Show help")
+	startingMode := fs.String("mode", "", "Starting mode (local|remote)")
 
 	if err := fs.Parse(args); err != nil {
-		return nil, err
-	}
-
-	if *showHelp {
-		printUsage()
-		return nil, nil
+		return err
 	}
 
 	if *serverURL != "" {
@@ -251,9 +231,29 @@ func parseFlags(cfg *config.Config, args []string) ([]string, error) {
 	cfg.ACPEnable = cfg.ACPURL != "" && cfg.ACPAgent != ""
 	if *agent != "" {
 		if *agent != "acp" && *agent != "claude" && *agent != "codex" {
-			return nil, fmt.Errorf("invalid --agent %q (expected acp, claude, or codex)", *agent)
+			return fmt.Errorf("invalid --agent %q (expected acp, claude, or codex)", *agent)
 		}
 		cfg.Agent = *agent
+	}
+	if *fakeAgent {
+		cfg.FakeAgent = true
+	}
+	if *model != "" {
+		cfg.Model = *model
+	}
+	if *reasoningEffort != "" {
+		cfg.ReasoningEffort = *reasoningEffort
+	}
+	if *permissionMode != "" {
+		cfg.PermissionMode = *permissionMode
+	}
+	if *startingMode != "" {
+		switch *startingMode {
+		case "local", "remote":
+			cfg.StartingMode = *startingMode
+		default:
+			return fmt.Errorf("invalid --mode %q (expected local or remote)", *startingMode)
+		}
 	}
 	if *forceNewSession {
 		cfg.ForceNewSession = true
@@ -262,16 +262,16 @@ func parseFlags(cfg *config.Config, args []string) ([]string, error) {
 	case "websocket", "polling":
 		cfg.SocketIOTransport = *socketIOTransport
 	default:
-		return nil, fmt.Errorf("invalid --socketio-transport %q (expected websocket or polling)", *socketIOTransport)
+		return fmt.Errorf("invalid --socketio-transport %q (expected websocket or polling)", *socketIOTransport)
 	}
 	level, err := logger.ParseLevel(*logLevel)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	logger.SetLevel(level)
 	cfg.Debug = level <= logger.LevelDebug
 
-	return fs.Args(), nil
+	return nil
 }
 
 func getOrCreateAccessToken(cfg *config.Config, publicKey, privateKey []byte) (string, error) {
@@ -337,24 +337,33 @@ func getOrCreateAccessToken(cfg *config.Config, publicKey, privateKey []byte) (s
 }
 
 func printUsage() {
-	fmt.Println(`delight - Delight CLI for Claude Code session sync
+	fmt.Println(`delight - Delight CLI for agent session sync
 
 Usage:
-  delight              Start a new Delight session (spawns Claude by default)
-  delight claude       Start a Claude session
-  delight codex        Start a Codex session
-  delight auth         Authenticate with QR code for mobile pairing
-  delight help         Show this help message
-  delight version      Show version information
-  delight daemon stop  Stop the running daemon (sessions stay alive)
-  delight stop-daemon  Stop the running daemon (sessions stay alive)
+  delight [command]
+
+Commands:
+  run                  Start a new Delight session
+  claude run           Start a session using Claude
+  codex run            Start a session using Codex
+  acp run              Start a session using ACP
+  auth                 Authenticate with QR code for mobile pairing
+  help                 Show this help message
+  version              Show version information
+  daemon stop          Stop the running daemon (sessions stay alive)
+  stop-daemon          Stop the running daemon (sessions stay alive)
 
 Flags:
   --server-url        Delight server URL
   --home-dir          Delight home directory
   --acp-url           ACP server URL
   --acp-agent         ACP agent name
-  --agent            Agent backend (claude|codex)
+  --agent             Agent backend (acp|claude|codex)
+  --mode              Starting mode (local|remote)
+  --model             Model identifier (engine-specific)
+  --reasoning-effort  Reasoning effort preset (low|medium|high|xhigh)
+  --permission-mode   Permission mode (default|read-only|safe-yolo|yolo)
+  --fake-agent        Use the fake agent backend (tests)
   --new-session       Force creation of a new session
   --socketio-transport Socket.IO transport (websocket|polling)
   --log-level         Log level (trace|debug|info|warn|error)
@@ -363,9 +372,152 @@ Examples:
   # Authenticate with QR code
   delight auth
 
-  # Start a Claude session with default server
-  delight
+  # Start a session (Codex by default)
+  delight run
 
-  # Start a Claude session with custom server
-  delight --server-url=http://localhost:3005`)
+  # Start a session with custom server and model
+  delight run --server-url=http://localhost:3005 --model=gpt-5.2-codex`)
+}
+
+// wantsHelp reports whether args request usage output.
+func wantsHelp(args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	for _, arg := range args {
+		switch arg {
+		case "--help", "-h":
+			return true
+		}
+	}
+	_, cmd := findCommand(args)
+	return cmd == "help"
+}
+
+// wantsVersion reports whether args request version output.
+func wantsVersion(args []string) bool {
+	for _, arg := range args {
+		switch arg {
+		case "--version", "-v":
+			return true
+		}
+	}
+	_, cmd := findCommand(args)
+	return cmd == "version"
+}
+
+// findCommand returns the first non-flag token in args.
+func findCommand(args []string) (int, string) {
+	for i, arg := range args {
+		if arg == "" {
+			continue
+		}
+		if arg == "-" || arg == "--" {
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		return i, arg
+	}
+	return len(args), ""
+}
+
+// runSession starts a Delight session with the provided configuration.
+func runSession(cfg *config.Config) error {
+	workDir, err := os.Getwd()
+	if err != nil {
+		workDir = "."
+	}
+	logClose, err := setupLogging(workDir)
+	if err != nil {
+		return err
+	}
+	defer logClose()
+
+	if err := cfg.EnsureHome(); err != nil {
+		return err
+	}
+
+	// Check if we have account credentials (master.key and access.key)
+	masterKeyPath := filepath.Join(cfg.DelightHome, "master.key")
+	if _, err := os.Stat(masterKeyPath); os.IsNotExist(err) {
+		// No account credentials - trigger QR code authentication
+		logger.Infof("No account credentials found. Starting authentication...")
+		logger.Infof("")
+		if err := cli.AuthCommand(cfg); err != nil {
+			return fmt.Errorf("authentication failed: %w", err)
+		}
+		logger.Infof("")
+	}
+
+	// Load access token
+	tokenData, err := os.ReadFile(cfg.AccessKey)
+	if err != nil {
+		return fmt.Errorf("failed to read access token: %w", err)
+	}
+	token := string(tokenData)
+
+	if cfg.Debug {
+		logger.Debugf("Access token: %s...", token[:20])
+		logger.Debugf("Config: ServerURL=%s, DelightHome=%s", cfg.ServerURL, cfg.DelightHome)
+	}
+
+	logger.Infof("Authentication successful!")
+	logger.Infof("Delight home: %s", cfg.DelightHome)
+	logger.Infof("Server: %s", cfg.ServerURL)
+
+	logger.Infof("Starting Delight session in: %s", workDir)
+	logger.Infof("Agent: %s", cfg.Agent)
+
+	// Create and start session manager
+	sessionMgr, err := session.NewManager(cfg, token, cfg.Debug)
+	if err != nil {
+		return fmt.Errorf("failed to create session manager: %w", err)
+	}
+	defer sessionMgr.Close()
+
+	if err := sessionMgr.Start(workDir); err != nil {
+		return fmt.Errorf("failed to start session: %w", err)
+	}
+
+	logger.Infof("Delight session started! Press Ctrl+C to exit.")
+
+	sigCh := make(chan os.Signal, signalChannelDepth)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- sessionMgr.Wait()
+	}()
+
+	select {
+	case err := <-waitCh:
+		if err != nil {
+			logger.Warnf("Session ended with error: %v", err)
+		}
+	case <-sigCh:
+		// Graceful shutdown on first Ctrl+C so:
+		// - agent subprocesses (Codex/Claude) are stopped,
+		// - terminal state (raw mode, process groups) is restored.
+		//
+		// If shutdown hangs, a second Ctrl+C forces exit.
+		go func() {
+			<-sigCh
+			os.Exit(1)
+		}()
+		_ = sessionMgr.Close()
+		select {
+		case err := <-waitCh:
+			if err != nil {
+				logger.Warnf("Session ended with error: %v", err)
+			}
+		case <-time.After(signalShutdownTimeout):
+			os.Exit(1)
+		}
+		fmt.Fprint(os.Stdout, "\r\n")
+	}
+
+	return nil
 }

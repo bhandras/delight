@@ -1,6 +1,6 @@
 # Delight CLI (Go)
 
-Minimal CLI wrapper for Claude Code with mobile remote control - reimplemented in Go.
+Minimal CLI wrapper for agent sessions with mobile remote control.
 
 ## Features (Minimal MVP)
 
@@ -17,11 +17,14 @@ Minimal CLI wrapper for Claude Code with mobile remote control - reimplemented i
 # Build
 make build
 
-# Configure
-export DELIGHT_SERVER_URL=http://localhost:3005
-
-# Run
+# Show usage (default)
 ./delight
+
+# Run a session (Codex by default)
+./delight run --server-url=http://localhost:3005
+
+# Run a session with an explicit model + log level
+./delight run --server-url=http://localhost:3005 --model=gpt-5.2-codex --log-level=debug
 ```
 
 ## How It Works
@@ -41,7 +44,11 @@ Relays to Delight iOS app
 ## Commands
 
 ```bash
-delight              # Start Claude Code session
+delight              # Show usage
+delight run          # Start a session
+delight claude run   # Start a session using Claude
+delight codex run    # Start a session using Codex
+delight acp run      # Start a session using ACP
 delight auth         # Authenticate with server
 delight version      # Show version
 ```

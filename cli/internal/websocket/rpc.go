@@ -3,9 +3,7 @@ package websocket
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"reflect"
-	"strings"
 	"sync"
 
 	"github.com/bhandras/delight/shared/logger"
@@ -54,7 +52,7 @@ func (m *RPCManager) RegisterHandler(method string, handler RPCHandler) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.handlers[method] = handler
-	if m.debug || shouldDebugRPC() {
+	if m.debug || logger.Enabled(logger.LevelDebug) {
 		logger.Debugf("Registered RPC handler: %s", method)
 	}
 	if m.client != nil && m.client.IsConnected() {
@@ -71,7 +69,7 @@ func (m *RPCManager) RegisterAll() {
 		return
 	}
 	for method := range m.handlers {
-		if m.debug || shouldDebugRPC() {
+		if m.debug || logger.Enabled(logger.LevelDebug) {
 			logger.Debugf("Re-registering RPC handler: %s", method)
 		}
 		_ = m.client.EmitRaw("rpc-register", wire.RPCRegisterPayload{Method: method})
@@ -124,12 +122,12 @@ func (m *RPCManager) SetupSocketHandlers(sock interface{}) {
 			}
 			return
 		}
-		if shouldDebugRPC() {
+		if m.debug || logger.Enabled(logger.LevelTrace) {
 			logger.Tracef("RPC request received: method=%v", data["method"])
 		}
 
 		// Get callback function for response
-		if m.debug || shouldDebugRPC() {
+		if m.debug || logger.Enabled(logger.LevelTrace) {
 			logger.Tracef("RPC request ack type: %T", args[len(args)-1])
 		}
 		var callback func(...any)
@@ -243,13 +241,6 @@ func (m *RPCManager) handleRPCCall(data map[string]interface{}, callback func(..
 	}
 
 	callback(response)
-}
-
-func shouldDebugRPC() bool {
-	if val := os.Getenv("DELIGHT_DEBUG_RPC"); strings.EqualFold(val, "true") || strings.EqualFold(val, "1") {
-		return true
-	}
-	return false
 }
 
 // Call makes an RPC call to the server

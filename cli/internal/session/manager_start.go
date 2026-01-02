@@ -300,6 +300,11 @@ func (m *Manager) initSessionActor() {
 		Requests:          make(map[string]types.AgentPendingRequest),
 		CompletedRequests: make(map[string]types.AgentCompletedRequest),
 	}
+	if m.cfg != nil {
+		agentState.Model = strings.TrimSpace(m.cfg.Model)
+		agentState.ReasoningEffort = strings.TrimSpace(m.cfg.ReasoningEffort)
+		agentState.PermissionMode = strings.TrimSpace(m.cfg.PermissionMode)
+	}
 	stateData, _ := json.Marshal(agentState)
 	initial := sessionactor.State{
 		SessionID:             m.sessionID,

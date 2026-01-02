@@ -13,7 +13,6 @@ package actor
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 
 	"github.com/bhandras/delight/shared/logger"
@@ -175,7 +174,7 @@ func (a *Actor[S]) Enqueue(input Input) bool {
 	default:
 		// Best-effort: drop if mailbox is full. Callers that need backpressure
 		// should use a larger mailbox or explicit flow control.
-		if os.Getenv("DELIGHT_DEBUG_DROP") == "1" {
+		if logger.Enabled(logger.LevelDebug) {
 			logger.Debugf("actor: dropped input (mailbox full): %T", input)
 		}
 		return false
