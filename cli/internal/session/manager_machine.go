@@ -4,11 +4,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
 	"github.com/bhandras/delight/cli/internal/crypto"
+	"github.com/bhandras/delight/protocol/logger"
 	"github.com/bhandras/delight/protocol/wire"
 )
 
@@ -77,7 +77,7 @@ func (m *Manager) registerMachineRPCHandlers() {
 
 	m.machineRPC.RegisterHandler(prefix+"stop-daemon", func(params json.RawMessage) (json.RawMessage, error) {
 		wire.DumpToTestdata("rpc_machine_stop_daemon", params)
-		log.Printf("Stop-daemon requested")
+		logger.Infof("Stop-daemon requested")
 		m.scheduleShutdown()
 		m.forceExitAfter(2 * time.Second)
 		return json.Marshal(wire.StopDaemonResponse{

@@ -4,7 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"log"
+
+	"github.com/bhandras/delight/protocol/logger"
 )
 
 // WrapLegacyMessageContent migrates session_messages.content from plain strings to JSON envelopes
@@ -34,7 +35,7 @@ func WrapLegacyMessageContent(db *sql.DB) error {
 		return err
 	}
 
-	log.Printf("[Migration] Found %d legacy messages with non-JSON content", len(items))
+	logger.Infof("[Migration] Found %d legacy messages with non-JSON content", len(items))
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -63,6 +64,6 @@ func WrapLegacyMessageContent(db *sql.DB) error {
 		return err
 	}
 
-	log.Printf("[Migration] Wrapped %d legacy messages", len(items))
+	logger.Infof("[Migration] Wrapped %d legacy messages", len(items))
 	return nil
 }

@@ -2,8 +2,8 @@ package handlers
 
 import (
 	"context"
-	"log"
 
+	"github.com/bhandras/delight/protocol/logger"
 	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/models"
 )
@@ -20,7 +20,7 @@ func DisconnectEffects(ctx context.Context, deps Deps, auth AuthContext, session
 			LastActiveAt: now,
 			ID:           sessionID,
 		}); err != nil {
-			log.Printf("Failed to update session activity: %v", err)
+			logger.Warnf("Failed to update session activity: %v", err)
 		}
 
 		ephemerals = append(ephemerals, newEphemeralToUser(auth.UserID(), protocolwire.EphemeralActivityPayload{
@@ -39,7 +39,7 @@ func DisconnectEffects(ctx context.Context, deps Deps, auth AuthContext, session
 			AccountID:    auth.UserID(),
 			ID:           machineID,
 		}); err != nil {
-			log.Printf("Failed to update machine activity: %v", err)
+			logger.Warnf("Failed to update machine activity: %v", err)
 		}
 
 		ephemerals = append(ephemerals, newEphemeralToUserScoped(auth.UserID(), protocolwire.EphemeralMachineActivityPayload{

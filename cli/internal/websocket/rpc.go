@@ -3,12 +3,12 @@ package websocket
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"reflect"
 	"strings"
 	"sync"
 
+	"github.com/bhandras/delight/protocol/logger"
 	"github.com/bhandras/delight/protocol/wire"
 	"github.com/zishang520/socket.io/v3/pkg/types"
 )
@@ -55,7 +55,7 @@ func (m *RPCManager) RegisterHandler(method string, handler RPCHandler) {
 	defer m.mu.Unlock()
 	m.handlers[method] = handler
 	if m.debug || shouldDebugRPC() {
-		log.Printf("Registered RPC handler: %s", method)
+		logger.Debugf("Registered RPC handler: %s", method)
 	}
 	if m.client != nil && m.client.IsConnected() {
 		_ = m.client.EmitRaw("rpc-register", wire.RPCRegisterPayload{Method: method})
@@ -72,7 +72,7 @@ func (m *RPCManager) RegisterAll() {
 	}
 	for method := range m.handlers {
 		if m.debug || shouldDebugRPC() {
-			log.Printf("Re-registering RPC handler: %s", method)
+			logger.Debugf("Re-registering RPC handler: %s", method)
 		}
 		_ = m.client.EmitRaw("rpc-register", wire.RPCRegisterPayload{Method: method})
 	}
@@ -92,7 +92,7 @@ func (m *RPCManager) SetupSocketHandlers(sock interface{}) {
 		On(types.EventName, ...types.EventListener) error
 	})
 	if !ok {
-		log.Println("Failed to set up RPC handlers: invalid socket type")
+		logger.Errorf("Failed to set up RPC handlers: invalid socket type")
 		return
 	}
 
@@ -111,7 +111,7 @@ func (m *RPCManager) SetupSocketHandlers(sock interface{}) {
 	_ = s.On(types.EventName("rpc-request"), func(args ...any) {
 		if len(args) < 2 {
 			if m.debug {
-				log.Printf("Invalid RPC call: not enough arguments")
+				logger.Debugf("Invalid RPC call: not enough arguments")
 			}
 			return
 		}
@@ -120,17 +120,17 @@ func (m *RPCManager) SetupSocketHandlers(sock interface{}) {
 		data, ok := args[0].(map[string]interface{})
 		if !ok {
 			if m.debug {
-				log.Printf("Invalid RPC call: data is not a map (%T)", args[0])
+				logger.Debugf("Invalid RPC call: data is not a map (%T)", args[0])
 			}
 			return
 		}
 		if shouldDebugRPC() {
-			log.Printf("RPC request received: method=%v", data["method"])
+			logger.Tracef("RPC request received: method=%v", data["method"])
 		}
 
 		// Get callback function for response
 		if m.debug || shouldDebugRPC() {
-			log.Printf("RPC request ack type: %T", args[len(args)-1])
+			logger.Tracef("RPC request ack type: %T", args[len(args)-1])
 		}
 		var callback func(...any)
 		if cb, ok := args[len(args)-1].(func(...any)); ok {
@@ -156,7 +156,7 @@ func (m *RPCManager) SetupSocketHandlers(sock interface{}) {
 				}
 			} else {
 				if m.debug {
-					log.Printf("Invalid RPC call: no callback function")
+					logger.Debugf("Invalid RPC call: no callback function")
 				}
 				return
 			}
@@ -173,7 +173,7 @@ func (m *RPCManager) handleRPCCall(data map[string]interface{}, callback func(..
 	params, _ := data["params"].(string) // Encrypted params as base64 string
 
 	if m.debug {
-		log.Printf("RPC call: %s", method)
+		logger.Tracef("RPC call: %s", method)
 	}
 
 	// Find handler
@@ -185,7 +185,7 @@ func (m *RPCManager) handleRPCCall(data map[string]interface{}, callback func(..
 
 	if !ok {
 		if m.debug {
-			log.Printf("No handler for RPC method: %s", method)
+			logger.Debugf("No handler for RPC method: %s", method)
 		}
 		callback(wire.ErrorResponse{Error: fmt.Sprintf("unknown method: %s", method)})
 		return
@@ -203,7 +203,7 @@ func (m *RPCManager) handleRPCCall(data map[string]interface{}, callback func(..
 				usedPlainParams = true
 			} else {
 				if m.debug {
-					log.Printf("Failed to decrypt RPC params: %v", err)
+					logger.Debugf("Failed to decrypt RPC params: %v", err)
 				}
 				callback(wire.ErrorResponse{Error: "decryption failed"})
 				return
@@ -220,7 +220,7 @@ func (m *RPCManager) handleRPCCall(data map[string]interface{}, callback func(..
 	result, err := handler(paramsJSON)
 	if err != nil {
 		if m.debug {
-			log.Printf("RPC handler error: %v", err)
+			logger.Debugf("RPC handler error: %v", err)
 		}
 		callback(wire.ErrorResponse{Error: err.Error()})
 		return
@@ -232,7 +232,7 @@ func (m *RPCManager) handleRPCCall(data map[string]interface{}, callback func(..
 		encrypted, err := encryptFunc(result)
 		if err != nil {
 			if m.debug {
-				log.Printf("Failed to encrypt RPC result: %v", err)
+				logger.Debugf("Failed to encrypt RPC result: %v", err)
 			}
 			callback(wire.ErrorResponse{Error: "encryption failed"})
 			return

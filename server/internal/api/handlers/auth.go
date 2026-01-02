@@ -2,10 +2,10 @@ package handlers
 
 import (
 	"database/sql"
-	"log"
 	"net/http"
 	"os"
 
+	"github.com/bhandras/delight/protocol/logger"
 	"github.com/bhandras/delight/server/internal/crypto"
 	"github.com/bhandras/delight/server/internal/models"
 	"github.com/bhandras/delight/server/pkg/types"
@@ -58,7 +58,7 @@ func (h *AuthHandler) PostAuth(c *gin.Context) {
 			PublicKey: publicKeyHex,
 		})
 		if err != nil {
-			log.Printf("PostAuth: CreateAccount failed: %v", err)
+			logger.Errorf("PostAuth: CreateAccount failed: %v", err)
 			if os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1" {
 				c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: err.Error()})
 				return
@@ -67,7 +67,7 @@ func (h *AuthHandler) PostAuth(c *gin.Context) {
 			return
 		}
 	} else if err != nil {
-		log.Printf("PostAuth: GetAccountByPublicKey failed: %v", err)
+		logger.Errorf("PostAuth: GetAccountByPublicKey failed: %v", err)
 		if os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1" {
 			c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: err.Error()})
 			return
@@ -79,7 +79,7 @@ func (h *AuthHandler) PostAuth(c *gin.Context) {
 	// Generate JWT token
 	token, err := h.jwtManager.CreateToken(account.ID, nil)
 	if err != nil {
-		log.Printf("PostAuth: CreateToken failed: %v", err)
+		logger.Errorf("PostAuth: CreateToken failed: %v", err)
 		if os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1" {
 			c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: err.Error()})
 			return
@@ -113,8 +113,8 @@ func (h *AuthHandler) PostAuthRequest(c *gin.Context) {
 	// Create auth request
 	requestID := types.NewCUID()
 	_, err = h.queries.CreateTerminalAuthRequest(c.Request.Context(), models.CreateTerminalAuthRequestParams{
-		ID:         requestID,
-		PublicKey:  publicKeyHex,
+		ID:        requestID,
+		PublicKey: publicKeyHex,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to create auth request"})

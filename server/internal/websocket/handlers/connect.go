@@ -2,8 +2,8 @@ package handlers
 
 import (
 	"context"
-	"log"
 
+	"github.com/bhandras/delight/protocol/logger"
 	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/models"
 )
@@ -22,7 +22,7 @@ func ConnectMachineScoped(ctx context.Context, deps Deps, auth AuthContext, mach
 		AccountID:    auth.UserID(),
 		ID:           machineID,
 	}); err != nil {
-		log.Printf("Failed to update machine activity: %v", err)
+		logger.Warnf("Failed to update machine activity: %v", err)
 	}
 
 	return NewEventResultWithEphemerals(nil, nil, []EphemeralInstruction{

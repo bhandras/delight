@@ -2,9 +2,9 @@ package runtime
 
 import (
 	"context"
-	"log"
 	"time"
 
+	"github.com/bhandras/delight/protocol/logger"
 	protocolwire "github.com/bhandras/delight/protocol/wire"
 	pkgtypes "github.com/bhandras/delight/server/pkg/types"
 )
@@ -20,7 +20,7 @@ func (r *sessionRuntime) handleMessage(e messageEvent) {
 
 	ok, err := r.store.ValidateSessionOwner(ctx, e.sessionID, e.userID)
 	if err != nil {
-		log.Printf("[runtime] message validate error sid=%s: %v", e.sessionID, err)
+		logger.Errorf("[runtime] message validate error sid=%s: %v", e.sessionID, err)
 		return
 	}
 	if !ok {
@@ -29,13 +29,13 @@ func (r *sessionRuntime) handleMessage(e messageEvent) {
 
 	seq, err := r.store.NextSessionMessageSeq(ctx, e.sessionID)
 	if err != nil {
-		log.Printf("[runtime] message seq alloc error sid=%s: %v", e.sessionID, err)
+		logger.Errorf("[runtime] message seq alloc error sid=%s: %v", e.sessionID, err)
 		return
 	}
 
 	msg, err := r.store.CreateEncryptedMessage(ctx, e.sessionID, seq, e.localID, e.cipher)
 	if err != nil {
-		log.Printf("[runtime] message persist error sid=%s: %v", e.sessionID, err)
+		logger.Errorf("[runtime] message persist error sid=%s: %v", e.sessionID, err)
 		return
 	}
 
@@ -43,7 +43,7 @@ func (r *sessionRuntime) handleMessage(e messageEvent) {
 
 	userSeq, err := r.store.NextUserSeq(ctx, e.userID)
 	if err != nil {
-		log.Printf("[runtime] user seq alloc error uid=%s: %v", e.userID, err)
+		logger.Errorf("[runtime] user seq alloc error uid=%s: %v", e.userID, err)
 		return
 	}
 

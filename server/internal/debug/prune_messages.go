@@ -3,7 +3,8 @@ package debug
 import (
 	"context"
 	"database/sql"
-	"log"
+
+	"github.com/bhandras/delight/protocol/logger"
 )
 
 // PruneMessages deletes all session_messages (dev-only helper).
@@ -14,7 +15,7 @@ func PruneMessages(db *sql.DB) error {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n >= 0 {
-		log.Printf("[Debug] Pruned session_messages rows: %d", n)
+		logger.Infof("[Debug] Pruned session_messages rows: %d", n)
 	}
 	return nil
 }

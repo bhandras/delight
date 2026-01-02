@@ -13,9 +13,10 @@ package actor
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"sync"
+
+	"github.com/bhandras/delight/protocol/logger"
 )
 
 // Input is an item delivered to an actor mailbox.
@@ -175,7 +176,7 @@ func (a *Actor[S]) Enqueue(input Input) bool {
 		// Best-effort: drop if mailbox is full. Callers that need backpressure
 		// should use a larger mailbox or explicit flow control.
 		if os.Getenv("DELIGHT_DEBUG_DROP") == "1" {
-			log.Printf("actor: dropped input (mailbox full): %T", input)
+			logger.Debugf("actor: dropped input (mailbox full): %T", input)
 		}
 		return false
 	}

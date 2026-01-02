@@ -6,11 +6,11 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
-	"log"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/bhandras/delight/protocol/logger"
 	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/api/middleware"
 	"github.com/bhandras/delight/server/internal/models"
@@ -188,7 +188,7 @@ func (h *SessionHandler) CreateSession(c *gin.Context) {
 	if h.updates != nil {
 		userSeq, err := h.queries.UpdateAccountSeq(c.Request.Context(), userID)
 		if err != nil {
-			log.Printf("Failed to allocate user seq for new-session: %v", err)
+			logger.Errorf("Failed to allocate user seq for new-session: %v", err)
 		} else {
 			var agentStateValue *string
 			if session.AgentState.Valid {
@@ -295,7 +295,7 @@ func (h *SessionHandler) DeleteSession(c *gin.Context) {
 	if h.updates != nil {
 		userSeq, err := h.queries.UpdateAccountSeq(c.Request.Context(), userID)
 		if err != nil {
-			log.Printf("Failed to allocate user seq for delete-session: %v", err)
+			logger.Errorf("Failed to allocate user seq for delete-session: %v", err)
 		} else {
 			h.updates.EmitUpdateToUser(userID, protocolwire.UpdateEvent{
 				ID:        types.NewCUID(),
@@ -439,7 +439,7 @@ func (h *SessionHandler) GetSessionMessages(c *gin.Context) {
 	response := make([]MessageResponse, len(messages))
 	for i, msg := range messages {
 		response[i] = h.toMessageResponse(msg)
-		log.Printf("[API] Sending message id=%s seq=%d content=%s", msg.ID, msg.Seq, msg.Content)
+		logger.Tracef("[API] Sending message id=%s seq=%d", msg.ID, msg.Seq)
 	}
 
 	if page != nil {
@@ -501,18 +501,18 @@ func (h *SessionHandler) toMessageResponse(msg models.SessionMessage) MessageRes
 	needsWrap := false
 	if err := json.Unmarshal(rawContent, &tmp); err != nil {
 		needsWrap = true
-		log.Printf("[API] Wrapping legacy message content (id=%s, not JSON): %s (err=%v)", msg.ID, msg.Content, err)
+		logger.Debugf("[API] Wrapping legacy message content id=%s: not JSON (err=%v)", msg.ID, err)
 	} else {
 		if m, ok := tmp.(map[string]any); ok {
 			_, hasT := m["t"]
 			_, hasC := m["c"]
 			if !hasT || !hasC {
 				needsWrap = true
-				log.Printf("[API] Wrapping non-envelope message content (id=%s): %s", msg.ID, msg.Content)
+				logger.Debugf("[API] Wrapping non-envelope message content id=%s", msg.ID)
 			}
 		} else {
 			needsWrap = true
-			log.Printf("[API] Wrapping non-object message content (id=%s): %s", msg.ID, msg.Content)
+			logger.Debugf("[API] Wrapping non-object message content id=%s", msg.ID)
 		}
 	}
 

@@ -3,11 +3,11 @@ package actor
 import (
 	"context"
 	"errors"
-	"log"
 	"time"
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/websocket"
+	"github.com/bhandras/delight/protocol/logger"
 	"github.com/bhandras/delight/protocol/wire"
 )
 
@@ -100,7 +100,7 @@ func (r *Runtime) emitEphemeral(eff effEmitEphemeral) {
 	r.mu.Unlock()
 	if emitter == nil {
 		if debug {
-			log.Printf("session: emit ephemeral skipped (no socket emitter)")
+			logger.Debugf("session: emit ephemeral skipped (no socket emitter)")
 		}
 		return
 	}
@@ -114,13 +114,13 @@ func (r *Runtime) emitEphemeral(eff effEmitEphemeral) {
 			}
 		}
 		if typ != "" {
-			log.Printf("session: emit ephemeral type=%s", typ)
+			logger.Debugf("session: emit ephemeral type=%s", typ)
 		} else {
-			log.Printf("session: emit ephemeral")
+			logger.Debugf("session: emit ephemeral")
 		}
 	}
 	if err := emitter.EmitEphemeral(eff.Payload); err != nil && debug {
-		log.Printf("session: emit ephemeral failed: %v", err)
+		logger.Debugf("session: emit ephemeral failed: %v", err)
 	}
 }
 

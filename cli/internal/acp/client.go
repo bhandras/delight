@@ -8,10 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/bhandras/delight/protocol/logger"
 )
 
 type Client struct {
@@ -112,7 +113,7 @@ func (c *Client) doRun(ctx context.Context, path string, payload interface{}) (*
 	req.Close = true
 
 	if c.debug {
-		log.Printf("ACP request: POST %s", c.baseURL+path)
+		logger.Debugf("ACP request: POST %s", c.baseURL+path)
 	}
 
 	resp, err := c.http.Do(req)
@@ -122,7 +123,7 @@ func (c *Client) doRun(ctx context.Context, path string, payload interface{}) (*
 	defer resp.Body.Close()
 
 	if c.debug {
-		log.Printf("ACP response: %s", resp.Status)
+		logger.Debugf("ACP response: %s", resp.Status)
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {

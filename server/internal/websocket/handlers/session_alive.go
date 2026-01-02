@@ -2,9 +2,9 @@ package handlers
 
 import (
 	"context"
-	"log"
 	"time"
 
+	"github.com/bhandras/delight/protocol/logger"
 	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/models"
 )
@@ -33,7 +33,7 @@ func SessionAlive(ctx context.Context, deps Deps, auth AuthContext, req protocol
 		LastActiveAt: time.UnixMilli(t),
 		ID:           req.SID,
 	}); err != nil {
-		log.Printf("Failed to update session activity: %v", err)
+		logger.Warnf("Failed to update session activity: %v", err)
 	}
 
 	return NewEventResultWithEphemerals(nil, nil, []EphemeralInstruction{

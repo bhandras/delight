@@ -3,10 +3,10 @@ package handlers
 import (
 	"database/sql"
 	"encoding/base64"
-	"log"
 	"net/http"
 	"time"
 
+	"github.com/bhandras/delight/protocol/logger"
 	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/api/middleware"
 	"github.com/bhandras/delight/server/internal/models"
@@ -94,13 +94,13 @@ func (h *MachineHandler) CreateMachine(c *gin.Context) {
 	if err == sql.ErrNoRows {
 		// Auto-create account with a placeholder public key
 		// This can happen when the database is reset but the CLI still has a valid token
-		log.Printf("Auto-creating account for user: %s", userID)
+		logger.Infof("Auto-creating account for user: %s", userID)
 		_, err = h.queries.CreateAccount(c.Request.Context(), models.CreateAccountParams{
 			ID:        userID,
 			PublicKey: "auto-created-" + userID, // Placeholder
 		})
 		if err != nil {
-			log.Printf("Failed to auto-create account: %v", err)
+			logger.Errorf("Failed to auto-create account: %v", err)
 			c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to create account"})
 			return
 		}
@@ -155,7 +155,7 @@ func (h *MachineHandler) CreateMachine(c *gin.Context) {
 	})
 
 	if err != nil {
-		log.Printf("CreateMachine error: %v", err)
+		logger.Errorf("CreateMachine error: %v", err)
 		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to create machine"})
 		return
 	}
@@ -168,7 +168,7 @@ func (h *MachineHandler) CreateMachine(c *gin.Context) {
 		AccountID:    userID,
 		ID:           req.ID,
 	}); err != nil {
-		log.Printf("Failed to set machine inactive: %v", err)
+		logger.Warnf("Failed to set machine inactive: %v", err)
 	}
 
 	// Fetch the created machine
@@ -185,7 +185,7 @@ func (h *MachineHandler) CreateMachine(c *gin.Context) {
 	if h.updates != nil {
 		userSeq1, err := h.queries.UpdateAccountSeq(c.Request.Context(), userID)
 		if err != nil {
-			log.Printf("Failed to allocate user seq for new-machine: %v", err)
+			logger.Errorf("Failed to allocate user seq for new-machine: %v", err)
 		} else {
 			var daemonStateValue *string
 			if machine.DaemonState.Valid {
@@ -220,7 +220,7 @@ func (h *MachineHandler) CreateMachine(c *gin.Context) {
 
 		userSeq2, err := h.queries.UpdateAccountSeq(c.Request.Context(), userID)
 		if err != nil {
-			log.Printf("Failed to allocate user seq for update-machine: %v", err)
+			logger.Errorf("Failed to allocate user seq for update-machine: %v", err)
 		} else {
 			h.updates.EmitUpdateToUser(userID, protocolwire.UpdateEvent{
 				ID:        types.NewCUID(),

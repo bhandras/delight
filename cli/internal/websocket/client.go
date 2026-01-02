@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
+	"github.com/bhandras/delight/protocol/logger"
 	"github.com/bhandras/delight/protocol/wire"
 	socket "github.com/zishang520/socket.io/clients/socket/v3"
 	"github.com/zishang520/socket.io/v3/pkg/types"
@@ -187,7 +187,7 @@ func (c *Client) Connect() error {
 	c.connected = false
 	c.mu.Unlock()
 	if debug {
-		log.Printf("Connecting to Socket.IO: %s (path: /v1/updates)", serverURL)
+		logger.Debugf("Connecting to Socket.IO: %s (path: /v1/updates)", serverURL)
 	}
 	if prevSock != nil {
 		prevSock.Disconnect()
@@ -202,12 +202,12 @@ func (c *Client) Connect() error {
 	switch transport {
 	case TransportWebSocket:
 		if debug {
-			log.Printf("Socket.IO transports: websocket only")
+			logger.Debugf("Socket.IO transports: websocket only")
 		}
 		opts.SetTransports(types.NewSet(socket.WebSocket))
 	case TransportPolling:
 		if debug {
-			log.Printf("Socket.IO transports: polling only")
+			logger.Debugf("Socket.IO transports: polling only")
 		}
 		opts.SetTransports(types.NewSet(socket.Polling))
 	default:
@@ -256,7 +256,7 @@ func (c *Client) Connect() error {
 		c.mu.Unlock()
 
 		if debug {
-			log.Printf("Socket.IO connected! ID: %s", sock.Id())
+			logger.Debugf("Socket.IO connected! ID: %s", sock.Id())
 		}
 		for _, cb := range callbacks {
 			cb()
@@ -279,7 +279,7 @@ func (c *Client) Connect() error {
 		c.mu.Unlock()
 
 		if debug {
-			log.Printf("Socket.IO disconnected: %s", reason)
+			logger.Debugf("Socket.IO disconnected: %s", reason)
 		}
 		for _, cb := range callbacks {
 			cb(reason)
@@ -302,7 +302,7 @@ func (c *Client) Connect() error {
 			debug := c.debug
 			c.mu.Unlock()
 			if debug {
-				log.Printf("Received event: %s", et)
+				logger.Tracef("Received event: %s", et)
 			}
 
 			// Convert args to map if possible
@@ -329,7 +329,7 @@ func (c *Client) Connect() error {
 	debug = c.debug
 	c.mu.Unlock()
 	if debug {
-		log.Println("Socket.IO connection initiated")
+		logger.Debugf("Socket.IO connection initiated")
 	}
 
 	return nil
@@ -352,7 +352,7 @@ func (c *Client) logConnectError(args []any) {
 	}
 	c.mu.Unlock()
 	if shouldLog {
-		log.Printf("Socket.IO connection error: %s", msg)
+		logger.Debugf("Socket.IO connection error: %s", msg)
 	}
 }
 
@@ -378,7 +378,7 @@ func (c *Client) Emit(eventType EventType, data any) error {
 		return fmt.Errorf("not connected")
 	}
 	if debug {
-		log.Printf("Sending event: %s", eventType)
+		logger.Tracef("Sending event: %s", eventType)
 	}
 	sock.Emit(string(eventType), normalizePayload(data))
 	c.mu.Unlock()
@@ -395,7 +395,7 @@ func (c *Client) EmitRaw(event string, data any) error {
 		return fmt.Errorf("not connected")
 	}
 	if debug {
-		log.Printf("Sending raw event: %s", event)
+		logger.Tracef("Sending raw event: %s", event)
 	}
 	sock.Emit(event, normalizePayload(data))
 	c.mu.Unlock()
@@ -412,7 +412,7 @@ func (c *Client) EmitWithAck(event string, data any, timeout time.Duration) (map
 		return nil, fmt.Errorf("not connected")
 	}
 	if debug {
-		log.Printf("Sending raw event with ack: %s", event)
+		logger.Tracef("Sending raw event with ack: %s", event)
 	}
 
 	resultCh := make(chan map[string]interface{}, 1)

@@ -3,13 +3,13 @@ package websocket
 import (
 	"database/sql"
 	"encoding/json"
-	"log"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bhandras/delight/protocol/logger"
 	"github.com/bhandras/delight/server/internal/crypto"
 	"github.com/bhandras/delight/server/internal/models"
 	sessionruntime "github.com/bhandras/delight/server/internal/session/runtime"
@@ -120,7 +120,7 @@ func (s *SocketIOServer) emitUpdateToSession(userID, sessionID string, payload a
 			return true
 		}
 
-		log.Printf("Emitting update to %s client (socket %v)", targetSD.ClientType, key)
+		logger.Tracef("Emitting update to %s client (socket %v)", targetSD.ClientType, key)
 		targetSD.Socket.Emit("update", payload)
 		return true
 	})
@@ -342,7 +342,7 @@ func (s *SocketIOServer) HandleSocketIO() gin.HandlerFunc {
 			return
 		}
 
-		log.Printf("Socket.IO request: %s %s", c.Request.Method, c.Request.URL.Path)
+		logger.Tracef("Socket.IO request: %s %s", c.Request.Method, c.Request.URL.Path)
 
 		// Serve Socket.IO
 		httpHandler.ServeHTTP(c.Writer, c.Request)

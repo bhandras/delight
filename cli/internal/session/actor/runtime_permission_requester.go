@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/bhandras/delight/cli/internal/agentengine"
+	"github.com/bhandras/delight/protocol/logger"
 )
 
 // AwaitPermission implements agentengine.PermissionRequester for synchronous engines.
@@ -28,7 +28,7 @@ func (r *Runtime) AwaitPermission(ctx context.Context, requestID string, toolNam
 	r.mu.Unlock()
 	if emit == nil {
 		if debug {
-			log.Printf("session: AwaitPermission cannot emit (emitFn nil) requestID=%s tool=%s", requestID, toolName)
+			logger.Debugf("session: AwaitPermission cannot emit (emitFn nil) requestID=%s tool=%s", requestID, toolName)
 		}
 		return agentengine.PermissionDecision{}, fmt.Errorf("runtime emit function not configured")
 	}
@@ -45,7 +45,7 @@ func (r *Runtime) AwaitPermission(ctx context.Context, requestID string, toolNam
 	const maxAckWait = 10 * time.Second
 	for {
 		if debug {
-			log.Printf("session: AwaitPermission registering requestID=%s tool=%s", requestID, toolName)
+			logger.Debugf("session: AwaitPermission registering requestID=%s tool=%s", requestID, toolName)
 		}
 		emit(cmdPermissionAwait{
 			RequestID: requestID,
@@ -59,14 +59,14 @@ func (r *Runtime) AwaitPermission(ctx context.Context, requestID string, toolNam
 		select {
 		case <-ack:
 			if debug {
-				log.Printf("session: AwaitPermission registered requestID=%s tool=%s", requestID, toolName)
+				logger.Debugf("session: AwaitPermission registered requestID=%s tool=%s", requestID, toolName)
 			}
 			goto awaitDecision
 		case <-ctx.Done():
 			return agentengine.PermissionDecision{}, ctx.Err()
 		case <-time.After(ackWait):
 			if debug {
-				log.Printf("session: AwaitPermission retry requestID=%s tool=%s after=%s", requestID, toolName, ackWait)
+				logger.Debugf("session: AwaitPermission retry requestID=%s tool=%s after=%s", requestID, toolName, ackWait)
 			}
 			// Retry. cmdPermissionAwait is idempotent; the reducer will avoid
 			// duplicate ephemerals for the same request id.
@@ -83,7 +83,7 @@ awaitDecision:
 		return agentengine.PermissionDecision{}, ctx.Err()
 	case decision := <-reply:
 		if debug {
-			log.Printf("session: AwaitPermission resolved requestID=%s tool=%s allow=%t", requestID, toolName, decision.Allow)
+			logger.Debugf("session: AwaitPermission resolved requestID=%s tool=%s allow=%t", requestID, toolName, decision.Allow)
 		}
 		return agentengine.PermissionDecision{
 			Allow:   decision.Allow,

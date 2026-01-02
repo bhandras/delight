@@ -2,8 +2,8 @@ package websocket
 
 import (
 	"context"
-	"log"
 
+	"github.com/bhandras/delight/protocol/logger"
 	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/websocket/handlers"
 	socket "github.com/zishang520/socket.io/servers/socket/v3"
@@ -13,7 +13,12 @@ func (s *SocketIOServer) registerClientHandlers(client *socket.Socket, deps hand
 	// Message event - broadcast to session-scoped clients
 	client.On("message", func(data ...any) {
 		sd := s.getSocketData(socketID)
-		log.Printf("Message event from user %s (socket %s): %+v", sd.UserID, socketID, data)
+		logger.Tracef(
+			"Message event from user %s (socket %s): %+v",
+			sd.UserID,
+			socketID,
+			data,
+		)
 
 		if len(data) == 0 {
 			return
@@ -21,7 +26,7 @@ func (s *SocketIOServer) registerClientHandlers(client *socket.Socket, deps hand
 
 		var payload protocolwire.OutboundMessagePayload
 		if err := decodeAny(data[0], &payload); err != nil {
-			log.Printf("Message data decode error: %v (type=%T)", err, data[0])
+			logger.Warnf("Message data decode error: %v (type=%T)", err, data[0])
 			return
 		}
 
@@ -86,7 +91,7 @@ func (s *SocketIOServer) registerClientHandlers(client *socket.Socket, deps hand
 			return
 		}
 		if shouldDebugRPC() {
-			log.Printf("RPC register: user=%s client=%s method=%s", sd.UserID, sd.ClientType, method)
+			logger.Debugf("RPC register: user=%s client=%s method=%s", sd.UserID, sd.ClientType, method)
 		}
 		s.rpc.Register(sd.UserID, method, socketID)
 		client.Emit("rpc-registered", protocolwire.RPCRegisteredPayload{Method: method})
@@ -147,7 +152,13 @@ func (s *SocketIOServer) registerClientHandlers(client *socket.Socket, deps hand
 		}
 		target := targetSD.Socket
 		if shouldDebugRPC() {
-			log.Printf("RPC call: user=%s client=%s method=%s target=%s", sd.UserID, sd.ClientType, req.Method, target.Id())
+			logger.Debugf(
+				"RPC call: user=%s client=%s method=%s target=%s",
+				sd.UserID,
+				sd.ClientType,
+				req.Method,
+				target.Id(),
+			)
 		}
 
 		target.Timeout(forward.Timeout()).EmitWithAck("rpc-request", forward.Request())(func(args []any, err error) {
@@ -175,8 +186,13 @@ func (s *SocketIOServer) registerClientHandlers(client *socket.Socket, deps hand
 				reason = r
 			}
 		}
-		log.Printf("User disconnected: %s (socket %s, clientType: %s, reason: %s)",
-			sd.UserID, socketID, sd.ClientType, reason)
+		logger.Infof(
+			"User disconnected: %s (socket %s, clientType: %s, reason: %s)",
+			sd.UserID,
+			socketID,
+			sd.ClientType,
+			reason,
+		)
 
 		result := handlers.DisconnectEffects(
 			context.Background(),

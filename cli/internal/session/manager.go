@@ -3,7 +3,6 @@ package session
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"path/filepath"
 	"sync"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/storage"
 	"github.com/bhandras/delight/cli/internal/websocket"
 	"github.com/bhandras/delight/cli/pkg/types"
+	"github.com/bhandras/delight/protocol/logger"
 	"github.com/bhandras/delight/protocol/wire"
 )
 
@@ -124,7 +124,7 @@ func (m *Manager) IsThinking() bool {
 // handlePermissionRequest processes tool permission requests from Claude.
 func (m *Manager) handlePermissionRequest(requestID string, toolName string, input json.RawMessage) (*claude.PermissionResponse, error) {
 	if m.debug {
-		log.Printf("Permission request: %s tool=%s", requestID, toolName)
+		logger.Debugf("Permission request: %s tool=%s", requestID, toolName)
 	}
 
 	if m.sessionActor == nil {

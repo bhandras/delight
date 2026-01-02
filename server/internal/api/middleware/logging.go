@@ -1,9 +1,9 @@
 package middleware
 
 import (
-	"log"
 	"time"
 
+	"github.com/bhandras/delight/protocol/logger"
 	"github.com/gin-gonic/gin"
 )
 
@@ -28,6 +28,6 @@ func LoggingMiddleware() gin.HandlerFunc {
 			path = path + "?" + raw
 		}
 
-		log.Printf("[%s] %s - %d (%v)", c.Request.Method, path, statusCode, latency)
+		logger.Infof("[%s] %s - %d (%v)", c.Request.Method, path, statusCode, latency)
 	}
 }

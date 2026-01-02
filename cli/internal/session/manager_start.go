@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,8 +20,8 @@ import (
 	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
 	"github.com/bhandras/delight/cli/internal/storage"
 	"github.com/bhandras/delight/cli/internal/websocket"
-	"github.com/bhandras/delight/cli/pkg/logger"
 	"github.com/bhandras/delight/cli/pkg/types"
+	"github.com/bhandras/delight/protocol/logger"
 	"github.com/bhandras/delight/protocol/wire"
 )
 
@@ -89,14 +88,14 @@ func (m *Manager) Start(workDir string) error {
 		return fmt.Errorf("failed to create machine: %w", err)
 	}
 
-	log.Printf("Machine registered: %s", m.machineID)
+	logger.Infof("Machine registered: %s", m.machineID)
 
 	// Create session on server
 	if err := m.createSession(); err != nil {
 		return fmt.Errorf("failed to create session: %w", err)
 	}
 
-	log.Printf("Session created: %s", m.sessionID)
+	logger.Infof("Session created: %s", m.sessionID)
 
 	m.initRuntime()
 	m.initSpawnActor()
@@ -140,8 +139,8 @@ func (m *Manager) Start(workDir string) error {
 
 	if err := m.wsClient.Connect(); err != nil {
 		// WebSocket is optional - log the error but don't fail
-		log.Printf("Warning: WebSocket connection failed: %v", err)
-		log.Println("Continuing without WebSocket (real-time updates disabled)")
+		logger.Warnf("WebSocket connection failed: %v", err)
+		logger.Warnf("Continuing without WebSocket (real-time updates disabled)")
 	} else {
 		// Set up RPC manager for mobile app commands (registers on connect)
 		m.rpcManager = websocket.NewRPCManager(m.wsClient, m.debug)
@@ -150,7 +149,7 @@ func (m *Manager) Start(workDir string) error {
 		m.registerRPCHandlers()
 
 		if m.wsClient.WaitForConnect(5 * time.Second) {
-			log.Println("WebSocket connected")
+			logger.Infof("WebSocket connected")
 			m.rpcManager.RegisterAll()
 			_ = m.wsClient.KeepSessionAlive(m.sessionID, m.thinking)
 			// Persist the initial agent state immediately so mobile can derive
@@ -163,7 +162,7 @@ func (m *Manager) Start(workDir string) error {
 				}
 			}
 		} else {
-			log.Printf("Warning: WebSocket connection timeout")
+			logger.Warnf("WebSocket connection timeout")
 		}
 	}
 
@@ -181,7 +180,7 @@ func (m *Manager) Start(workDir string) error {
 			}
 		})
 		if err := m.machineClient.Connect(); err != nil {
-			log.Printf("Warning: Machine WebSocket connection failed: %v", err)
+			logger.Warnf("Machine WebSocket connection failed: %v", err)
 			m.machineClient = nil
 		} else {
 			m.machineRPC = websocket.NewRPCManager(m.machineClient, m.debug)
@@ -191,7 +190,7 @@ func (m *Manager) Start(workDir string) error {
 
 			if m.machineClient.WaitForConnect(5 * time.Second) {
 				if m.debug {
-					log.Println("Machine WebSocket connected")
+					logger.Infof("Machine WebSocket connected")
 				}
 				m.machineRPC.RegisterAll()
 				_ = m.machineClient.EmitRaw("machine-alive", wire.MachineAlivePayload{
@@ -199,23 +198,23 @@ func (m *Manager) Start(workDir string) error {
 					Time:      time.Now().UnixMilli(),
 				})
 				if err := m.updateMachineState(); err != nil && m.debug {
-					log.Printf("Machine state update error: %v", err)
+					logger.Warnf("Machine state update error: %v", err)
 				}
 				if err := m.updateMachineMetadata(); err != nil && m.debug {
-					log.Printf("Machine metadata update error: %v", err)
+					logger.Warnf("Machine metadata update error: %v", err)
 				}
 			} else if m.debug {
-				log.Printf("Machine WebSocket connection timeout")
+				logger.Warnf("Machine WebSocket connection timeout")
 			}
 		}
 	}
 
 	if err := m.restoreSpawnedSessions(); err != nil && m.debug {
-		log.Printf("Failed to restore spawned sessions: %v", err)
+		logger.Warnf("Failed to restore spawned sessions: %v", err)
 	}
 
 	if m.cfg.ACPEnable && m.agent != "acp" && m.debug {
-		log.Printf("ACP configured but disabled (agent=%s)", m.agent)
+		logger.Warnf("ACP configured but disabled (agent=%s)", m.agent)
 	}
 
 	if m.agent == "acp" {
@@ -405,7 +404,7 @@ func (m *Manager) createSession() error {
 	// Extract data key if present
 	if result.Session.DataEncryptionKey != nil && *result.Session.DataEncryptionKey != "" {
 		if err := m.setSessionDataEncryptionKey(*result.Session.DataEncryptionKey); err != nil && m.debug {
-			log.Printf("Failed to load session dataEncryptionKey: %v", err)
+			logger.Warnf("Failed to load session dataEncryptionKey: %v", err)
 		}
 	}
 
@@ -430,7 +429,7 @@ func (m *Manager) setSessionDataEncryptionKey(encoded string) error {
 	}
 	m.dataKey = raw
 	if m.debug {
-		log.Printf("Session dataEncryptionKey loaded")
+		logger.Debugf("Session dataEncryptionKey loaded")
 	}
 	return nil
 }
@@ -501,7 +500,7 @@ func (m *Manager) createMachine() error {
 	}
 
 	if m.debug {
-		log.Printf("Machine created/updated successfully")
+		logger.Infof("Machine created/updated successfully")
 	}
 
 	return nil
@@ -511,7 +510,7 @@ func (m *Manager) createMachine() error {
 // handleMessage routes inbound websocket messages to the appropriate handler.
 func (m *Manager) handleMessage(data map[string]interface{}) {
 	if m.debug {
-		log.Printf("Received message from server: %+v", data)
+		logger.Tracef("Received message from server: %+v", data)
 	}
 
 	wire.DumpToTestdata("session_message_event", data)
@@ -519,13 +518,13 @@ func (m *Manager) handleMessage(data map[string]interface{}) {
 	cipher, localID, ok, err := wire.ExtractMessageCipher(data)
 	if err != nil {
 		if m.debug {
-			log.Printf("Message parse error: %v", err)
+			logger.Debugf("Message parse error: %v", err)
 		}
 		return
 	}
 	if !ok || cipher == "" {
 		if m.debug {
-			log.Println("Message has no usable ciphertext payload")
+			logger.Debugf("Message has no usable ciphertext payload")
 		}
 		return
 	}
@@ -539,7 +538,7 @@ func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 	decrypted, err := m.decrypt(cipher)
 	if err != nil {
 		if m.debug {
-			log.Printf("Failed to decrypt message: %v", err)
+			logger.Debugf("Failed to decrypt message: %v", err)
 		}
 		return
 	}
@@ -547,18 +546,18 @@ func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 	text, meta, ok, err := wire.ParseUserTextRecord(decrypted)
 	if err != nil {
 		if m.debug {
-			log.Printf("Failed to parse decrypted message: %v", err)
+			logger.Debugf("Failed to parse decrypted message: %v", err)
 		}
 		return
 	}
 
 	if m.debug {
-		log.Printf("Decrypted message: localId=%s text=%s", localID, text)
+		logger.Tracef("Decrypted message: localId=%s text=%s", localID, text)
 	}
 
 	if !ok || text == "" {
 		if m.debug {
-			log.Printf("Ignoring message with empty or unsupported content")
+			logger.Debugf("Ignoring message with empty or unsupported content")
 		}
 		return
 	}
@@ -572,7 +571,7 @@ func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 	messageContent := text
 	if messageContent == "" {
 		if m.debug {
-			log.Printf("Empty message content, ignoring")
+			logger.Debugf("Empty message content, ignoring")
 		}
 		return
 	}
@@ -580,7 +579,7 @@ func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 
 	if m.sessionActor == nil {
 		if m.debug {
-			log.Printf("Session actor not initialized; dropping message")
+			logger.Warnf("Session actor not initialized; dropping message")
 		}
 		return
 	}
@@ -591,7 +590,7 @@ func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 // handleUpdate handles structured "update" events (new-message, etc.)
 func (m *Manager) handleUpdate(data map[string]interface{}) {
 	if m.debug {
-		log.Printf("Received update from server: %+v", data)
+		logger.Tracef("Received update from server: %+v", data)
 	}
 
 	wire.DumpToTestdata("session_update_event", data)
@@ -606,7 +605,7 @@ func (m *Manager) handleUpdate(data map[string]interface{}) {
 	cipher, localID, ok, err := wire.ExtractNewMessageCipherAndLocalID(data)
 	if err != nil {
 		if m.debug {
-			log.Printf("Update parse error: %v", err)
+			logger.Debugf("Update parse error: %v", err)
 		}
 		return
 	}
@@ -644,7 +643,7 @@ func (m *Manager) hydrateSessionDataEncryptionKeyFromUpdate(data map[string]inte
 		return
 	}
 	if err := m.setSessionDataEncryptionKey(*session.DataEncryptionKey); err != nil && m.debug {
-		log.Printf("Failed to hydrate session dataEncryptionKey from update: %v", err)
+		logger.Warnf("Failed to hydrate session dataEncryptionKey from update: %v", err)
 	}
 }
 
@@ -652,7 +651,7 @@ func (m *Manager) hydrateSessionDataEncryptionKeyFromUpdate(data map[string]inte
 // handleSessionUpdate handles inbound session update events (best-effort observability).
 func (m *Manager) handleSessionUpdate(data map[string]interface{}) {
 	if m.debug {
-		log.Printf("Session update: %+v", data)
+		logger.Tracef("Session update: %+v", data)
 	}
 }
 
@@ -674,13 +673,13 @@ func (m *Manager) keepAliveLoop() {
 					MachineID: m.machineID,
 					Time:      time.Now().UnixMilli(),
 				}); err != nil && m.debug {
-					log.Printf("Machine keep-alive error: %v", err)
+					logger.Warnf("Machine keep-alive error: %v", err)
 				}
 			} else if m.debug {
 				now := time.Now()
 				if m.lastMachineKeepAliveSkipAt.IsZero() || now.Sub(m.lastMachineKeepAliveSkipAt) > 2*time.Minute {
 					m.lastMachineKeepAliveSkipAt = now
-					log.Printf("Machine keep-alive skipped (no machine socket)")
+					logger.Debugf("Machine keep-alive skipped (no machine socket)")
 				}
 			}
 
@@ -688,7 +687,7 @@ func (m *Manager) keepAliveLoop() {
 			// Send session keep-alive.
 			if m.wsClient != nil && m.wsClient.IsConnected() {
 				if err := m.wsClient.KeepSessionAlive(m.sessionID, m.thinking); err != nil && m.debug {
-					log.Printf("Session keep-alive error: %v", err)
+					logger.Warnf("Session keep-alive error: %v", err)
 				}
 				// AgentState persistence retries are actor-owned; do not attempt to
 				// repersist from here.
@@ -759,14 +758,14 @@ func (m *Manager) scheduleShutdown() {
 		go func() {
 			time.Sleep(200 * time.Millisecond)
 			if m.debug {
-				log.Printf("Stop-daemon: shutting down")
+				logger.Infof("Stop-daemon: shutting down")
 			}
 			go func() {
 				_ = m.Close()
 			}()
 			time.Sleep(200 * time.Millisecond)
 			if m.debug {
-				log.Printf("Stop-daemon: exiting")
+				logger.Infof("Stop-daemon: exiting")
 			}
 			os.Exit(0)
 		}()
@@ -778,7 +777,7 @@ func (m *Manager) forceExitAfter(delay time.Duration) {
 	go func() {
 		time.Sleep(delay)
 		if m.debug {
-			log.Printf("Stop-daemon: forcing exit after %s", delay)
+			logger.Warnf("Stop-daemon: forcing exit after %s", delay)
 		}
 		os.Exit(0)
 	}()

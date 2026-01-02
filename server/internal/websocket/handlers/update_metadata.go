@@ -2,8 +2,8 @@ package handlers
 
 import (
 	"context"
-	"log"
 
+	"github.com/bhandras/delight/protocol/logger"
 	protocolwire "github.com/bhandras/delight/protocol/wire"
 	"github.com/bhandras/delight/server/internal/models"
 )
@@ -46,7 +46,7 @@ func UpdateMetadata(ctx context.Context, deps Deps, auth AuthContext, req protoc
 
 	userSeq, err := deps.Accounts().UpdateAccountSeq(ctx, auth.UserID())
 	if err != nil {
-		log.Printf("Failed to allocate user seq: %v", err)
+		logger.Errorf("Failed to allocate user seq: %v", err)
 		return NewEventResult(ack, nil)
 	}
 

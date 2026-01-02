@@ -1,11 +1,11 @@
 package middleware
 
 import (
-	"log"
 	"net/http"
 	"os"
 	"strings"
 
+	"github.com/bhandras/delight/protocol/logger"
 	"github.com/bhandras/delight/server/internal/crypto"
 	"github.com/gin-gonic/gin"
 )
@@ -44,7 +44,7 @@ func AuthMiddleware(jwtManager *crypto.JWTManager) gin.HandlerFunc {
 		claims, err := jwtManager.VerifyToken(token)
 		if err != nil {
 			if os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1" {
-				log.Printf("AuthMiddleware: invalid token: %v", err)
+				logger.Debugf("AuthMiddleware: invalid token: %v", err)
 			}
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			c.Abort()

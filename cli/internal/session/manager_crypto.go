@@ -4,10 +4,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 
 	"github.com/bhandras/delight/cli/internal/claude"
 	"github.com/bhandras/delight/cli/internal/crypto"
+	"github.com/bhandras/delight/protocol/logger"
 )
 
 // min returns the smaller of a and b.
@@ -42,8 +42,8 @@ func (m *Manager) decrypt(dataB64 string) ([]byte, error) {
 	}
 
 	if m.debug {
-		log.Printf("[decrypt] data length: %d, first bytes: %v", len(encrypted), encrypted[:min(10, len(encrypted))])
-		log.Printf("[decrypt] dataKey set: %v, masterSecret set: %v", m.dataKey != nil, m.masterSecret != nil)
+		logger.Tracef("[decrypt] data length: %d, first bytes: %v", len(encrypted), encrypted[:min(10, len(encrypted))])
+		logger.Tracef("[decrypt] dataKey set: %v, masterSecret set: %v", m.dataKey != nil, m.masterSecret != nil)
 	}
 
 	// Check if this is AES-GCM format (version byte 0)
@@ -51,7 +51,7 @@ func (m *Manager) decrypt(dataB64 string) ([]byte, error) {
 	// Minimum length: 1 + 12 + 16 = 29 bytes
 	if encrypted[0] == 0 && len(encrypted) >= 29 {
 		if m.debug {
-			log.Printf("[decrypt] Detected AES-GCM format (version byte 0)")
+			logger.Tracef("[decrypt] Detected AES-GCM format (version byte 0)")
 		}
 		// AES-GCM format is only valid when the session dataEncryptionKey is
 		// present. Falling back to the master secret cannot work reliably and

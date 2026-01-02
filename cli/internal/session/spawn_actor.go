@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/config"
+	"github.com/bhandras/delight/protocol/logger"
 )
 
 // spawnEntry is a durable record describing a spawned child session.
@@ -285,7 +285,7 @@ func (r *spawnActorRuntime) registerSpawnedSession(sessionID, directory string) 
 	registry, err := r.loadRegistry()
 	if err != nil {
 		if r.debug {
-			log.Printf("Failed to load spawn registry: %v", err)
+			logger.Debugf("Failed to load spawn registry: %v", err)
 		}
 		return
 	}
@@ -296,7 +296,7 @@ func (r *spawnActorRuntime) registerSpawnedSession(sessionID, directory string) 
 	}
 	owner[sessionID] = spawnEntry{SessionID: sessionID, Directory: directory}
 	if err := r.saveRegistry(registry); err != nil && r.debug {
-		log.Printf("Failed to save spawn registry: %v", err)
+		logger.Debugf("Failed to save spawn registry: %v", err)
 	}
 }
 
@@ -307,7 +307,7 @@ func (r *spawnActorRuntime) removeSpawnedSession(sessionID string) {
 	registry, err := r.loadRegistry()
 	if err != nil {
 		if r.debug {
-			log.Printf("Failed to load spawn registry: %v", err)
+			logger.Debugf("Failed to load spawn registry: %v", err)
 		}
 		return
 	}
@@ -320,7 +320,7 @@ func (r *spawnActorRuntime) removeSpawnedSession(sessionID string) {
 		delete(registry.Owners, r.ownerID)
 	}
 	if err := r.saveRegistry(registry); err != nil && r.debug {
-		log.Printf("Failed to save spawn registry: %v", err)
+		logger.Debugf("Failed to save spawn registry: %v", err)
 	}
 }
 

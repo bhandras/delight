@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -17,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/bhandras/delight/protocol/logger"
 )
 
 const (
@@ -422,7 +423,7 @@ func (c *Client) readLoop() {
 				return
 			}
 			if c.debug {
-				log.Printf("codex: read error: %v", err)
+				logger.Debugf("codex: read error: %v", err)
 			}
 			return
 		}
@@ -434,7 +435,7 @@ func (c *Client) readLoop() {
 		var msg rpcMessage
 		if err := json.Unmarshal(line, &msg); err != nil {
 			if c.debug {
-				log.Printf("codex: invalid json: %s", string(line))
+				logger.Debugf("codex: invalid json: %s", string(line))
 			}
 			continue
 		}
@@ -464,7 +465,7 @@ func (c *Client) readStderr() {
 			return
 		}
 		if c.debug {
-			log.Printf("[codex] %s", strings.TrimSpace(line))
+			logger.Debugf("[codex] %s", strings.TrimSpace(line))
 		}
 	}
 }
@@ -505,7 +506,7 @@ func (c *Client) handleRequest(msg *rpcMessage) {
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
-		log.Printf("codex: request: id=%v method=%s paramsKeys=%v", msg.ID, method, keys)
+		logger.Tracef("codex: request: id=%v method=%s paramsKeys=%v", msg.ID, method, keys)
 	}
 	switch method {
 	case serverMethodElicitationRequest:
@@ -522,7 +523,7 @@ func (c *Client) handleRequest(msg *rpcMessage) {
 		return
 	default:
 		if debug {
-			log.Printf("codex: unsupported request method: %s", method)
+			logger.Debugf("codex: unsupported request method: %s", method)
 		}
 		_ = c.sendError(msg.ID, -32601, "method not supported")
 		return
@@ -571,7 +572,7 @@ func (c *Client) handleElicitationApproval(msg *rpcMessage) {
 	c.mu.Unlock()
 
 	if debug {
-		log.Printf("codex: approval request: id=%s method=%s tool=%s type=%s", requestID, msg.Method, toolName, elicitation)
+		logger.Debugf("codex: approval request: id=%s method=%s tool=%s type=%s", requestID, msg.Method, toolName, elicitation)
 	}
 
 	decision := codexDecisionDenied
@@ -600,7 +601,7 @@ func (c *Client) handleElicitationApproval(msg *rpcMessage) {
 		result["reason"] = message
 	}
 	if debug {
-		log.Printf("codex: approval decision: id=%s decision=%s", requestID, decision)
+		logger.Debugf("codex: approval decision: id=%s decision=%s", requestID, decision)
 	}
 	_ = c.sendResult(msg.ID, result)
 }
@@ -632,7 +633,7 @@ func (c *Client) handleExecCommandApproval(msg *rpcMessage) {
 	c.mu.Unlock()
 
 	if debug {
-		log.Printf("codex: approval request: id=%s method=%s tool=%s", callID, serverMethodExecCommandApproval, codexToolBash)
+		logger.Debugf("codex: approval request: id=%s method=%s tool=%s", callID, serverMethodExecCommandApproval, codexToolBash)
 	}
 
 	decision := codexDecisionDeny
@@ -659,7 +660,7 @@ func (c *Client) handleExecCommandApproval(msg *rpcMessage) {
 		result["reason"] = message
 	}
 	if debug {
-		log.Printf("codex: approval decision: id=%s decision=%s", callID, decision)
+		logger.Debugf("codex: approval decision: id=%s decision=%s", callID, decision)
 	}
 	_ = c.sendResult(msg.ID, result)
 }
@@ -690,7 +691,7 @@ func (c *Client) handleApplyPatchApproval(msg *rpcMessage) {
 	c.mu.Unlock()
 
 	if debug {
-		log.Printf("codex: approval request: id=%s method=%s tool=%s", callID, serverMethodApplyPatchApproval, codexToolApplyPatch)
+		logger.Debugf("codex: approval request: id=%s method=%s tool=%s", callID, serverMethodApplyPatchApproval, codexToolApplyPatch)
 	}
 
 	decision := codexDecisionDeny
@@ -717,7 +718,7 @@ func (c *Client) handleApplyPatchApproval(msg *rpcMessage) {
 		result["reason"] = message
 	}
 	if debug {
-		log.Printf("codex: approval decision: id=%s decision=%s", callID, decision)
+		logger.Debugf("codex: approval decision: id=%s decision=%s", callID, decision)
 	}
 	_ = c.sendResult(msg.ID, result)
 }
@@ -820,7 +821,7 @@ func (c *Client) send(msg rpcMessage) error {
 		return err
 	}
 	if c.debug {
-		log.Printf("codex -> %s", string(enc))
+		logger.Tracef("codex -> %s", string(enc))
 	}
 	_, err = c.stdin.Write(append(enc, '\n'))
 	return err
@@ -904,7 +905,7 @@ func getCodexMcpCommand(debug bool) string {
 	out, err := exec.Command("codex", "--version").Output()
 	if err != nil {
 		if debug {
-			log.Printf("codex: failed to detect version, defaulting to mcp-server: %v", err)
+			logger.Debugf("codex: failed to detect version, defaulting to mcp-server: %v", err)
 		}
 		return "mcp-server"
 	}

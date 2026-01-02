@@ -2,8 +2,9 @@ package runtime
 
 import (
 	"context"
-	"log"
 	"sync"
+
+	"github.com/bhandras/delight/protocol/logger"
 )
 
 // Manager owns per-session runtimes and provides serialized entrypoints.
@@ -79,7 +80,7 @@ func (r *sessionRuntime) enqueue(evt any) {
 	case r.events <- evt:
 	default:
 		// Avoid blocking Socket.IO callbacks indefinitely; drop under overload.
-		log.Printf("[runtime] session %s queue full; dropping event %T", r.sessionID, evt)
+		logger.Warnf("[runtime] session %s queue full; dropping event %T", r.sessionID, evt)
 	}
 }
 
@@ -89,7 +90,7 @@ func (r *sessionRuntime) loop() {
 		case messageEvent:
 			r.handleMessage(e)
 		default:
-			log.Printf("[runtime] session %s: unknown event %T", r.sessionID, evt)
+			logger.Warnf("[runtime] session %s: unknown event %T", r.sessionID, evt)
 		}
 	}
 }

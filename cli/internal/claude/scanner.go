@@ -3,13 +3,14 @@ package claude
 import (
 	"bufio"
 	"encoding/json"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bhandras/delight/protocol/logger"
 )
 
 // SessionMessage represents a message from Claude's session file
@@ -47,6 +48,8 @@ func NewScanner(projectPath, sessionID string, debug bool) *Scanner {
 
 var projectPathSanitizer = regexp.MustCompile(`[\\\/\.:]`)
 
+// getProjectDir returns the directory where Claude stores per-project session
+// files, based on the configured Claude config root (or the default).
 func getProjectDir(projectPath string) string {
 	claudeConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
 	if claudeConfigDir == "" {
@@ -92,7 +95,7 @@ func (s *Scanner) watchLoop() {
 	filePath := s.SessionFilePath()
 
 	if s.debug {
-		log.Printf("Scanner watching: %s", filePath)
+		logger.Debugf("Scanner watching: %s", filePath)
 	}
 
 	for {
@@ -123,7 +126,7 @@ func (s *Scanner) scanFile(filePath string) {
 		_, err := file.Seek(lastPos, 0)
 		if err != nil {
 			if s.debug {
-				log.Printf("Failed to seek: %v", err)
+				logger.Debugf("Failed to seek: %v", err)
 			}
 			return
 		}
@@ -152,7 +155,7 @@ func (s *Scanner) scanFile(filePath string) {
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
 			if s.debug {
 				// Only log if it's not just a truncated line at end of file
-				log.Printf("Failed to parse session line: %v", err)
+				logger.Debugf("Failed to parse session line: %v", err)
 			}
 			continue
 		}
@@ -171,7 +174,7 @@ func (s *Scanner) scanFile(filePath string) {
 		}
 
 		if s.debug {
-			log.Printf("New message: type=%s uuid=%s", msg.Type, msg.UUID)
+			logger.Debugf("New message: type=%s uuid=%s", msg.Type, msg.UUID)
 		}
 
 		// Send message (non-blocking if channel is full)
@@ -179,14 +182,14 @@ func (s *Scanner) scanFile(filePath string) {
 		case s.messageCh <- &msg:
 		default:
 			if s.debug {
-				log.Printf("Message channel full, dropping message")
+				logger.Debugf("Message channel full, dropping message")
 			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		if s.debug {
-			log.Printf("Scanner error: %v", err)
+			logger.Debugf("Scanner error: %v", err)
 		}
 	}
 

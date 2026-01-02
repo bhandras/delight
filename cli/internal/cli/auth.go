@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,13 +16,14 @@ import (
 	"github.com/bhandras/delight/cli/internal/config"
 	"github.com/bhandras/delight/cli/internal/crypto"
 	"github.com/bhandras/delight/cli/internal/storage"
+	"github.com/bhandras/delight/protocol/logger"
 	qrcode "github.com/skip2/go-qrcode"
 )
 
 // AuthCommand handles the QR code authentication flow using terminal auth
 // This matches the flow expected by the mobile app's useConnectTerminal.ts
 func AuthCommand(cfg *config.Config) error {
-	log.Println("Starting terminal authentication...")
+	logger.Infof("Starting terminal authentication...")
 
 	// Generate crypto_box key pair for this device
 	publicKey, privateKey, err := crypto.GenerateBoxKeyPair()
@@ -76,7 +76,7 @@ func AuthCommand(cfg *config.Config) error {
 	requestID, _ := result["id"].(string)
 
 	if cfg.Debug {
-		log.Printf("Auth request created: state=%s, id=%s", state, requestID)
+		logger.Debugf("Auth request created: state=%s, id=%s", state, requestID)
 	}
 
 	// Build QR code data - format: delight://terminal?[base64url-encoded-public-key]
@@ -84,16 +84,16 @@ func AuthCommand(cfg *config.Config) error {
 	qrData := fmt.Sprintf("delight://terminal?%s", publicKeyB64url)
 
 	// Generate QR code
-	log.Println("\nScan this QR code with the Delight mobile app to link this device:")
+	logger.Infof("\nScan this QR code with the Delight mobile app to link this device:")
 	printQRCode(qrData)
 
 	// Print URL for manual authentication
-	log.Printf("\nOr manually open this URL in the Delight app:\n%s", qrData)
+	logger.Infof("\nOr manually open this URL in the Delight app:\n%s", qrData)
 
 	if requestID != "" {
-		log.Printf("\nWaiting for approval (Request ID: %s)...", requestID)
+		logger.Infof("\nWaiting for approval (Request ID: %s)...", requestID)
 	} else {
-		log.Println("\nWaiting for approval...")
+		logger.Infof("\nWaiting for approval...")
 	}
 
 	// Poll for response using GET /v1/auth/request/status
@@ -102,14 +102,14 @@ func AuthCommand(cfg *config.Config) error {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
 
-	log.Println("✓ Authentication successful!")
+	logger.Infof("✓ Authentication successful!")
 
 	// Save credentials
 	if err := saveCredentials(cfg, secret, token); err != nil {
 		return err
 	}
 
-	log.Printf("Credentials saved to: %s\n", cfg.DelightHome)
+	logger.Infof("Credentials saved to: %s", cfg.DelightHome)
 	return nil
 }
 
@@ -118,8 +118,8 @@ func printQRCode(data string) {
 	// Generate QR code
 	qr, err := qrcode.New(data, qrcode.Medium)
 	if err != nil {
-		log.Printf("Failed to generate QR code: %v", err)
-		log.Printf("Auth URL: %s", data)
+		logger.Warnf("Failed to generate QR code: %v", err)
+		logger.Infof("Auth URL: %s", data)
 		return
 	}
 
@@ -154,7 +154,7 @@ func pollForTerminalAuth(cfg *config.Config, publicKeyB64 string, privateKey *[3
 			resp, err := client.Do(req)
 			if err != nil {
 				if cfg.Debug {
-					log.Printf("Poll error: %v", err)
+					logger.Debugf("Poll error: %v", err)
 				}
 				continue
 			}
@@ -166,7 +166,7 @@ func pollForTerminalAuth(cfg *config.Config, publicKeyB64 string, privateKey *[3
 			}
 
 			if cfg.Debug {
-				log.Printf("Poll response: status=%d body=%s", resp.StatusCode, string(respBody))
+				logger.Tracef("Poll response: status=%d body=%s", resp.StatusCode, string(respBody))
 			}
 
 			if resp.StatusCode == http.StatusNotFound {
@@ -185,7 +185,7 @@ func pollForTerminalAuth(cfg *config.Config, publicKeyB64 string, privateKey *[3
 			}
 			if err := json.Unmarshal(respBody, &result); err != nil {
 				if cfg.Debug {
-					log.Printf("Failed to parse response: %v", err)
+					logger.Debugf("Failed to parse response: %v", err)
 				}
 				continue
 			}
@@ -197,7 +197,7 @@ func pollForTerminalAuth(cfg *config.Config, publicKeyB64 string, privateKey *[3
 				}
 
 				if cfg.Debug {
-					log.Printf("Authorization received")
+					logger.Debugf("Authorization received")
 				}
 
 				// Decrypt the secret
@@ -213,7 +213,7 @@ func pollForTerminalAuth(cfg *config.Config, publicKeyB64 string, privateKey *[3
 				}
 
 				if cfg.Debug {
-					log.Printf("Decrypted secret: isV2=%v, len=%d", isV2, len(secret))
+					logger.Debugf("Decrypted secret: isV2=%v, len=%d", isV2, len(secret))
 				}
 
 				return *result.Token, secret, nil

@@ -19,7 +19,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/config"
 	"github.com/bhandras/delight/cli/internal/crypto"
 	"github.com/bhandras/delight/cli/internal/session"
-	"github.com/bhandras/delight/cli/pkg/logger"
+	"github.com/bhandras/delight/protocol/logger"
 )
 
 const (

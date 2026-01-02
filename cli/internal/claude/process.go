@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bhandras/delight/protocol/logger"
 	"github.com/creack/pty"
 	"golang.org/x/term"
 )
@@ -80,7 +80,7 @@ func NewProcess(workDir string, debug bool) (*Process, error) {
 	}
 
 	if debug {
-		log.Printf("Using launcher at: %s", launcherPath)
+		logger.Debugf("Using launcher at: %s", launcherPath)
 	}
 
 	// Create pipe for fd 3 communication
@@ -194,7 +194,7 @@ func buildNodePath() []string {
 // Start starts the Claude process and begins reading fd 3 messages
 func (p *Process) Start() error {
 	if p.debug {
-		log.Println("Starting Claude Code process (interactive mode with fd3 tracking)...")
+		logger.Infof("Starting Claude Code process (interactive mode with fd3 tracking)...")
 	}
 
 	ptyFile, err := pty.Start(p.cmd)
@@ -246,7 +246,7 @@ func (p *Process) Start() error {
 	go p.readFd3Messages()
 
 	if p.debug {
-		log.Printf("Claude Code started (PID: %d)", p.cmd.Process.Pid)
+		logger.Infof("Claude Code started (PID: %d)", p.cmd.Process.Pid)
 	}
 
 	return nil
@@ -294,7 +294,7 @@ func (p *Process) readFd3Messages() {
 		var msg LauncherMessage
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
 			if p.debug {
-				log.Printf("Invalid fd3 message: %s (error: %v)", line, err)
+				logger.Debugf("Invalid fd3 message: %s (error: %v)", line, err)
 			}
 			continue
 		}
@@ -308,14 +308,14 @@ func (p *Process) readFd3Messages() {
 			p.handleFetchEnd(msg.ID)
 		default:
 			if p.debug {
-				log.Printf("Unknown fd3 message type: %s", msg.Type)
+				logger.Debugf("Unknown fd3 message type: %s", msg.Type)
 			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		if p.debug {
-			log.Printf("fd3 reader error: %v", err)
+			logger.Debugf("fd3 reader error: %v", err)
 		}
 	}
 }
@@ -326,7 +326,7 @@ func (p *Process) handleUUID(uuid string) {
 	defer p.mu.Unlock()
 
 	if p.debug {
-		log.Printf("UUID intercepted: %s", uuid)
+		logger.Debugf("UUID intercepted: %s", uuid)
 	}
 
 	// First UUID is likely the Claude session ID
@@ -352,7 +352,7 @@ func (p *Process) handleFetchStart(id int) {
 	}
 
 	if p.debug {
-		log.Printf("Fetch started: %d (active: %d)", id, len(p.activeFetches))
+		logger.Tracef("Fetch started: %d (active: %d)", id, len(p.activeFetches))
 	}
 }
 
@@ -364,7 +364,7 @@ func (p *Process) handleFetchEnd(id int) {
 	p.mu.Unlock()
 
 	if p.debug {
-		log.Printf("Fetch ended: %d (active: %d)", id, len(p.activeFetches))
+		logger.Tracef("Fetch ended: %d (active: %d)", id, len(p.activeFetches))
 	}
 
 	if isEmpty {
@@ -400,7 +400,7 @@ func (p *Process) setThinking(thinking bool) {
 	}
 
 	if p.debug {
-		log.Printf("Thinking state: %v", thinking)
+		logger.Debugf("Thinking state: %v", thinking)
 	}
 }
 
@@ -473,7 +473,7 @@ func (p *Process) Kill() error {
 	}
 
 	if p.debug {
-		log.Println("Killing Claude process...")
+		logger.Infof("Killing Claude process...")
 	}
 
 	// Best-effort: send Ctrl+C first so Claude can restore terminal state.

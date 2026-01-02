@@ -3,7 +3,6 @@ package actor
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/agentengine/claudeengine"
 	"github.com/bhandras/delight/cli/internal/agentengine/codexengine"
 	"github.com/bhandras/delight/cli/internal/termutil"
+	"github.com/bhandras/delight/protocol/logger"
 )
 
 const (
@@ -186,7 +186,7 @@ func (r *Runtime) startEngineLocal(ctx context.Context, eff effStartLocalRunner,
 	// Best-effort: ensure remote is stopped before starting local.
 	stopCtx, cancel := context.WithTimeout(context.Background(), engineStopTimeout)
 	if err := engine.Stop(stopCtx, agentengine.ModeRemote); err != nil && r.debug {
-		log.Printf("runtime: failed to stop remote runner: %v", err)
+		logger.Debugf("runtime: failed to stop remote runner: %v", err)
 	}
 	cancel()
 	if shouldMutateTTY(r.agent) {
@@ -246,7 +246,7 @@ func (r *Runtime) startEngineRemote(ctx context.Context, eff effStartRemoteRunne
 	// Best-effort: ensure local is stopped before starting remote.
 	stopCtx, cancel := context.WithTimeout(context.Background(), engineStopTimeout)
 	if err := engine.Stop(stopCtx, agentengine.ModeLocal); err != nil && r.debug {
-		log.Printf("runtime: failed to stop local runner: %v", err)
+		logger.Debugf("runtime: failed to stop local runner: %v", err)
 	}
 	cancel()
 
@@ -259,7 +259,7 @@ func (r *Runtime) startEngineRemote(ctx context.Context, eff effStartRemoteRunne
 	// Ensure Delight receives tty input (Ctrl+C / takeback) after switching away
 	// from a local TUI that may have owned the foreground process group.
 	if r.debug {
-		log.Printf("runtime: ensure tty foreground (remote start)")
+		logger.Debugf("runtime: ensure tty foreground (remote start)")
 	}
 	if shouldMutateTTY(r.agent) {
 		termutil.EnsureTTYForegroundSelf()

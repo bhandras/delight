@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/bhandras/delight/protocol/logger"
 )
 
 // RemoteMessage represents a message to/from the bridge script
@@ -94,7 +95,7 @@ func NewRemoteBridge(workDir string, resumeSessionID string, debug bool) (*Remot
 	}
 
 	if debug {
-		log.Printf("Using bridge at: %s", bridgePath)
+		logger.Debugf("Using bridge at: %s", bridgePath)
 	}
 
 	// Build command arguments
@@ -194,7 +195,7 @@ func (b *RemoteBridge) SetMessageHandler(handler MessageHandler) {
 // Start starts the bridge process and begins reading messages
 func (b *RemoteBridge) Start() error {
 	if b.debug {
-		log.Println("Starting Claude remote bridge...")
+		logger.Infof("Starting Claude remote bridge...")
 	}
 
 	if err := b.cmd.Start(); err != nil {
@@ -216,7 +217,7 @@ func (b *RemoteBridge) Start() error {
 	select {
 	case <-b.ready:
 		if b.debug {
-			log.Println("Bridge ready")
+			logger.Infof("Bridge ready")
 		}
 	case err := <-b.errors:
 		return fmt.Errorf("bridge error: %w", err)
@@ -250,7 +251,7 @@ func (b *RemoteBridge) readMessages() {
 		var msg RemoteMessage
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
 			if b.debug {
-				log.Printf("Invalid bridge message: %s (error: %v)", line, err)
+				logger.Debugf("Invalid bridge message: %s (error: %v)", line, err)
 			}
 			continue
 		}
@@ -260,7 +261,7 @@ func (b *RemoteBridge) readMessages() {
 
 	if err := scanner.Err(); err != nil {
 		if b.debug {
-			log.Printf("Bridge stdout error: %v", err)
+			logger.Debugf("Bridge stdout error: %v", err)
 		}
 		select {
 		case <-b.stopCh:
@@ -285,7 +286,7 @@ func (b *RemoteBridge) readStderr() {
 	scanner := bufio.NewScanner(b.stderr)
 	for scanner.Scan() {
 		if b.debug {
-			log.Printf("[bridge stderr] %s", scanner.Text())
+			logger.Debugf("[bridge stderr] %s", scanner.Text())
 		}
 	}
 }
@@ -303,7 +304,7 @@ func (b *RemoteBridge) handleMessage(msg *RemoteMessage) {
 
 	case "error":
 		if b.debug {
-			log.Printf("Bridge error: %s", msg.Error)
+			logger.Debugf("Bridge error: %s", msg.Error)
 		}
 		select {
 		case b.errors <- fmt.Errorf("bridge error: %s", msg.Error):
@@ -335,7 +336,7 @@ func (b *RemoteBridge) handleMessage(msg *RemoteMessage) {
 			b.sessionID = msg.SessionID
 			b.mu.Unlock()
 			if b.debug {
-				log.Printf("Session ID: %s", msg.SessionID)
+				logger.Debugf("Session ID: %s", msg.SessionID)
 			}
 		}
 		b.forwardMessage(msg)
@@ -345,7 +346,7 @@ func (b *RemoteBridge) handleMessage(msg *RemoteMessage) {
 
 	case "aborted":
 		if b.debug {
-			log.Println("Query aborted")
+			logger.Infof("Query aborted")
 		}
 
 	default:
@@ -370,7 +371,7 @@ func (b *RemoteBridge) handlePermissionRequest(msg *RemoteMessage) {
 	var req PermissionRequest
 	if err := json.Unmarshal(msg.Request, &req); err != nil {
 		if b.debug {
-			log.Printf("Failed to parse permission request: %v", err)
+			logger.Debugf("Failed to parse permission request: %v", err)
 		}
 		b.sendPermissionResponse(msg.RequestID, &PermissionResponse{
 			Behavior: "deny",
@@ -383,7 +384,7 @@ func (b *RemoteBridge) handlePermissionRequest(msg *RemoteMessage) {
 	response, err := handler(msg.RequestID, req.ToolName, req.Input)
 	if err != nil {
 		if b.debug {
-			log.Printf("Permission handler error: %v", err)
+			logger.Debugf("Permission handler error: %v", err)
 		}
 		b.sendPermissionResponse(msg.RequestID, &PermissionResponse{
 			Behavior: "deny",
@@ -436,7 +437,7 @@ func (b *RemoteBridge) forwardMessage(msg *RemoteMessage) {
 
 	if handler != nil {
 		if err := handler(msg); err != nil && b.debug {
-			log.Printf("Message handler error: %v", err)
+			logger.Debugf("Message handler error: %v", err)
 		}
 	}
 
@@ -445,7 +446,7 @@ func (b *RemoteBridge) forwardMessage(msg *RemoteMessage) {
 	case b.messages <- msg:
 	default:
 		if b.debug {
-			log.Println("Message channel full, dropping message")
+			logger.Debugf("Message channel full, dropping message")
 		}
 	}
 }
@@ -460,7 +461,7 @@ func (b *RemoteBridge) sendMessage(msg *RemoteMessage) error {
 	}
 
 	if b.debug {
-		log.Printf("Sending to bridge: %s", msg.Type)
+		logger.Tracef("Sending to bridge: %s", msg.Type)
 	}
 
 	return b.stdinWriter.Encode(msg)
@@ -533,7 +534,7 @@ func (b *RemoteBridge) Kill() error {
 	}
 
 	if b.debug {
-		log.Println("Killing bridge process...")
+		logger.Debugf("Killing bridge process...")
 	}
 
 	// Best-effort: send Ctrl+C first so Node can flush and exit cleanly.
