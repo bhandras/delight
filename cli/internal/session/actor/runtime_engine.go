@@ -11,6 +11,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/agentengine"
 	"github.com/bhandras/delight/cli/internal/agentengine/claudeengine"
 	"github.com/bhandras/delight/cli/internal/agentengine/codexengine"
+	"github.com/bhandras/delight/cli/internal/termutil"
 )
 
 const (
@@ -171,6 +172,7 @@ func (r *Runtime) startEngineLocal(ctx context.Context, eff effStartLocalRunner,
 
 	// Clear any prior remote-mode transcript before handing control to a local
 	// full-screen TUI.
+	termutil.ResetTTYModes()
 	r.clearScreenIfApplicable()
 
 	r.mu.Lock()
@@ -185,6 +187,7 @@ func (r *Runtime) startEngineLocal(ctx context.Context, eff effStartLocalRunner,
 		log.Printf("runtime: failed to stop remote runner: %v", err)
 	}
 	cancel()
+	termutil.EnsureTTYForegroundSelf()
 
 	if err := engine.Start(ctx, agentengine.EngineStartSpec{
 		Agent:       r.agent,
@@ -246,13 +249,13 @@ func (r *Runtime) startEngineRemote(ctx context.Context, eff effStartRemoteRunne
 	// TUIs can leave input-related terminal modes enabled (kitty keyboard
 	// protocol, bracketed paste, mouse reporting). Reset them before we rely on
 	// Ctrl+C and raw key scanning in remote mode.
-	resetTTYModes()
+	termutil.ResetTTYModes()
 	// Ensure Delight receives tty input (Ctrl+C / takeback) after switching away
 	// from a local TUI that may have owned the foreground process group.
 	if r.debug {
 		log.Printf("runtime: ensure tty foreground (remote start)")
 	}
-	ensureTTYForegroundSelf()
+	termutil.EnsureTTYForegroundSelf()
 
 	if err := engine.Start(ctx, agentengine.EngineStartSpec{
 		Agent:       r.agent,

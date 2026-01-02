@@ -9,6 +9,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/acp"
 	framework "github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/agentengine"
+	"github.com/bhandras/delight/cli/internal/termutil"
 	"golang.org/x/term"
 )
 
@@ -266,7 +267,7 @@ func (r *Runtime) Stop() {
 	r.engine = nil
 	r.mu.Unlock()
 
-	resetTTYModes()
+	termutil.ResetTTYModes()
 
 	if cancel != nil {
 		func() {

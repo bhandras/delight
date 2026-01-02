@@ -1,4 +1,4 @@
-package actor
+package termutil
 
 import (
 	"os"
@@ -31,9 +31,9 @@ const (
 		"\x1b[?1006l" // SGR mouse mode off
 )
 
-// resetTTYModes best-effort disables terminal modes that can break Ctrl+C and
+// ResetTTYModes best-effort disables terminal modes that can break Ctrl+C and
 // input handling after switching away from a full-screen TUI.
-func resetTTYModes() {
+func ResetTTYModes() {
 	fd := int(os.Stdout.Fd())
 	if !term.IsTerminal(fd) {
 		return

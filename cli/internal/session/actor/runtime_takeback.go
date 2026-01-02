@@ -9,6 +9,7 @@ import (
 	"time"
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
+	"github.com/bhandras/delight/cli/internal/termutil"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
@@ -106,10 +107,10 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 		// term.MakeRaw disables ISIG, which makes Ctrl+C stop generating SIGINT.
 		// In remote mode we still want Ctrl+C to exit Delight reliably (even after
 		// repeated mode switches), so re-enable ISIG best-effort.
-		enableISIG(fd)
+		termutil.EnableISIG(fd)
 		// Also ensure Delight is the foreground process group so we continue
 		// receiving tty input after switching away from a local TUI.
-		ensureTTYForegroundSelf()
+		termutil.EnsureTTYForegroundSelf()
 
 		defer func() {
 			if !restored {
@@ -158,7 +159,7 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 				// the foreground and keep the watcher alive so Ctrl+C/takeback still
 				// works after repeated mode switches.
 				if errors.Is(err, syscall.EIO) || errors.Is(err, unix.EIO) {
-					ensureTTYForegroundSelf()
+					termutil.EnsureTTYForegroundSelf()
 					time.Sleep(50 * time.Millisecond)
 					continue
 				}

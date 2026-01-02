@@ -1,6 +1,6 @@
 //go:build darwin || linux
 
-package actor
+package termutil
 
 import (
 	"os"
@@ -16,22 +16,22 @@ const (
 )
 
 const (
-	// ttyForegroundRetryTimeout bounds how long we retry foreground restoration
-	// when switching between local TUIs and remote mode.
-	ttyForegroundRetryTimeout = 1 * time.Second
+	// ForegroundRetryTimeout bounds how long we retry foreground restoration when
+	// switching between local TUIs and remote mode.
+	ForegroundRetryTimeout = 1 * time.Second
 
-	// ttyForegroundRetryInterval bounds how often we retry tcsetpgrp.
-	ttyForegroundRetryInterval = 50 * time.Millisecond
+	// ForegroundRetryInterval bounds how often we retry tcsetpgrp.
+	ForegroundRetryInterval = 50 * time.Millisecond
 )
 
-// ensureTTYForegroundSelf best-effort makes Delight's process group the
+// EnsureTTYForegroundSelf best-effort makes the current process group the
 // foreground process group for the controlling tty.
 //
 // After switching between local full-screen TUIs (notably Codex) and remote
 // mode, the foreground process group can be left pointing at an exited or
-// background process group. When that happens, Delight stops receiving tty
+// background process group. When that happens, the CLI stops receiving tty
 // input (including Ctrl+C/space), so remote-mode shutdown appears "stuck".
-func ensureTTYForegroundSelf() {
+func EnsureTTYForegroundSelf() {
 	tty, err := os.OpenFile(foregroundTTYPath, os.O_RDWR, 0)
 	if err != nil {
 		return
@@ -44,7 +44,7 @@ func ensureTTYForegroundSelf() {
 		return
 	}
 
-	deadline := time.Now().Add(ttyForegroundRetryTimeout)
+	deadline := time.Now().Add(ForegroundRetryTimeout)
 	for {
 		current, err := unix.IoctlGetInt(fd, unix.TIOCGPGRP)
 		if err == nil && current == pgid {
@@ -56,16 +56,15 @@ func ensureTTYForegroundSelf() {
 		if time.Now().After(deadline) {
 			return
 		}
-		time.Sleep(ttyForegroundRetryInterval)
+		time.Sleep(ForegroundRetryInterval)
 	}
 }
 
 // withIgnoredJobControlSignals runs fn while ignoring SIGTTOU/SIGTTIN.
 //
 // Foreground process group changes (tcsetpgrp) can trigger SIGTTOU when invoked
-// by a background process group. If that stops Delight, the user's terminal can
-// be left in a broken raw state. Ignoring these signals ensures we always
-// restore the terminal and keep the session loop responsive.
+// by a background process group. If that stops the CLI, the user's terminal can
+// be left in a broken raw state.
 func withIgnoredJobControlSignals(fn func()) {
 	if fn == nil {
 		return
