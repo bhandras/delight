@@ -92,6 +92,11 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 		}
 		r.mu.Unlock()
 
+		// term.MakeRaw disables ISIG, which makes Ctrl+C stop generating SIGINT.
+		// In remote mode we still want Ctrl+C to exit Delight reliably (even after
+		// repeated mode switches), so re-enable ISIG best-effort.
+		enableISIG(fd)
+
 		defer func() {
 			if !restored {
 				_ = term.Restore(fd, oldState)
