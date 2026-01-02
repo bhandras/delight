@@ -51,6 +51,20 @@ Use one of these instead:
 - Shell $-quoting (zsh/bash): `git commit -S -m $'subject\n\nbody line 1\nbody line 2'`
 - Commit message file: `git commit -S -F /path/to/message.txt`
 
+### Commit Message Line Length (Important)
+
+When the agent constructs commit messages (especially via `git commit -m ...`),
+it must ensure every non-empty body line is wrapped to ≤72 characters.
+
+Preferred approach:
+
+- Use multiple `-m` flags and keep each `-m "..."` body paragraph line ≤72
+  characters.
+
+Before finishing a commit, validate the final message formatting:
+
+`git show -s --format='%B' HEAD | python3 -c 'import sys; bad=[(i+1,len(l),l) for i,l in enumerate(sys.stdin.read().splitlines()) if len(l)>72 and l.strip()]; print(\"OK\" if not bad else \"\\n\".join([f\"Line {i} len {n}: {l}\" for i,n,l in bad]))'`
+
 ## Go Documentation Requirements
 
 For Go code:
