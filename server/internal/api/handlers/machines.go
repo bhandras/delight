@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -267,20 +268,6 @@ func (h *MachineHandler) DeleteMachine(c *gin.Context) {
 	userID, _ := middleware.GetUserID(c)
 	machineID := c.Param("id")
 
-	// Verify machine exists
-	_, err := h.queries.GetMachine(c.Request.Context(), models.GetMachineParams{
-		AccountID: userID,
-		ID:        machineID,
-	})
-
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, types.ErrorResponse{Error: "machine not found"})
-		return
-	} else if err != nil {
-		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "database error"})
-		return
-	}
-
 	ctx := c.Request.Context()
 	tx, err := h.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -292,7 +279,7 @@ func (h *MachineHandler) DeleteMachine(c *gin.Context) {
 	}()
 	qtx := h.queries.WithTx(tx)
 
-	sessionIDs, err := qtx.ListSessionIDsForMachine(ctx, models.ListSessionIDsForMachineParams{
+	sessionIDsByMachineKey, err := qtx.ListSessionIDsForMachine(ctx, models.ListSessionIDsForMachineParams{
 		AccountID: userID,
 		MachineID: machineID,
 	})
@@ -301,11 +288,33 @@ func (h *MachineHandler) DeleteMachine(c *gin.Context) {
 		return
 	}
 
+	tagPrefix := fmt.Sprintf("m-%s-", machineID)
+	sessionIDsByTag, err := qtx.ListSessionIDsByTagLike(ctx, models.ListSessionIDsByTagLikeParams{
+		AccountID: userID,
+		Tag:       tagPrefix + "%",
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "database error"})
+		return
+	}
+
+	sessionIDs := make(map[string]struct{}, len(sessionIDsByMachineKey)+len(sessionIDsByTag))
+	for _, sessionID := range sessionIDsByMachineKey {
+		sessionIDs[sessionID] = struct{}{}
+	}
+	for _, sessionID := range sessionIDsByTag {
+		sessionIDs[sessionID] = struct{}{}
+	}
+
 	// Best-effort: "machines" don't have a direct FK relationship to sessions, so
 	// we treat "belonging to a machine" as "has an access key issued for this
 	// machine". This keeps the UI semantics intuitive (delete machine deletes the
 	// machine's terminals).
-	for _, sessionID := range sessionIDs {
+	//
+	// Sessions also carry a stable tag prefix derived from the machine id (see
+	// stableSessionTag in the CLI). This is the primary linkage when access_keys are
+	// not used.
+	for sessionID := range sessionIDs {
 		if err := qtx.DeleteSession(ctx, sessionID); err != nil {
 			c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to delete session"})
 			return

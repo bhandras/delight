@@ -210,6 +210,41 @@ func (q *Queries) ListActiveSessions(ctx context.Context, arg ListActiveSessions
 	return items, nil
 }
 
+const listSessionIDsByTagLike = `-- name: ListSessionIDsByTagLike :many
+SELECT id
+FROM sessions
+WHERE account_id = ?
+  AND tag LIKE ?
+`
+
+type ListSessionIDsByTagLikeParams struct {
+	AccountID string `json:"account_id"`
+	Tag       string `json:"tag"`
+}
+
+func (q *Queries) ListSessionIDsByTagLike(ctx context.Context, arg ListSessionIDsByTagLikeParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listSessionIDsByTagLike, arg.AccountID, arg.Tag)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSessions = `-- name: ListSessions :many
 SELECT id, tag, account_id, metadata, metadata_version, agent_state, agent_state_version, data_encryption_key, seq, active, last_active_at, created_at, updated_at FROM sessions
 WHERE account_id = ?

@@ -51,6 +51,12 @@ WHERE id = ?;
 -- name: DeleteSession :exec
 DELETE FROM sessions WHERE id = ?;
 
+-- name: ListSessionIDsByTagLike :many
+SELECT id
+FROM sessions
+WHERE account_id = ?
+  AND tag LIKE ?;
+
 -- name: GetSessionMessagesCount :one
 SELECT COUNT(*) FROM session_messages WHERE session_id = ?;
 
