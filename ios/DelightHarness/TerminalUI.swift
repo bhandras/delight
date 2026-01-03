@@ -4,6 +4,7 @@ import SwiftUI
 struct TerminalsView: View {
     @ObservedObject var model: HarnessViewModel
     @Binding var showScanner: Bool
+    @State private var showPairTerminalSheet: Bool = false
 
     var body: some View {
         let isLoggedIn = !model.token.isEmpty
@@ -66,10 +67,59 @@ struct TerminalsView: View {
                 }
             }
             .navigationTitle("Terminals")
+            .toolbar {
+                if isLoggedIn {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            showPairTerminalSheet = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .accessibilityLabel("Pair Terminal")
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showPairTerminalSheet) {
+            PairTerminalSheet(model: model, showScanner: $showScanner)
         }
         .onAppear {
             if !model.token.isEmpty {
                 model.listSessions()
+            }
+        }
+    }
+}
+
+private struct PairTerminalSheet: View {
+    @ObservedObject var model: HarnessViewModel
+    @Binding var showScanner: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Theme.background.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        SettingSection(title: "Pair Terminal") {
+                            Text("Scan a QR code from the CLI or paste the pairing URL.")
+                                .font(Theme.caption)
+                                .foregroundColor(Theme.mutedText)
+                            PairTerminalForm(model: model, showScanner: $showScanner)
+                        }
+                    }
+                    .padding()
+                }
+            }
+            .navigationTitle("Pair Terminal")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") {
+                        dismiss()
+                    }
+                }
             }
         }
     }
