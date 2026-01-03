@@ -302,8 +302,6 @@ func (m *Manager) initSessionActor() {
 	}
 	if m.cfg != nil {
 		agentState.Model = strings.TrimSpace(m.cfg.Model)
-		agentState.ReasoningEffort = strings.TrimSpace(m.cfg.ReasoningEffort)
-		agentState.PermissionMode = strings.TrimSpace(m.cfg.PermissionMode)
 	}
 	stateData, _ := json.Marshal(agentState)
 	initial := sessionactor.State{

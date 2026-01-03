@@ -26,16 +26,6 @@ type Config struct {
 	//
 	// This value is engine-specific; an empty string means "use engine default".
 	Model string
-	// ReasoningEffort selects the reasoning effort preset (engine-specific).
-	//
-	// For Codex, this maps to model_reasoning_effort: low|medium|high|xhigh.
-	// An empty string means "use engine default".
-	ReasoningEffort string
-	// PermissionMode selects the approval/sandbox preset.
-	//
-	// Canonical Delight values are: default|read-only|safe-yolo|yolo.
-	// An empty string means "default".
-	PermissionMode string
 
 	// Debug enables verbose logging.
 	Debug bool
@@ -93,8 +83,6 @@ func Default() (*Config, error) {
 		DelightHome:       delightHome,
 		AccessKey:         filepath.Join(delightHome, "access.key"),
 		Model:             "",
-		ReasoningEffort:   "",
-		PermissionMode:    "",
 		Debug:             false,
 		SocketIOTransport: defaultSocketIOTransport,
 		Agent:             defaultAgent,

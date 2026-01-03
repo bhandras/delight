@@ -89,7 +89,7 @@ func TestFakeAgentRoundTrip(t *testing.T) {
 		"run",
 		"--server-url", serverURL,
 		"--home-dir", delightHome,
-		"--fake-agent",
+		"--agent", "fake",
 		"--log-level", "debug",
 	)
 	cliCmd.Dir = filepath.Join(root, "cli")
@@ -312,7 +312,7 @@ func TestRPCRoundTrip(t *testing.T) {
 		"run",
 		"--server-url", serverURL,
 		"--home-dir", delightHome,
-		"--fake-agent",
+		"--agent", "fake",
 		"--log-level", "debug",
 	)
 	cliCmd.Dir = filepath.Join(root, "cli")
@@ -408,7 +408,7 @@ func TestMachineRPCRoundTrip(t *testing.T) {
 		"run",
 		"--server-url", serverURL,
 		"--home-dir", delightHome,
-		"--fake-agent",
+		"--agent", "fake",
 		"--log-level", "debug",
 	)
 	cliCmd.Dir = filepath.Join(root, "cli")
@@ -801,7 +801,7 @@ func startServerAndCLI(t *testing.T) *testEnv {
 		"run",
 		"--server-url", serverURL,
 		"--home-dir", delightHome,
-		"--fake-agent",
+		"--agent", "fake",
 		"--log-level", "debug",
 	)
 	cliCmd.Dir = filepath.Join(root, "cli")

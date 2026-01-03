@@ -104,41 +104,8 @@ func run() error {
 		defer logClose()
 		return cli.AuthCommand(cfg)
 	case "daemon":
-		if len(trailingArgs) == 0 || trailingArgs[0] != "stop" {
-			printUsage()
-			return nil
-		}
-		if err := parseFlags(cfg, append([]string(nil), leadingFlags...)); err != nil {
-			return err
-		}
-		if err := parseFlags(cfg, append([]string(nil), trailingArgs[1:]...)); err != nil {
-			return err
-		}
-		if err := cfg.EnsureHome(); err != nil {
-			return err
-		}
-		logClose, err := setupLogging(".")
-		if err != nil {
-			return err
-		}
-		defer logClose()
-		return cli.StopDaemonCommand(cfg)
-	case "stop-daemon":
-		if err := parseFlags(cfg, append([]string(nil), leadingFlags...)); err != nil {
-			return err
-		}
-		if err := parseFlags(cfg, append([]string(nil), trailingArgs...)); err != nil {
-			return err
-		}
-		if err := cfg.EnsureHome(); err != nil {
-			return err
-		}
-		logClose, err := setupLogging(".")
-		if err != nil {
-			return err
-		}
-		defer logClose()
-		return cli.StopDaemonCommand(cfg)
+		printUsage()
+		return nil
 	case "run":
 		if err := parseFlags(cfg, append([]string(nil), leadingFlags...)); err != nil {
 			return err
@@ -203,9 +170,6 @@ func parseFlags(cfg *config.Config, args []string) error {
 	acpAgent := fs.String("acp-agent", "", "ACP agent name")
 	agent := fs.String("agent", "", "Agent backend (acp|claude|codex)")
 	model := fs.String("model", "", "Model identifier (engine-specific)")
-	reasoningEffort := fs.String("reasoning-effort", "", "Reasoning effort preset (low|medium|high|xhigh)")
-	permissionMode := fs.String("permission-mode", "", "Permission mode (default|read-only|safe-yolo|yolo)")
-	fakeAgent := fs.Bool("fake-agent", false, "Use the fake agent backend (integration tests)")
 	forceNewSession := fs.Bool("new-session", false, "Force creation of a new session")
 	logLevel := fs.String("log-level", "info", "Log level (trace|debug|info|warn|error)")
 	socketIOTransport := fs.String("socketio-transport", "websocket", "Socket.IO transport (websocket|polling)")
@@ -230,22 +194,13 @@ func parseFlags(cfg *config.Config, args []string) error {
 	}
 	cfg.ACPEnable = cfg.ACPURL != "" && cfg.ACPAgent != ""
 	if *agent != "" {
-		if *agent != "acp" && *agent != "claude" && *agent != "codex" {
+		if *agent != "acp" && *agent != "claude" && *agent != "codex" && *agent != "fake" {
 			return fmt.Errorf("invalid --agent %q (expected acp, claude, or codex)", *agent)
 		}
 		cfg.Agent = *agent
 	}
-	if *fakeAgent {
-		cfg.FakeAgent = true
-	}
 	if *model != "" {
 		cfg.Model = *model
-	}
-	if *reasoningEffort != "" {
-		cfg.ReasoningEffort = *reasoningEffort
-	}
-	if *permissionMode != "" {
-		cfg.PermissionMode = *permissionMode
 	}
 	if *startingMode != "" {
 		switch *startingMode {
@@ -343,15 +298,13 @@ Usage:
   delight [command]
 
 Commands:
-  run                  Start a new Delight session
+  run                  Start a new session (default: Codex)
   claude run           Start a session using Claude
   codex run            Start a session using Codex
   acp run              Start a session using ACP
   auth                 Authenticate with QR code for mobile pairing
   help                 Show this help message
   version              Show version information
-  daemon stop          Stop the running daemon (sessions stay alive)
-  stop-daemon          Stop the running daemon (sessions stay alive)
 
 Flags:
   --server-url        Delight server URL
@@ -361,9 +314,6 @@ Flags:
   --agent             Agent backend (acp|claude|codex)
   --mode              Starting mode (local|remote)
   --model             Model identifier (engine-specific)
-  --reasoning-effort  Reasoning effort preset (low|medium|high|xhigh)
-  --permission-mode   Permission mode (default|read-only|safe-yolo|yolo)
-  --fake-agent        Use the fake agent backend (tests)
   --new-session       Force creation of a new session
   --socketio-transport Socket.IO transport (websocket|polling)
   --log-level         Log level (trace|debug|info|warn|error)
@@ -374,6 +324,9 @@ Examples:
 
   # Start a session (Codex by default)
   delight run
+
+  # Start a Claude session
+  delight claude run
 
   # Start a session with custom server and model
   delight run --server-url=http://localhost:3005 --model=gpt-5.2-codex`)
