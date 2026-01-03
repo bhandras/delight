@@ -23,7 +23,7 @@ import (
 // AuthCommand handles the QR code authentication flow using terminal auth
 // This matches the flow expected by the mobile app's useConnectTerminal.ts
 func AuthCommand(cfg *config.Config) error {
-	logger.Infof("Starting terminal authentication...")
+	printAuthLine("Starting terminal authentication...")
 
 	// Generate crypto_box key pair for this device
 	publicKey, privateKey, err := crypto.GenerateBoxKeyPair()
@@ -84,16 +84,21 @@ func AuthCommand(cfg *config.Config) error {
 	qrData := fmt.Sprintf("delight://terminal?%s", publicKeyB64url)
 
 	// Generate QR code
-	logger.Infof("\nScan this QR code with the Delight mobile app to link this device:")
+	printAuthLine("")
+	printAuthLine("Scan this QR code with the Delight mobile app to link this device:")
 	printQRCode(qrData)
 
 	// Print URL for manual authentication
-	logger.Infof("\nOr manually open this URL in the Delight app:\n%s", qrData)
+	printAuthLine("")
+	printAuthLine("Or manually open this URL in the Delight app:")
+	printAuthLine(qrData)
 
 	if requestID != "" {
-		logger.Infof("\nWaiting for approval (Request ID: %s)...", requestID)
+		printAuthLine("")
+		printAuthLine(fmt.Sprintf("Waiting for approval (Request ID: %s)...", requestID))
 	} else {
-		logger.Infof("\nWaiting for approval...")
+		printAuthLine("")
+		printAuthLine("Waiting for approval...")
 	}
 
 	// Poll for response using GET /v1/auth/request/status
@@ -102,15 +107,23 @@ func AuthCommand(cfg *config.Config) error {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
 
-	logger.Infof("✓ Authentication successful!")
+	printAuthLine("✓ Authentication successful!")
 
 	// Save credentials
 	if err := saveCredentials(cfg, secret, token); err != nil {
 		return err
 	}
 
-	logger.Infof("Credentials saved to: %s", cfg.DelightHome)
+	printAuthLine(fmt.Sprintf("Credentials saved to: %s", cfg.DelightHome))
 	return nil
+}
+
+// printAuthLine prints user-facing auth output to stdout.
+//
+// The CLI may redirect structured logs to a file; auth should remain usable
+// even in that configuration.
+func printAuthLine(line string) {
+	fmt.Fprintln(os.Stdout, line)
 }
 
 // printQRCode prints a QR code to the terminal
@@ -119,7 +132,9 @@ func printQRCode(data string) {
 	qr, err := qrcode.New(data, qrcode.Medium)
 	if err != nil {
 		logger.Warnf("Failed to generate QR code: %v", err)
-		logger.Infof("Auth URL: %s", data)
+		printAuthLine(fmt.Sprintf("Failed to generate QR code: %v", err))
+		printAuthLine("Auth URL:")
+		printAuthLine(data)
 		return
 	}
 

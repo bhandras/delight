@@ -20,6 +20,9 @@ make build
 # Show usage (default)
 ./delight
 
+# Authenticate once (required before running sessions)
+./delight auth --server-url=http://localhost:3005
+
 # Run a session (Codex by default)
 ./delight run --server-url=http://localhost:3005
 

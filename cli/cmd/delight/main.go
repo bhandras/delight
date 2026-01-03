@@ -319,7 +319,7 @@ Flags:
   --log-level         Log level (trace|debug|info|warn|error)
 
 Examples:
-  # Authenticate with QR code
+  # Authenticate with QR code (required before running sessions)
   delight auth
 
   # Start a session (Codex by default)
@@ -392,22 +392,23 @@ func runSession(cfg *config.Config) error {
 		return err
 	}
 
-	// Check if we have account credentials (master.key and access.key)
+	// Require explicit authentication. `delight run` should never prompt for QR
+	// pairing implicitly so it's safe to invoke in scripts.
 	masterKeyPath := filepath.Join(cfg.DelightHome, "master.key")
 	if _, err := os.Stat(masterKeyPath); os.IsNotExist(err) {
-		// No account credentials - trigger QR code authentication
-		logger.Infof("No account credentials found. Starting authentication...")
-		logger.Infof("")
-		if err := cli.AuthCommand(cfg); err != nil {
-			return fmt.Errorf("authentication failed: %w", err)
-		}
-		logger.Infof("")
+		return fmt.Errorf(
+			"not authenticated (missing %s); run `delight auth` first",
+			masterKeyPath,
+		)
 	}
 
 	// Load access token
 	tokenData, err := os.ReadFile(cfg.AccessKey)
 	if err != nil {
-		return fmt.Errorf("failed to read access token: %w", err)
+		return fmt.Errorf(
+			"not authenticated (missing %s); run `delight auth` first",
+			cfg.AccessKey,
+		)
 	}
 	token := string(tokenData)
 
