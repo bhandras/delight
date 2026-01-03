@@ -46,7 +46,7 @@ type ConnectionType string
 const (
 	ConnectionTypeUserScoped    ConnectionType = "user-scoped"
 	ConnectionTypeSessionScoped ConnectionType = "session-scoped"
-	ConnectionTypeMachineScoped ConnectionType = "machine-scoped"
+	ConnectionTypeTerminalScoped ConnectionType = "terminal-scoped"
 )
 
 // Auth types

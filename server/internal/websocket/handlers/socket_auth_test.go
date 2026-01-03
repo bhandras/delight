@@ -23,10 +23,10 @@ func TestValidateSocketAuthPayload_SessionScopedRequiresSessionID(t *testing.T) 
 	require.Error(t, err)
 }
 
-func TestValidateSocketAuthPayload_MachineScopedRequiresMachineID(t *testing.T) {
+func TestValidateSocketAuthPayload_TerminalScopedRequiresTerminalID(t *testing.T) {
 	_, err := ValidateSocketAuthPayload(protocolwire.SocketAuthPayload{
 		Token:      "t",
-		ClientType: "machine-scoped",
+		ClientType: "terminal-scoped",
 	})
 	require.Error(t, err)
 }

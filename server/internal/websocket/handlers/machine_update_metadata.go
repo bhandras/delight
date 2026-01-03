@@ -8,40 +8,40 @@ import (
 	protocolwire "github.com/bhandras/delight/shared/wire"
 )
 
-// MachineUpdateMetadata applies a machine metadata update and returns an ACK
+// TerminalUpdateMetadata applies a terminal metadata update and returns an ACK
 // payload plus any resulting update events that should be broadcast.
-func MachineUpdateMetadata(ctx context.Context, deps Deps, auth AuthContext, req protocolwire.MachineUpdateMetadataPayload) EventResult {
-	if req.MachineID == "" || req.Metadata == "" {
+func TerminalUpdateMetadata(ctx context.Context, deps Deps, auth AuthContext, req protocolwire.TerminalUpdateMetadataPayload) EventResult {
+	if req.TerminalID == "" || req.Metadata == "" {
 		return NewEventResult(protocolwire.ResultAck{Result: "error", Message: "Invalid parameters"}, nil)
 	}
 
-	machine, err := deps.Machines().GetMachine(ctx, models.GetMachineParams{
+	terminal, err := deps.Terminals().GetTerminal(ctx, models.GetTerminalParams{
 		AccountID: auth.UserID(),
-		ID:        req.MachineID,
+		ID:        req.TerminalID,
 	})
-	if err != nil || machine.AccountID != auth.UserID() {
-		return NewEventResult(protocolwire.ResultAck{Result: "error", Message: "Machine not found"}, nil)
+	if err != nil || terminal.AccountID != auth.UserID() {
+		return NewEventResult(protocolwire.ResultAck{Result: "error", Message: "Terminal not found"}, nil)
 	}
 
-	if machine.MetadataVersion != req.ExpectedVersion {
+	if terminal.MetadataVersion != req.ExpectedVersion {
 		return NewEventResult(protocolwire.VersionedAck{
 			Result:   "version-mismatch",
-			Version:  machine.MetadataVersion,
-			Metadata: machine.Metadata,
+			Version:  terminal.MetadataVersion,
+			Metadata: terminal.Metadata,
 		}, nil)
 	}
 
-	rows, err := deps.Machines().UpdateMachineMetadata(ctx, models.UpdateMachineMetadataParams{
+	rows, err := deps.Terminals().UpdateTerminalMetadata(ctx, models.UpdateTerminalMetadataParams{
 		Metadata:          req.Metadata,
 		MetadataVersion:   req.ExpectedVersion + 1,
 		AccountID:         auth.UserID(),
-		ID:                req.MachineID,
+		ID:                req.TerminalID,
 		MetadataVersion_2: req.ExpectedVersion,
 	})
 	if err != nil || rows == 0 {
-		current, err := deps.Machines().GetMachine(ctx, models.GetMachineParams{
+		current, err := deps.Terminals().GetTerminal(ctx, models.GetTerminalParams{
 			AccountID: auth.UserID(),
-			ID:        req.MachineID,
+			ID:        req.TerminalID,
 		})
 		if err == nil {
 			return NewEventResult(protocolwire.VersionedAck{
@@ -69,9 +69,9 @@ func MachineUpdateMetadata(ctx context.Context, deps Deps, auth AuthContext, req
 		ID:        deps.NewID(),
 		Seq:       userSeq,
 		CreatedAt: deps.Now().UnixMilli(),
-		Body: protocolwire.UpdateBodyUpdateMachine{
-			T:         "update-machine",
-			MachineID: req.MachineID,
+		Body: protocolwire.UpdateBodyUpdateTerminal{
+			T:          "update-terminal",
+			TerminalID: req.TerminalID,
 			Metadata: &protocolwire.VersionedString{
 				Value:   req.Metadata,
 				Version: req.ExpectedVersion + 1,

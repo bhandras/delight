@@ -28,7 +28,7 @@ func TestDisconnectEffects_SessionScoped(t *testing.T) {
 		},
 	}
 	now := time.UnixMilli(5000000)
-	deps := NewDeps(nil, sessions, nil, nil, nil, func() time.Time { return now }, func() string { return "id" })
+	deps := NewDeps(nil, sessions, nil, nil, func() time.Time { return now }, func() string { return "id" })
 
 	res := DisconnectEffects(context.Background(), deps, NewAuthContext("u1", "session-scoped", "sock1"), "s1", "")
 

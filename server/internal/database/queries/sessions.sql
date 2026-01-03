@@ -22,9 +22,9 @@ LIMIT ?;
 
 -- name: CreateSession :one
 INSERT INTO sessions (
-    id, tag, account_id, metadata, metadata_version,
+    id, tag, account_id, terminal_id, metadata, metadata_version,
     agent_state, agent_state_version, data_encryption_key
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: UpdateSessionSeq :one
@@ -50,12 +50,6 @@ WHERE id = ?;
 
 -- name: DeleteSession :exec
 DELETE FROM sessions WHERE id = ?;
-
--- name: ListSessionIDsByTagLike :many
-SELECT id
-FROM sessions
-WHERE account_id = ?
-  AND tag LIKE ?;
 
 -- name: GetSessionMessagesCount :one
 SELECT COUNT(*) FROM session_messages WHERE session_id = ?;

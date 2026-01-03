@@ -10,40 +10,40 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMachineAlive_EmitsUserScopedEphemeral(t *testing.T) {
-	var updated models.UpdateMachineActivityParams
-	machines := fakeMachineQueries{
-		getMachine: func(ctx context.Context, arg models.GetMachineParams) (models.Machine, error) {
-			return models.Machine{ID: arg.ID, AccountID: arg.AccountID}, nil
+func TestTerminalAlive_EmitsUserScopedEphemeral(t *testing.T) {
+	var updated models.UpdateTerminalActivityParams
+	terminals := fakeTerminalQueries{
+		getTerminal: func(ctx context.Context, arg models.GetTerminalParams) (models.Terminal, error) {
+			return models.Terminal{ID: arg.ID, AccountID: arg.AccountID}, nil
 		},
-		updateMachineMeta: func(ctx context.Context, arg models.UpdateMachineMetadataParams) (int64, error) {
+		updateTerminalMeta: func(ctx context.Context, arg models.UpdateTerminalMetadataParams) (int64, error) {
 			return 0, nil
 		},
-		updateActivity: func(ctx context.Context, arg models.UpdateMachineActivityParams) error {
+		updateActivity: func(ctx context.Context, arg models.UpdateTerminalActivityParams) error {
 			updated = arg
 			return nil
 		},
-		updateMachineState: func(ctx context.Context, arg models.UpdateMachineDaemonStateParams) (int64, error) {
+		updateTerminalState: func(ctx context.Context, arg models.UpdateTerminalDaemonStateParams) (int64, error) {
 			return 0, nil
 		},
 	}
 	now := time.UnixMilli(3000000)
-	deps := NewDeps(nil, nil, machines, nil, nil, func() time.Time { return now }, func() string { return "id" })
+	deps := NewDeps(nil, nil, terminals, nil, func() time.Time { return now }, func() string { return "id" })
 
-	res := MachineAlive(context.Background(), deps, NewAuthContext("u1", "machine-scoped", "sock1"), protocolwire.MachineAlivePayload{
-		MachineID: "m1",
-		Time:      now.UnixMilli(),
+	res := TerminalAlive(context.Background(), deps, NewAuthContext("u1", "terminal-scoped", "sock1"), protocolwire.TerminalAlivePayload{
+		TerminalID: "t1",
+		Time:       now.UnixMilli(),
 	})
 
 	require.Equal(t, int64(1), updated.Active)
-	require.Equal(t, "m1", updated.ID)
+	require.Equal(t, "t1", updated.ID)
 	require.Equal(t, "u1", updated.AccountID)
 	require.Len(t, res.Ephemerals(), 1)
 	eph := res.Ephemerals()[0]
 	require.True(t, eph.IsUserScopedOnly())
-	payload, ok := eph.Payload().(protocolwire.EphemeralMachineActivityPayload)
+	payload, ok := eph.Payload().(protocolwire.EphemeralTerminalActivityPayload)
 	require.True(t, ok)
-	require.Equal(t, "machine-activity", payload.Type)
-	require.Equal(t, "m1", payload.ID)
+	require.Equal(t, "terminal-activity", payload.Type)
+	require.Equal(t, "t1", payload.ID)
 	require.True(t, payload.Active)
 }

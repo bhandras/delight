@@ -50,13 +50,12 @@ func (s *SocketIOServer) registerClientHandlers(client *socket.Socket, deps hand
 
 	// Typed events (decode -> handler -> emit updates/ephemerals)
 	onTypedEvent[protocolwire.SessionAlivePayload](s, client, "session-alive", deps, handlers.SessionAlive)
-	onTypedEvent[protocolwire.MachineAlivePayload](s, client, "machine-alive", deps, handlers.MachineAlive)
+	onTypedEvent[protocolwire.TerminalAlivePayload](s, client, "terminal-alive", deps, handlers.TerminalAlive)
 	onTypedEvent[protocolwire.UsageReportPayload](s, client, "usage-report", deps, handlers.UsageReport)
 
 	// Typed ACK handlers (decode -> handler -> ack -> emit updates/ephemerals)
-	onTypedAck[protocolwire.MachineUpdateMetadataPayload](s, client, "machine-update-metadata", deps, handlers.MachineUpdateMetadata)
-	onTypedAck[protocolwire.MachineUpdateStatePayload](s, client, "machine-update-state", deps, handlers.MachineUpdateState)
-	onTypedAck[protocolwire.AccessKeyGetRequest](s, client, "access-key-get", deps, handlers.AccessKeyGet)
+	onTypedAck[protocolwire.TerminalUpdateMetadataPayload](s, client, "terminal-update-metadata", deps, handlers.TerminalUpdateMetadata)
+	onTypedAck[protocolwire.TerminalUpdateStatePayload](s, client, "terminal-update-state", deps, handlers.TerminalUpdateState)
 	onTypedAck[protocolwire.ArtifactReadRequest](s, client, "artifact-read", deps, handlers.ArtifactRead)
 	onTypedAck[protocolwire.ArtifactCreateRequest](s, client, "artifact-create", deps, handlers.ArtifactCreate)
 	onTypedAck[protocolwire.ArtifactUpdateRequest](s, client, "artifact-update", deps, handlers.ArtifactUpdate)
@@ -199,7 +198,7 @@ func (s *SocketIOServer) registerClientHandlers(client *socket.Socket, deps hand
 			deps,
 			handlers.NewAuthContext(sd.UserID, sd.ClientType, socketID),
 			sd.SessionID,
-			sd.MachineID,
+			sd.TerminalID,
 		)
 		s.emitHandlerUpdates(socketID, result)
 

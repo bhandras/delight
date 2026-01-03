@@ -9,8 +9,8 @@ import (
 )
 
 // DisconnectEffects applies disconnect-side effects for a socket based on its
-// scope. It emits activity ephemerals and marks sessions/machines inactive.
-func DisconnectEffects(ctx context.Context, deps Deps, auth AuthContext, sessionID, machineID string) EventResult {
+// scope. It emits activity ephemerals and marks sessions/terminals inactive.
+func DisconnectEffects(ctx context.Context, deps Deps, auth AuthContext, sessionID, terminalID string) EventResult {
 	var ephemerals []EphemeralInstruction
 	now := deps.Now()
 
@@ -32,19 +32,19 @@ func DisconnectEffects(ctx context.Context, deps Deps, auth AuthContext, session
 		}))
 	}
 
-	if auth.ClientType() == "machine-scoped" && machineID != "" {
-		if err := deps.Machines().UpdateMachineActivity(ctx, models.UpdateMachineActivityParams{
+	if auth.ClientType() == "terminal-scoped" && terminalID != "" {
+		if err := deps.Terminals().UpdateTerminalActivity(ctx, models.UpdateTerminalActivityParams{
 			Active:       0,
 			LastActiveAt: now,
 			AccountID:    auth.UserID(),
-			ID:           machineID,
+			ID:           terminalID,
 		}); err != nil {
-			logger.Warnf("Failed to update machine activity: %v", err)
+			logger.Warnf("Failed to update terminal activity: %v", err)
 		}
 
-		ephemerals = append(ephemerals, newEphemeralToUserScoped(auth.UserID(), protocolwire.EphemeralMachineActivityPayload{
-			Type:     "machine-activity",
-			ID:       machineID,
+		ephemerals = append(ephemerals, newEphemeralToUserScoped(auth.UserID(), protocolwire.EphemeralTerminalActivityPayload{
+			Type:     "terminal-activity",
+			ID:       terminalID,
 			Active:   false,
 			ActiveAt: now.UnixMilli(),
 		}))

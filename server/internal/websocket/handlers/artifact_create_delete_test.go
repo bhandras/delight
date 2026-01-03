@@ -50,7 +50,7 @@ func TestArtifactCreate_SuccessEmitsUpdate(t *testing.T) {
 		},
 	}
 	now := time.UnixMilli(6666)
-	deps := NewDeps(accounts, nil, nil, nil, artifacts, func() time.Time { return now }, func() string { return "evt1" })
+	deps := NewDeps(accounts, nil, nil, artifacts, func() time.Time { return now }, func() string { return "evt1" })
 
 	req := protocolwire.ArtifactCreateRequest{
 		ID:                "a1",
@@ -91,7 +91,7 @@ func TestArtifactDelete_SuccessEmitsUpdate(t *testing.T) {
 		},
 	}
 	now := time.UnixMilli(7777)
-	deps := NewDeps(accounts, nil, nil, nil, artifacts, func() time.Time { return now }, func() string { return "evt1" })
+	deps := NewDeps(accounts, nil, nil, artifacts, func() time.Time { return now }, func() string { return "evt1" })
 
 	res := ArtifactDelete(context.Background(), deps, NewAuthContext("u1", "user-scoped", "sock1"), protocolwire.ArtifactDeleteRequest{
 		ArtifactID: "a1",

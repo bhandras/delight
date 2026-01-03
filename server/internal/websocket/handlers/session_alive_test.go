@@ -42,7 +42,7 @@ func TestSessionAlive_IgnoresOldPings(t *testing.T) {
 		},
 	}
 	now := time.UnixMilli(1000000)
-	deps := NewDeps(nil, sessions, nil, nil, nil, func() time.Time { return now }, func() string { return "id" })
+	deps := NewDeps(nil, sessions, nil, nil, func() time.Time { return now }, func() string { return "id" })
 
 	res := SessionAlive(context.Background(), deps, NewAuthContext("u1", "session-scoped", "sock1"), protocolwire.SessionAlivePayload{
 		SID:  "s1",
@@ -64,7 +64,7 @@ func TestSessionAlive_EmitsEphemeral(t *testing.T) {
 		},
 	}
 	now := time.UnixMilli(2000000)
-	deps := NewDeps(nil, sessions, nil, nil, nil, func() time.Time { return now }, func() string { return "id" })
+	deps := NewDeps(nil, sessions, nil, nil, func() time.Time { return now }, func() string { return "id" })
 
 	res := SessionAlive(context.Background(), deps, NewAuthContext("u1", "session-scoped", "sock1"), protocolwire.SessionAlivePayload{
 		SID:      "s1",

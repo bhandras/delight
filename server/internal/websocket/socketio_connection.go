@@ -52,26 +52,26 @@ func (s *SocketIOServer) handleConnection(client *socket.Socket, deps handlers.D
 	}
 
 	userID := claims.Subject
-	logger.Debugf("Socket.IO token verified: userID=%s, clientType=%s, sessionId=%s, machineId=%s, socketId=%s",
-		userID, handshakeAuth.ClientType, handshakeAuth.SessionID, handshakeAuth.MachineID, socketID)
+	logger.Debugf("Socket.IO token verified: userID=%s, clientType=%s, sessionId=%s, terminalId=%s, socketId=%s",
+		userID, handshakeAuth.ClientType, handshakeAuth.SessionID, handshakeAuth.TerminalID, socketID)
 
 	socketData := &SocketData{
 		UserID:     userID,
 		ClientType: handshakeAuth.ClientType,
 		SessionID:  handshakeAuth.SessionID,
-		MachineID:  handshakeAuth.MachineID,
+		TerminalID: handshakeAuth.TerminalID,
 		Socket:     client,
 	}
 	s.socketData.Store(socketID, socketData)
 
 	logger.Infof("Socket.IO client ready (user: %s, clientType: %s)", userID, handshakeAuth.ClientType)
 
-	if handshakeAuth.ClientType == "machine-scoped" && handshakeAuth.MachineID != "" {
-		result := handlers.ConnectMachineScoped(
+	if handshakeAuth.ClientType == "terminal-scoped" && handshakeAuth.TerminalID != "" {
+		result := handlers.ConnectTerminalScoped(
 			context.Background(),
 			deps,
 			handlers.NewAuthContext(userID, handshakeAuth.ClientType, socketID),
-			handshakeAuth.MachineID,
+			handshakeAuth.TerminalID,
 		)
 		s.emitHandlerUpdates(socketID, result)
 	}

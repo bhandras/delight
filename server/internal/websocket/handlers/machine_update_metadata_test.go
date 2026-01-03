@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMachineUpdateMetadata_InvalidParams(t *testing.T) {
-	deps := NewDeps(nil, nil, nil, nil, nil, time.Now, func() string { return "id" })
-	res := MachineUpdateMetadata(context.Background(), deps, NewAuthContext("u1", "user-scoped", "s1"), protocolwire.MachineUpdateMetadataPayload{})
+func TestTerminalUpdateMetadata_InvalidParams(t *testing.T) {
+	deps := NewDeps(nil, nil, nil, nil, time.Now, func() string { return "id" })
+	res := TerminalUpdateMetadata(context.Background(), deps, NewAuthContext("u1", "user-scoped", "s1"), protocolwire.TerminalUpdateMetadataPayload{})
 
 	ack, ok := res.Ack().(protocolwire.ResultAck)
 	require.True(t, ok)
@@ -20,23 +20,23 @@ func TestMachineUpdateMetadata_InvalidParams(t *testing.T) {
 	require.Empty(t, res.Updates())
 }
 
-func TestMachineUpdateMetadata_VersionMismatch(t *testing.T) {
-	machines := fakeMachineQueries{
-		getMachine: func(ctx context.Context, arg models.GetMachineParams) (models.Machine, error) {
-			return models.Machine{ID: arg.ID, AccountID: arg.AccountID, Metadata: "cur", MetadataVersion: 3}, nil
+func TestTerminalUpdateMetadata_VersionMismatch(t *testing.T) {
+	terminals := fakeTerminalQueries{
+		getTerminal: func(ctx context.Context, arg models.GetTerminalParams) (models.Terminal, error) {
+			return models.Terminal{ID: arg.ID, AccountID: arg.AccountID, Metadata: "cur", MetadataVersion: 3}, nil
 		},
-		updateMachineMeta: func(ctx context.Context, arg models.UpdateMachineMetadataParams) (int64, error) {
+		updateTerminalMeta: func(ctx context.Context, arg models.UpdateTerminalMetadataParams) (int64, error) {
 			t.Fatalf("unexpected update call")
 			return 0, nil
 		},
-		updateMachineState: func(ctx context.Context, arg models.UpdateMachineDaemonStateParams) (int64, error) {
+		updateTerminalState: func(ctx context.Context, arg models.UpdateTerminalDaemonStateParams) (int64, error) {
 			return 0, nil
 		},
 	}
-	deps := NewDeps(nil, nil, machines, nil, nil, time.Now, func() string { return "id" })
+	deps := NewDeps(nil, nil, terminals, nil, time.Now, func() string { return "id" })
 
-	res := MachineUpdateMetadata(context.Background(), deps, NewAuthContext("u1", "user-scoped", "sock1"), protocolwire.MachineUpdateMetadataPayload{
-		MachineID:       "m1",
+	res := TerminalUpdateMetadata(context.Background(), deps, NewAuthContext("u1", "user-scoped", "sock1"), protocolwire.TerminalUpdateMetadataPayload{
+		TerminalID:      "t1",
 		Metadata:        "new",
 		ExpectedVersion: 2,
 	})
@@ -49,20 +49,20 @@ func TestMachineUpdateMetadata_VersionMismatch(t *testing.T) {
 	require.Empty(t, res.Updates())
 }
 
-func TestMachineUpdateMetadata_Success(t *testing.T) {
-	machines := fakeMachineQueries{
-		getMachine: func(ctx context.Context, arg models.GetMachineParams) (models.Machine, error) {
-			return models.Machine{ID: arg.ID, AccountID: arg.AccountID, MetadataVersion: 7}, nil
+func TestTerminalUpdateMetadata_Success(t *testing.T) {
+	terminals := fakeTerminalQueries{
+		getTerminal: func(ctx context.Context, arg models.GetTerminalParams) (models.Terminal, error) {
+			return models.Terminal{ID: arg.ID, AccountID: arg.AccountID, MetadataVersion: 7}, nil
 		},
-		updateMachineMeta: func(ctx context.Context, arg models.UpdateMachineMetadataParams) (int64, error) {
-			require.Equal(t, "m1", arg.ID)
+		updateTerminalMeta: func(ctx context.Context, arg models.UpdateTerminalMetadataParams) (int64, error) {
+			require.Equal(t, "t1", arg.ID)
 			require.Equal(t, "u1", arg.AccountID)
 			require.Equal(t, "meta", arg.Metadata)
 			require.Equal(t, int64(8), arg.MetadataVersion)
 			require.Equal(t, int64(7), arg.MetadataVersion_2)
 			return 1, nil
 		},
-		updateMachineState: func(ctx context.Context, arg models.UpdateMachineDaemonStateParams) (int64, error) {
+		updateTerminalState: func(ctx context.Context, arg models.UpdateTerminalDaemonStateParams) (int64, error) {
 			return 0, nil
 		},
 	}
@@ -72,10 +72,10 @@ func TestMachineUpdateMetadata_Success(t *testing.T) {
 		},
 	}
 	now := time.UnixMilli(4444)
-	deps := NewDeps(accounts, nil, machines, nil, nil, func() time.Time { return now }, func() string { return "evt1" })
+	deps := NewDeps(accounts, nil, terminals, nil, func() time.Time { return now }, func() string { return "evt1" })
 
-	res := MachineUpdateMetadata(context.Background(), deps, NewAuthContext("u1", "user-scoped", "sock1"), protocolwire.MachineUpdateMetadataPayload{
-		MachineID:       "m1",
+	res := TerminalUpdateMetadata(context.Background(), deps, NewAuthContext("u1", "user-scoped", "sock1"), protocolwire.TerminalUpdateMetadataPayload{
+		TerminalID:      "t1",
 		Metadata:        "meta",
 		ExpectedVersion: 7,
 	})

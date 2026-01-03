@@ -46,7 +46,7 @@ func (f fakeSessionQueries) UpdateSessionMetadata(ctx context.Context, arg model
 }
 
 func TestUpdateState_InvalidParams(t *testing.T) {
-	deps := NewDeps(nil, nil, nil, nil, nil, time.Now, func() string { return "id" })
+	deps := NewDeps(nil, nil, nil, nil, time.Now, func() string { return "id" })
 	res := UpdateState(context.Background(), deps, NewAuthContext("u1", "user-scoped", "s1"), protocolwire.UpdateStatePayload{})
 
 	ack, ok := res.Ack().(protocolwire.ResultAck)
@@ -69,7 +69,7 @@ func TestUpdateState_Unauthorized(t *testing.T) {
 			return 0, nil
 		},
 	}
-	deps := NewDeps(nil, sessions, nil, nil, nil, time.Now, func() string { return "id" })
+	deps := NewDeps(nil, sessions, nil, nil, time.Now, func() string { return "id" })
 
 	res := UpdateState(context.Background(), deps, NewAuthContext("u1", "user-scoped", "s1"), protocolwire.UpdateStatePayload{
 		SID: "sess1",
@@ -104,7 +104,7 @@ func TestUpdateState_VersionMismatch(t *testing.T) {
 			return 0, nil
 		},
 	}
-	deps := NewDeps(nil, sessions, nil, nil, nil, time.Now, func() string { return "id" })
+	deps := NewDeps(nil, sessions, nil, nil, time.Now, func() string { return "id" })
 
 	state := "new"
 	res := UpdateState(context.Background(), deps, NewAuthContext("u1", "user-scoped", "s1"), protocolwire.UpdateStatePayload{
@@ -146,7 +146,7 @@ func TestUpdateState_Success(t *testing.T) {
 		},
 	}
 	now := time.UnixMilli(1234)
-	deps := NewDeps(accounts, sessions, nil, nil, nil, func() time.Time { return now }, func() string { return "evt1" })
+	deps := NewDeps(accounts, sessions, nil, nil, func() time.Time { return now }, func() string { return "evt1" })
 
 	state := "cipher"
 	res := UpdateState(context.Background(), deps, NewAuthContext("u1", "user-scoped", "sock1"), protocolwire.UpdateStatePayload{

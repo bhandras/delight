@@ -70,54 +70,8 @@ CREATE TABLE account_push_tokens (
 
 CREATE INDEX idx_push_tokens_account_id ON account_push_tokens(account_id);
 
--- Sessions (Claude Code sessions)
-CREATE TABLE sessions (
-    id TEXT PRIMARY KEY,
-    tag TEXT NOT NULL,
-    account_id TEXT NOT NULL,
-
-    -- Encrypted data
-    metadata TEXT NOT NULL,
-    metadata_version INTEGER NOT NULL DEFAULT 0,
-    agent_state TEXT,
-    agent_state_version INTEGER NOT NULL DEFAULT 0,
-    data_encryption_key BLOB,
-
-    -- State
-    seq INTEGER NOT NULL DEFAULT 0,
-    active INTEGER NOT NULL DEFAULT 1,
-    last_active_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-    UNIQUE(account_id, tag)
-);
-
-CREATE INDEX idx_sessions_account_id ON sessions(account_id);
-CREATE INDEX idx_sessions_account_updated ON sessions(account_id, updated_at DESC);
-CREATE INDEX idx_sessions_active ON sessions(active, last_active_at);
-
--- Session messages
-CREATE TABLE session_messages (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    local_id TEXT,
-    seq INTEGER NOT NULL,
-    content TEXT NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-    UNIQUE(session_id, local_id)
-);
-
-CREATE INDEX idx_messages_session_id ON session_messages(session_id);
-CREATE INDEX idx_messages_session_seq ON session_messages(session_id, seq);
-
--- Machines (CLI/daemon instances)
-CREATE TABLE machines (
+-- Terminals (one CLI instance per workdir)
+CREATE TABLE terminals (
     id TEXT NOT NULL,
     account_id TEXT NOT NULL,
 
@@ -140,8 +94,57 @@ CREATE TABLE machines (
     FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_machines_account_id ON machines(account_id);
-CREATE INDEX idx_machines_active ON machines(active, last_active_at);
+CREATE INDEX idx_terminals_account_id ON terminals(account_id);
+CREATE INDEX idx_terminals_active ON terminals(active, last_active_at);
+
+-- Sessions (one per terminal id)
+CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,
+    tag TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    terminal_id TEXT NOT NULL,
+
+    -- Encrypted data
+    metadata TEXT NOT NULL,
+    metadata_version INTEGER NOT NULL DEFAULT 0,
+    agent_state TEXT,
+    agent_state_version INTEGER NOT NULL DEFAULT 0,
+    data_encryption_key BLOB,
+
+    -- State
+    seq INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    last_active_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id, terminal_id) REFERENCES terminals(account_id, id) ON DELETE CASCADE,
+    UNIQUE(account_id, tag)
+);
+
+CREATE INDEX idx_sessions_account_id ON sessions(account_id);
+CREATE INDEX idx_sessions_terminal_id ON sessions(terminal_id);
+CREATE INDEX idx_sessions_account_updated ON sessions(account_id, updated_at DESC);
+CREATE INDEX idx_sessions_active ON sessions(active, last_active_at);
+
+-- Session messages
+CREATE TABLE session_messages (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    local_id TEXT,
+    seq INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+    UNIQUE(session_id, local_id)
+);
+
+CREATE INDEX idx_messages_session_id ON session_messages(session_id);
+CREATE INDEX idx_messages_session_seq ON session_messages(session_id, seq);
 
 -- Key-value store for user data
 CREATE TABLE user_kv_store (
@@ -178,26 +181,6 @@ CREATE TABLE artifacts (
 
 CREATE INDEX idx_artifacts_account_id ON artifacts(account_id);
 CREATE INDEX idx_artifacts_account_updated_at ON artifacts(account_id, updated_at);
-
--- Access keys
-CREATE TABLE access_keys (
-    id TEXT PRIMARY KEY,
-    account_id TEXT NOT NULL,
-    machine_id TEXT NOT NULL,
-    session_id TEXT NOT NULL,
-    data TEXT NOT NULL,
-    data_version INTEGER NOT NULL DEFAULT 0,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (account_id, machine_id) REFERENCES machines(account_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-    UNIQUE(account_id, machine_id, session_id)
-);
-
-CREATE INDEX idx_access_keys_account_id ON access_keys(account_id);
-CREATE INDEX idx_access_keys_session_id ON access_keys(session_id);
-CREATE INDEX idx_access_keys_machine_id ON access_keys(machine_id);
 
 -- Feed items
 CREATE TABLE user_feed_items (
@@ -236,11 +219,11 @@ BEGIN
     UPDATE session_messages SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
 END;
 
-CREATE TRIGGER update_machines_updated_at
-    AFTER UPDATE ON machines
+CREATE TRIGGER update_terminals_updated_at
+    AFTER UPDATE ON terminals
     FOR EACH ROW
 BEGIN
-    UPDATE machines SET updated_at = CURRENT_TIMESTAMP WHERE account_id = NEW.account_id AND id = NEW.id;
+    UPDATE terminals SET updated_at = CURRENT_TIMESTAMP WHERE account_id = NEW.account_id AND id = NEW.id;
 END;
 
 CREATE TRIGGER update_terminal_auth_updated_at

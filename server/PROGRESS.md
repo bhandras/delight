@@ -11,7 +11,7 @@
 ### Database Layer
 - ✅ SQLite with automatic migrations on startup
 - ✅ Type-safe queries via sqlc
-- ✅ Tables: `accounts`, `sessions`, `session_messages`, `machines`, `terminal_auth_requests`, `account_auth_requests`, `account_push_tokens`
+- ✅ Tables: `accounts`, `sessions`, `session_messages`, `terminals`, `terminal_auth_requests`, `account_auth_requests`, `account_push_tokens`
 - ✅ Automatic `updated_at` triggers
 
 ### Encryption (100% Compatible)
@@ -54,7 +54,7 @@
 
 ### WebSocket/Real-time Sync
 - ⬜ Socket.IO server setup
-- ⬜ Connection type handling (user-scoped, session-scoped, machine-scoped)
+- ⬜ Connection type handling (user-scoped, session-scoped, terminal-scoped)
 - ⬜ Event routing with recipient filtering
 - ⬜ Message broadcasting
 - ⬜ Session activity events (ephemeral)

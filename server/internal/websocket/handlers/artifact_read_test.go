@@ -36,7 +36,7 @@ func TestArtifactRead_Success(t *testing.T) {
 		create: func(ctx context.Context, arg models.CreateArtifactParams) error { return nil },
 		del:    func(ctx context.Context, arg models.DeleteArtifactParams) error { return nil },
 	}
-	deps := NewDeps(nil, nil, nil, nil, artifacts, time.Now, func() string { return "id" })
+	deps := NewDeps(nil, nil, nil, artifacts, time.Now, func() string { return "id" })
 
 	res := ArtifactRead(context.Background(), deps, NewAuthContext("u1", "user-scoped", "sock1"), protocolwire.ArtifactReadRequest{
 		ArtifactID: "a1",

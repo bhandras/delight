@@ -23,7 +23,7 @@ func (a AuthContext) UserID() string {
 }
 
 // ClientType returns the logical client type ("session-scoped", "user-scoped",
-// or "machine-scoped").
+// or "terminal-scoped").
 func (a AuthContext) ClientType() string {
 	return a.clientType
 }

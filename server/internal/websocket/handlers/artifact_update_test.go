@@ -42,7 +42,7 @@ func (f fakeArtifactQueries) DeleteArtifact(ctx context.Context, arg models.Dele
 }
 
 func TestArtifactUpdate_InvalidParams(t *testing.T) {
-	deps := NewDeps(nil, nil, nil, nil, nil, time.Now, func() string { return "id" })
+	deps := NewDeps(nil, nil, nil, nil, time.Now, func() string { return "id" })
 	res := ArtifactUpdate(context.Background(), deps, NewAuthContext("u1", "user-scoped", "s1"), protocolwire.ArtifactUpdateRequest{})
 
 	ack, ok := res.Ack().(protocolwire.ArtifactAck)
@@ -52,7 +52,7 @@ func TestArtifactUpdate_InvalidParams(t *testing.T) {
 }
 
 func TestArtifactUpdate_NoUpdatesProvided(t *testing.T) {
-	deps := NewDeps(nil, nil, nil, nil, nil, time.Now, func() string { return "id" })
+	deps := NewDeps(nil, nil, nil, nil, time.Now, func() string { return "id" })
 	res := ArtifactUpdate(context.Background(), deps, NewAuthContext("u1", "user-scoped", "s1"), protocolwire.ArtifactUpdateRequest{
 		ArtifactID: "a1",
 	})
@@ -92,7 +92,7 @@ func TestArtifactUpdate_VersionMismatch(t *testing.T) {
 			return nil
 		},
 	}
-	deps := NewDeps(nil, nil, nil, nil, artifacts, time.Now, func() string { return "id" })
+	deps := NewDeps(nil, nil, nil, artifacts, time.Now, func() string { return "id" })
 
 	headerCipher := base64.StdEncoding.EncodeToString([]byte("newh"))
 	res := ArtifactUpdate(context.Background(), deps, NewAuthContext("u1", "user-scoped", "sock1"), protocolwire.ArtifactUpdateRequest{
@@ -137,7 +137,7 @@ func TestArtifactUpdate_InvalidEncoding(t *testing.T) {
 			return nil
 		},
 	}
-	deps := NewDeps(nil, nil, nil, nil, artifacts, time.Now, func() string { return "id" })
+	deps := NewDeps(nil, nil, nil, artifacts, time.Now, func() string { return "id" })
 
 	res := ArtifactUpdate(context.Background(), deps, NewAuthContext("u1", "user-scoped", "sock1"), protocolwire.ArtifactUpdateRequest{
 		ArtifactID: "a1",
@@ -187,7 +187,7 @@ func TestArtifactUpdate_Success(t *testing.T) {
 		},
 	}
 	now := time.UnixMilli(2222)
-	deps := NewDeps(accounts, nil, nil, nil, artifacts, func() time.Time { return now }, func() string { return "evt1" })
+	deps := NewDeps(accounts, nil, nil, artifacts, func() time.Time { return now }, func() string { return "evt1" })
 
 	headerCipher := base64.StdEncoding.EncodeToString([]byte("h2"))
 	bodyCipher := base64.StdEncoding.EncodeToString([]byte("b3"))

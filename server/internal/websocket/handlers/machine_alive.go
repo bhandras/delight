@@ -8,10 +8,10 @@ import (
 	protocolwire "github.com/bhandras/delight/shared/wire"
 )
 
-// MachineAlive records a machine keep-alive and emits a machine-activity
+// TerminalAlive records a terminal keep-alive and emits a terminal-activity
 // ephemeral to user-scoped sockets.
-func MachineAlive(ctx context.Context, deps Deps, auth AuthContext, req protocolwire.MachineAlivePayload) EventResult {
-	if req.MachineID == "" {
+func TerminalAlive(ctx context.Context, deps Deps, auth AuthContext, req protocolwire.TerminalAlivePayload) EventResult {
+	if req.TerminalID == "" {
 		return NewEventResult(nil, nil)
 	}
 
@@ -28,25 +28,25 @@ func MachineAlive(ctx context.Context, deps Deps, auth AuthContext, req protocol
 		return NewEventResult(nil, nil)
 	}
 
-	machine, err := deps.Machines().GetMachine(ctx, models.GetMachineParams{
+	terminal, err := deps.Terminals().GetTerminal(ctx, models.GetTerminalParams{
 		AccountID: auth.UserID(),
-		ID:        req.MachineID,
+		ID:        req.TerminalID,
 	})
-	if err != nil || machine.AccountID != auth.UserID() {
+	if err != nil || terminal.AccountID != auth.UserID() {
 		return NewEventResult(nil, nil)
 	}
 
-	_ = deps.Machines().UpdateMachineActivity(ctx, models.UpdateMachineActivityParams{
+	_ = deps.Terminals().UpdateTerminalActivity(ctx, models.UpdateTerminalActivityParams{
 		Active:       1,
 		LastActiveAt: time.UnixMilli(t),
 		AccountID:    auth.UserID(),
-		ID:           req.MachineID,
+		ID:           req.TerminalID,
 	})
 
 	return NewEventResultWithEphemerals(nil, nil, []EphemeralInstruction{
-		newEphemeralToUserScoped(auth.UserID(), protocolwire.EphemeralMachineActivityPayload{
-			Type:     "machine-activity",
-			ID:       req.MachineID,
+		newEphemeralToUserScoped(auth.UserID(), protocolwire.EphemeralTerminalActivityPayload{
+			Type:     "terminal-activity",
+			ID:       req.TerminalID,
 			Active:   true,
 			ActiveAt: t,
 		}),

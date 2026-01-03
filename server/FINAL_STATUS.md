@@ -37,18 +37,18 @@ All core features have been implemented. The server is **ready to be tested with
 - `GET /v1/sessions/:id/messages?limit=N&offset=N` - List messages
 
 ### 3. Machine Management (100%)
-- ✅ Register/update machines
-- ✅ List machines
-- ✅ Get machine details
-- ✅ Delete machines
+- ✅ Register/update terminals
+- ✅ List terminals
+- ✅ Get terminal details
+- ✅ Delete terminals
 - ✅ Keep-alive mechanism
 
 **Endpoints:**
-- `GET /v1/machines` - List all machines
-- `POST /v1/machines` - Register machine (idempotent)
-- `GET /v1/machines/:id` - Get machine details
-- `DELETE /v1/machines/:id` - Delete machine
-- `POST /v1/machines/:id/alive` - Keep-alive heartbeat
+- `GET /v1/terminals` - List all terminals
+- `POST /v1/terminals` - Register terminal (idempotent)
+- `GET /v1/terminals/:id` - Get terminal details
+- `DELETE /v1/terminals/:id` - Delete terminal
+- `POST /v1/terminals/:id/alive` - Keep-alive heartbeat
 
 ### 4. User Profile (100%)
 - ✅ Get profile
@@ -64,7 +64,7 @@ All core features have been implemented. The server is **ready to be tested with
 
 ### 5. WebSocket/Real-time Sync (100%)
 - ✅ Socket.IO server with polling + WebSocket transports
-- ✅ Three connection types: user-scoped, session-scoped, machine-scoped
+- ✅ Three connection types: user-scoped, session-scoped, terminal-scoped
 - ✅ JWT-based authentication for WebSocket connections
 - ✅ Connection manager tracking all active connections
 - ✅ Event router with recipient filtering
@@ -227,7 +227,7 @@ delight-server-go/
 │   │   ├── handlers/
 │   │   │   ├── auth.go            # Auth endpoints (218 lines)
 │   │   │   ├── sessions.go        # Session CRUD (280 lines)
-│   │   │   ├── machines.go        # Machine management (250 lines)
+│   │   │   ├── terminals.go       # Terminal management (250 lines)
 │   │   │   └── users.go           # User profile (180 lines)
 │   │   └── middleware/
 │   │       ├── auth.go            # JWT verification (48 lines)
@@ -294,8 +294,8 @@ delight-server-go/
 4. `account_push_tokens` - Push notification tokens
 5. `sessions` - Claude Code sessions
 6. `session_messages` - Session messages
-7. `machines` - CLI/daemon instances
-8. `machines` - Machine registrations
+7. `terminals` - CLI/daemon instances
+8. `terminals` - Terminal registrations
 
 **All encrypted data:**
 - Session metadata

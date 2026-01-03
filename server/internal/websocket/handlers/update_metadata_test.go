@@ -11,7 +11,7 @@ import (
 )
 
 func TestUpdateMetadata_InvalidParams(t *testing.T) {
-	deps := NewDeps(nil, nil, nil, nil, nil, time.Now, func() string { return "id" })
+	deps := NewDeps(nil, nil, nil, nil, time.Now, func() string { return "id" })
 	res := UpdateMetadata(context.Background(), deps, NewAuthContext("u1", "user-scoped", "s1"), protocolwire.UpdateMetadataPayload{})
 
 	ack, ok := res.Ack().(protocolwire.ResultAck)
@@ -38,7 +38,7 @@ func TestUpdateMetadata_VersionMismatch(t *testing.T) {
 			return 0, nil
 		},
 	}
-	deps := NewDeps(nil, sessions, nil, nil, nil, time.Now, func() string { return "id" })
+	deps := NewDeps(nil, sessions, nil, nil, time.Now, func() string { return "id" })
 
 	res := UpdateMetadata(context.Background(), deps, NewAuthContext("u1", "user-scoped", "sock1"), protocolwire.UpdateMetadataPayload{
 		SID:             "sess1",
@@ -77,7 +77,7 @@ func TestUpdateMetadata_Success(t *testing.T) {
 		},
 	}
 	now := time.UnixMilli(3333)
-	deps := NewDeps(accounts, sessions, nil, nil, nil, func() time.Time { return now }, func() string { return "evt1" })
+	deps := NewDeps(accounts, sessions, nil, nil, func() time.Time { return now }, func() string { return "evt1" })
 
 	res := UpdateMetadata(context.Background(), deps, NewAuthContext("u1", "user-scoped", "sock1"), protocolwire.UpdateMetadataPayload{
 		SID:             "sess1",

@@ -71,16 +71,16 @@ func NewSocketIOServer(db *sql.DB, jwtManager *crypto.JWTManager) *SocketIOServe
 // SocketData stores connection metadata for each socket
 type SocketData struct {
 	UserID     string
-	ClientType string // "session-scoped", "user-scoped", or "machine-scoped"
+	ClientType string // "session-scoped", "user-scoped", or "terminal-scoped"
 	SessionID  string
-	MachineID  string
+	TerminalID string
 	Socket     *socket.Socket // Reference to the socket for emitting
 }
 
 // setupHandlers configures Socket.IO event handlers
 func (s *SocketIOServer) setupHandlers() {
 	queries := models.New(s.db)
-	handlerDeps := handlers.NewDeps(queries, queries, queries, queries, queries, time.Now, pkgtypes.NewCUID)
+	handlerDeps := handlers.NewDeps(queries, queries, queries, queries, time.Now, pkgtypes.NewCUID)
 
 	// Connection handler
 	s.server.On("connection", func(clients ...any) {
@@ -112,7 +112,7 @@ func (s *SocketIOServer) emitUpdateToSession(userID, sessionID string, payload a
 			return true
 		}
 
-		if targetSD.ClientType == "machine-scoped" {
+		if targetSD.ClientType == "terminal-scoped" {
 			return true
 		}
 

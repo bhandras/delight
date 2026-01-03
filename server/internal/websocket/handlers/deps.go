@@ -20,17 +20,12 @@ type SessionQueries interface {
 	UpdateSessionMetadata(ctx context.Context, arg models.UpdateSessionMetadataParams) (int64, error)
 }
 
-// MachineQueries is the subset of machine queries used by websocket handlers.
-type MachineQueries interface {
-	GetMachine(ctx context.Context, arg models.GetMachineParams) (models.Machine, error)
-	UpdateMachineMetadata(ctx context.Context, arg models.UpdateMachineMetadataParams) (int64, error)
-	UpdateMachineActivity(ctx context.Context, arg models.UpdateMachineActivityParams) error
-	UpdateMachineDaemonState(ctx context.Context, arg models.UpdateMachineDaemonStateParams) (int64, error)
-}
-
-// AccessKeyQueries is the subset of access key queries used by websocket handlers.
-type AccessKeyQueries interface {
-	GetAccessKey(ctx context.Context, arg models.GetAccessKeyParams) (models.AccessKey, error)
+// TerminalQueries is the subset of terminal queries used by websocket handlers.
+type TerminalQueries interface {
+	GetTerminal(ctx context.Context, arg models.GetTerminalParams) (models.Terminal, error)
+	UpdateTerminalMetadata(ctx context.Context, arg models.UpdateTerminalMetadataParams) (int64, error)
+	UpdateTerminalActivity(ctx context.Context, arg models.UpdateTerminalActivityParams) error
+	UpdateTerminalDaemonState(ctx context.Context, arg models.UpdateTerminalDaemonStateParams) (int64, error)
 }
 
 // ArtifactQueries is the subset of artifact queries used by websocket handlers.
@@ -46,8 +41,7 @@ type ArtifactQueries interface {
 type Deps struct {
 	accounts  AccountQueries
 	sessions  SessionQueries
-	machines  MachineQueries
-	accessKey AccessKeyQueries
+	terminals TerminalQueries
 	artifacts ArtifactQueries
 	now       func() time.Time
 	newID     func() string
@@ -57,8 +51,7 @@ type Deps struct {
 func NewDeps(
 	accounts AccountQueries,
 	sessions SessionQueries,
-	machines MachineQueries,
-	accessKeys AccessKeyQueries,
+	terminals TerminalQueries,
 	artifacts ArtifactQueries,
 	now func() time.Time,
 	newID func() string,
@@ -66,20 +59,16 @@ func NewDeps(
 	return Deps{
 		accounts:  accounts,
 		sessions:  sessions,
-		machines:  machines,
-		accessKey: accessKeys,
+		terminals: terminals,
 		artifacts: artifacts,
 		now:       now,
 		newID:     newID,
 	}
 }
 
-func (d Deps) Accounts() AccountQueries { return d.accounts }
-func (d Deps) Sessions() SessionQueries { return d.sessions }
-func (d Deps) Machines() MachineQueries { return d.machines }
-func (d Deps) AccessKeys() AccessKeyQueries {
-	return d.accessKey
-}
+func (d Deps) Accounts() AccountQueries   { return d.accounts }
+func (d Deps) Sessions() SessionQueries   { return d.sessions }
+func (d Deps) Terminals() TerminalQueries { return d.terminals }
 func (d Deps) Artifacts() ArtifactQueries { return d.artifacts }
 func (d Deps) Now() time.Time {
 	if d.now != nil {

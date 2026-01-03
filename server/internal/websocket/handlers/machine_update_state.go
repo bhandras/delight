@@ -9,44 +9,44 @@ import (
 	protocolwire "github.com/bhandras/delight/shared/wire"
 )
 
-// MachineUpdateState applies a machine daemon-state update and returns an ACK
+// TerminalUpdateState applies a terminal daemon-state update and returns an ACK
 // payload plus any resulting update events that should be broadcast.
-func MachineUpdateState(ctx context.Context, deps Deps, auth AuthContext, req protocolwire.MachineUpdateStatePayload) EventResult {
-	if req.MachineID == "" || req.DaemonState == "" {
+func TerminalUpdateState(ctx context.Context, deps Deps, auth AuthContext, req protocolwire.TerminalUpdateStatePayload) EventResult {
+	if req.TerminalID == "" || req.DaemonState == "" {
 		return NewEventResult(protocolwire.ResultAck{Result: "error", Message: "Invalid parameters"}, nil)
 	}
 
-	machine, err := deps.Machines().GetMachine(ctx, models.GetMachineParams{
+	terminal, err := deps.Terminals().GetTerminal(ctx, models.GetTerminalParams{
 		AccountID: auth.UserID(),
-		ID:        req.MachineID,
+		ID:        req.TerminalID,
 	})
-	if err != nil || machine.AccountID != auth.UserID() {
-		return NewEventResult(protocolwire.ResultAck{Result: "error", Message: "Machine not found"}, nil)
+	if err != nil || terminal.AccountID != auth.UserID() {
+		return NewEventResult(protocolwire.ResultAck{Result: "error", Message: "Terminal not found"}, nil)
 	}
 
-	if machine.DaemonStateVersion != req.ExpectedVersion {
+	if terminal.DaemonStateVersion != req.ExpectedVersion {
 		resp := protocolwire.VersionedAck{
 			Result:  "version-mismatch",
-			Version: machine.DaemonStateVersion,
+			Version: terminal.DaemonStateVersion,
 		}
-		if machine.DaemonState.Valid {
-			resp.DaemonState = machine.DaemonState.String
+		if terminal.DaemonState.Valid {
+			resp.DaemonState = terminal.DaemonState.String
 		}
 		return NewEventResult(resp, nil)
 	}
 
 	stateVal := sql.NullString{Valid: true, String: req.DaemonState}
-	rows, err := deps.Machines().UpdateMachineDaemonState(ctx, models.UpdateMachineDaemonStateParams{
+	rows, err := deps.Terminals().UpdateTerminalDaemonState(ctx, models.UpdateTerminalDaemonStateParams{
 		DaemonState:          stateVal,
 		DaemonStateVersion:   req.ExpectedVersion + 1,
 		AccountID:            auth.UserID(),
-		ID:                   req.MachineID,
+		ID:                   req.TerminalID,
 		DaemonStateVersion_2: req.ExpectedVersion,
 	})
 	if err != nil || rows == 0 {
-		current, err := deps.Machines().GetMachine(ctx, models.GetMachineParams{
+		current, err := deps.Terminals().GetTerminal(ctx, models.GetTerminalParams{
 			AccountID: auth.UserID(),
-			ID:        req.MachineID,
+			ID:        req.TerminalID,
 		})
 		if err == nil {
 			resp := protocolwire.VersionedAck{
@@ -77,9 +77,9 @@ func MachineUpdateState(ctx context.Context, deps Deps, auth AuthContext, req pr
 		ID:        deps.NewID(),
 		Seq:       userSeq,
 		CreatedAt: deps.Now().UnixMilli(),
-		Body: protocolwire.UpdateBodyUpdateMachine{
-			T:         "update-machine",
-			MachineID: req.MachineID,
+		Body: protocolwire.UpdateBodyUpdateTerminal{
+			T:          "update-terminal",
+			TerminalID: req.TerminalID,
 			DaemonState: &protocolwire.VersionedString{
 				Value:   req.DaemonState,
 				Version: req.ExpectedVersion + 1,

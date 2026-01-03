@@ -13,16 +13,17 @@ import (
 
 const createSession = `-- name: CreateSession :one
 INSERT INTO sessions (
-    id, tag, account_id, metadata, metadata_version,
+    id, tag, account_id, terminal_id, metadata, metadata_version,
     agent_state, agent_state_version, data_encryption_key
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, tag, account_id, metadata, metadata_version, agent_state, agent_state_version, data_encryption_key, seq, active, last_active_at, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, tag, account_id, terminal_id, metadata, metadata_version, agent_state, agent_state_version, data_encryption_key, seq, active, last_active_at, created_at, updated_at
 `
 
 type CreateSessionParams struct {
 	ID                string         `json:"id"`
 	Tag               string         `json:"tag"`
 	AccountID         string         `json:"account_id"`
+	TerminalID        string         `json:"terminal_id"`
 	Metadata          string         `json:"metadata"`
 	MetadataVersion   int64          `json:"metadata_version"`
 	AgentState        sql.NullString `json:"agent_state"`
@@ -35,6 +36,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		arg.ID,
 		arg.Tag,
 		arg.AccountID,
+		arg.TerminalID,
 		arg.Metadata,
 		arg.MetadataVersion,
 		arg.AgentState,
@@ -46,6 +48,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.ID,
 		&i.Tag,
 		&i.AccountID,
+		&i.TerminalID,
 		&i.Metadata,
 		&i.MetadataVersion,
 		&i.AgentState,
@@ -70,7 +73,7 @@ func (q *Queries) DeleteSession(ctx context.Context, id string) error {
 }
 
 const getSessionByID = `-- name: GetSessionByID :one
-SELECT id, tag, account_id, metadata, metadata_version, agent_state, agent_state_version, data_encryption_key, seq, active, last_active_at, created_at, updated_at FROM sessions WHERE id = ? LIMIT 1
+SELECT id, tag, account_id, terminal_id, metadata, metadata_version, agent_state, agent_state_version, data_encryption_key, seq, active, last_active_at, created_at, updated_at FROM sessions WHERE id = ? LIMIT 1
 `
 
 func (q *Queries) GetSessionByID(ctx context.Context, id string) (Session, error) {
@@ -80,6 +83,7 @@ func (q *Queries) GetSessionByID(ctx context.Context, id string) (Session, error
 		&i.ID,
 		&i.Tag,
 		&i.AccountID,
+		&i.TerminalID,
 		&i.Metadata,
 		&i.MetadataVersion,
 		&i.AgentState,
@@ -95,7 +99,7 @@ func (q *Queries) GetSessionByID(ctx context.Context, id string) (Session, error
 }
 
 const getSessionByTag = `-- name: GetSessionByTag :one
-SELECT id, tag, account_id, metadata, metadata_version, agent_state, agent_state_version, data_encryption_key, seq, active, last_active_at, created_at, updated_at FROM sessions
+SELECT id, tag, account_id, terminal_id, metadata, metadata_version, agent_state, agent_state_version, data_encryption_key, seq, active, last_active_at, created_at, updated_at FROM sessions
 WHERE account_id = ? AND tag = ?
 LIMIT 1
 `
@@ -112,6 +116,7 @@ func (q *Queries) GetSessionByTag(ctx context.Context, arg GetSessionByTagParams
 		&i.ID,
 		&i.Tag,
 		&i.AccountID,
+		&i.TerminalID,
 		&i.Metadata,
 		&i.MetadataVersion,
 		&i.AgentState,
@@ -160,7 +165,7 @@ func (q *Queries) GetSessionMessagesCount(ctx context.Context, sessionID string)
 }
 
 const listActiveSessions = `-- name: ListActiveSessions :many
-SELECT id, tag, account_id, metadata, metadata_version, agent_state, agent_state_version, data_encryption_key, seq, active, last_active_at, created_at, updated_at FROM sessions
+SELECT id, tag, account_id, terminal_id, metadata, metadata_version, agent_state, agent_state_version, data_encryption_key, seq, active, last_active_at, created_at, updated_at FROM sessions
 WHERE account_id = ?
   AND active = 1
   AND last_active_at > datetime('now', '-15 minutes')
@@ -186,6 +191,7 @@ func (q *Queries) ListActiveSessions(ctx context.Context, arg ListActiveSessions
 			&i.ID,
 			&i.Tag,
 			&i.AccountID,
+			&i.TerminalID,
 			&i.Metadata,
 			&i.MetadataVersion,
 			&i.AgentState,
@@ -210,43 +216,8 @@ func (q *Queries) ListActiveSessions(ctx context.Context, arg ListActiveSessions
 	return items, nil
 }
 
-const listSessionIDsByTagLike = `-- name: ListSessionIDsByTagLike :many
-SELECT id
-FROM sessions
-WHERE account_id = ?
-  AND tag LIKE ?
-`
-
-type ListSessionIDsByTagLikeParams struct {
-	AccountID string `json:"account_id"`
-	Tag       string `json:"tag"`
-}
-
-func (q *Queries) ListSessionIDsByTagLike(ctx context.Context, arg ListSessionIDsByTagLikeParams) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listSessionIDsByTagLike, arg.AccountID, arg.Tag)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listSessions = `-- name: ListSessions :many
-SELECT id, tag, account_id, metadata, metadata_version, agent_state, agent_state_version, data_encryption_key, seq, active, last_active_at, created_at, updated_at FROM sessions
+SELECT id, tag, account_id, terminal_id, metadata, metadata_version, agent_state, agent_state_version, data_encryption_key, seq, active, last_active_at, created_at, updated_at FROM sessions
 WHERE account_id = ?
 ORDER BY updated_at DESC
 LIMIT ?
@@ -270,6 +241,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 			&i.ID,
 			&i.Tag,
 			&i.AccountID,
+			&i.TerminalID,
 			&i.Metadata,
 			&i.MetadataVersion,
 			&i.AgentState,

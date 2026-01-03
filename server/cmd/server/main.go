@@ -92,11 +92,10 @@ func main() {
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(db.DB, jwtManager)
 	sessionHandler := handlers.NewSessionHandler(db.DB, socketIOServer)
-	machineHandler := handlers.NewMachineHandler(db.DB, socketIOServer)
+	terminalHandler := handlers.NewTerminalHandler(db.DB, socketIOServer)
 	userHandler := handlers.NewUserHandler(db.DB, socketIOServer)
 	kvHandler := handlers.NewKVHandler(db.DB, socketIOServer)
 	artifactHandler := handlers.NewArtifactHandler(db.DB, socketIOServer)
-	accessKeyHandler := handlers.NewAccessKeyHandler(db.DB)
 	feedHandler := handlers.NewFeedHandler(db.DB)
 
 	// Public routes (no auth required)
@@ -131,12 +130,12 @@ func main() {
 		protected.DELETE("/sessions/:id", sessionHandler.DeleteSession)
 		protected.GET("/sessions/:id/messages", sessionHandler.GetSessionMessages)
 
-		// Machines
-		protected.GET("/machines", machineHandler.ListMachines)
-		protected.POST("/machines", machineHandler.CreateMachine)
-		protected.GET("/machines/:id", machineHandler.GetMachine)
-		protected.DELETE("/machines/:id", machineHandler.DeleteMachine)
-		protected.POST("/machines/:id/alive", machineHandler.KeepAlive)
+		// Terminals
+		protected.GET("/terminals", terminalHandler.ListTerminals)
+		protected.POST("/terminals", terminalHandler.CreateTerminal)
+		protected.GET("/terminals/:id", terminalHandler.GetTerminal)
+		protected.DELETE("/terminals/:id", terminalHandler.DeleteTerminal)
+		protected.POST("/terminals/:id/alive", terminalHandler.KeepAlive)
 
 		// User
 		protected.GET("/user", userHandler.GetProfile)
@@ -153,9 +152,6 @@ func main() {
 		protected.POST("/artifacts", artifactHandler.CreateArtifact)
 		protected.POST("/artifacts/:id", artifactHandler.UpdateArtifact)
 		protected.DELETE("/artifacts/:id", artifactHandler.DeleteArtifact)
-		protected.GET("/access-keys/:sessionId/:machineId", accessKeyHandler.GetAccessKey)
-		protected.POST("/access-keys/:sessionId/:machineId", accessKeyHandler.CreateAccessKey)
-		protected.PUT("/access-keys/:sessionId/:machineId", accessKeyHandler.UpdateAccessKey)
 		protected.POST("/push-tokens", func(c *gin.Context) {
 			c.JSON(200, gin.H{"success": true})
 		})

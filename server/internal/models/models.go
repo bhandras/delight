@@ -9,17 +9,6 @@ import (
 	"time"
 )
 
-type AccessKey struct {
-	ID          string    `json:"id"`
-	AccountID   string    `json:"account_id"`
-	MachineID   string    `json:"machine_id"`
-	SessionID   string    `json:"session_id"`
-	Data        string    `json:"data"`
-	DataVersion int64     `json:"data_version"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-}
-
 type Account struct {
 	ID              string         `json:"id"`
 	PublicKey       string         `json:"public_key"`
@@ -68,25 +57,11 @@ type Artifact struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
-type Machine struct {
-	ID                 string         `json:"id"`
-	AccountID          string         `json:"account_id"`
-	Metadata           string         `json:"metadata"`
-	MetadataVersion    int64          `json:"metadata_version"`
-	DaemonState        sql.NullString `json:"daemon_state"`
-	DaemonStateVersion int64          `json:"daemon_state_version"`
-	DataEncryptionKey  []byte         `json:"data_encryption_key"`
-	Seq                int64          `json:"seq"`
-	Active             int64          `json:"active"`
-	LastActiveAt       time.Time      `json:"last_active_at"`
-	CreatedAt          time.Time      `json:"created_at"`
-	UpdatedAt          time.Time      `json:"updated_at"`
-}
-
 type Session struct {
 	ID                string         `json:"id"`
 	Tag               string         `json:"tag"`
 	AccountID         string         `json:"account_id"`
+	TerminalID        string         `json:"terminal_id"`
 	Metadata          string         `json:"metadata"`
 	MetadataVersion   int64          `json:"metadata_version"`
 	AgentState        sql.NullString `json:"agent_state"`
@@ -107,6 +82,21 @@ type SessionMessage struct {
 	Content   string         `json:"content"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
+}
+
+type Terminal struct {
+	ID                 string         `json:"id"`
+	AccountID          string         `json:"account_id"`
+	Metadata           string         `json:"metadata"`
+	MetadataVersion    int64          `json:"metadata_version"`
+	DaemonState        sql.NullString `json:"daemon_state"`
+	DaemonStateVersion int64          `json:"daemon_state_version"`
+	DataEncryptionKey  []byte         `json:"data_encryption_key"`
+	Seq                int64          `json:"seq"`
+	Active             int64          `json:"active"`
+	LastActiveAt       time.Time      `json:"last_active_at"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
 }
 
 type TerminalAuthRequest struct {

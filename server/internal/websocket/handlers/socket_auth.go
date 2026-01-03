@@ -12,7 +12,7 @@ type SocketHandshake struct {
 	Token      string
 	ClientType string
 	SessionID  string
-	MachineID  string
+	TerminalID string
 }
 
 // ValidateSocketAuthPayload validates the Socket.IO handshake auth payload and
@@ -33,9 +33,9 @@ func ValidateSocketAuthPayload(auth protocolwire.SocketAuthPayload) (SocketHands
 		if auth.SessionID == "" {
 			return SocketHandshake{}, errors.New("Session ID required for session-scoped clients")
 		}
-	case "machine-scoped":
-		if auth.MachineID == "" {
-			return SocketHandshake{}, errors.New("Machine ID required for machine-scoped clients")
+	case "terminal-scoped":
+		if auth.TerminalID == "" {
+			return SocketHandshake{}, errors.New("Terminal ID required for terminal-scoped clients")
 		}
 	default:
 		return SocketHandshake{}, fmt.Errorf("Invalid client type: %s", clientType)
@@ -45,6 +45,6 @@ func ValidateSocketAuthPayload(auth protocolwire.SocketAuthPayload) (SocketHands
 		Token:      auth.Token,
 		ClientType: clientType,
 		SessionID:  auth.SessionID,
-		MachineID:  auth.MachineID,
+		TerminalID: auth.TerminalID,
 	}, nil
 }

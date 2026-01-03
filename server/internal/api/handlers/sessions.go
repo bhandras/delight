@@ -46,6 +46,7 @@ type SessionResponse struct {
 	UpdatedAt         int64   `json:"updatedAt"`
 	Active            bool    `json:"active"`
 	ActiveAt          int64   `json:"activeAt"`
+	TerminalID        string  `json:"terminalId"`
 	Metadata          string  `json:"metadata"`
 	MetadataVersion   int64   `json:"metadataVersion"`
 	AgentState        *string `json:"agentState"`
@@ -57,6 +58,7 @@ type SessionResponse struct {
 // CreateSessionRequest represents the request to create a session
 type CreateSessionRequest struct {
 	Tag               string  `json:"tag" binding:"required"`
+	TerminalID        string  `json:"terminalId" binding:"required"`
 	Metadata          string  `json:"metadata" binding:"required"`
 	AgentState        *string `json:"agentState"`
 	DataEncryptionKey *string `json:"dataEncryptionKey"`
@@ -118,6 +120,18 @@ func (h *SessionHandler) CreateSession(c *gin.Context) {
 		return
 	}
 
+	// Verify terminal exists and is owned by the user.
+	if _, err := h.queries.GetTerminal(c.Request.Context(), models.GetTerminalParams{
+		AccountID: userID,
+		ID:        req.TerminalID,
+	}); err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, types.ErrorResponse{Error: "terminal not found"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "database error"})
+		return
+	}
+
 	// Check if session with this tag already exists
 	existing, err := h.queries.GetSessionByTag(c.Request.Context(), models.GetSessionByTagParams{
 		AccountID: userID,
@@ -125,6 +139,10 @@ func (h *SessionHandler) CreateSession(c *gin.Context) {
 	})
 
 	if err == nil {
+		if existing.TerminalID != req.TerminalID {
+			c.JSON(http.StatusConflict, types.ErrorResponse{Error: "session tag already in use"})
+			return
+		}
 		// Session exists; ensure it has a dataEncryptionKey.
 		if len(existing.DataEncryptionKey) == 0 {
 			key, keyErr := h.ensureSessionDataEncryptionKey(c.Request.Context(), existing.ID)
@@ -173,6 +191,7 @@ func (h *SessionHandler) CreateSession(c *gin.Context) {
 		ID:                types.NewCUID(),
 		Tag:               req.Tag,
 		AccountID:         userID,
+		TerminalID:        req.TerminalID,
 		Metadata:          req.Metadata,
 		MetadataVersion:   0,
 		AgentState:        agentState,
@@ -479,6 +498,7 @@ func (h *SessionHandler) toSessionResponse(session models.Session) SessionRespon
 		UpdatedAt:         session.UpdatedAt.UnixMilli(),
 		Active:            session.Active != 0,
 		ActiveAt:          session.LastActiveAt.UnixMilli(),
+		TerminalID:        session.TerminalID,
 		Metadata:          session.Metadata,
 		MetadataVersion:   session.MetadataVersion,
 		AgentState:        agentState,
