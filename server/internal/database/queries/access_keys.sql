@@ -15,3 +15,8 @@ INSERT INTO access_keys (
 UPDATE access_keys
 SET data = ?, data_version = ?, updated_at = CURRENT_TIMESTAMP
 WHERE account_id = ? AND machine_id = ? AND session_id = ? AND data_version = ?;
+
+-- name: ListSessionIDsForMachine :many
+SELECT session_id
+FROM access_keys
+WHERE account_id = ? AND machine_id = ?;

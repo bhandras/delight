@@ -285,6 +285,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var isCreatingAccount: Bool = false
     @Published var isApprovingTerminal: Bool = false
     @Published var isLoggingOut: Bool = false
+    @Published var isDeletingMachine: Bool = false
     @Published var showAccountCreatedReceipt: Bool = false
     @Published var showTerminalPairingReceipt: Bool = false
     @Published var showLogoutConfirm: Bool = false
@@ -992,6 +993,43 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             }
         } catch {
             log("List machines error: \(error)")
+        }
+    }
+
+    /// deleteMachine deletes a machine (and any associated sessions) on the server.
+    ///
+    /// If the corresponding CLI is still running, it may re-register itself after
+    /// deletion.
+    func deleteMachine(_ machineID: String, onSuccess: (() -> Void)? = nil) {
+        guard !isDeletingMachine else { return }
+        guard !machineID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            presentErrorAlert(message: "Machine id is required.")
+            return
+        }
+
+        isDeletingMachine = true
+        sdkCallAsync {
+            do {
+                _ = try self.sdkCallSync {
+                    try self.client.deleteMachineBuffer(machineID)
+                }
+                DispatchQueue.main.async {
+                    self.isDeletingMachine = false
+                    self.log("Machine deleted")
+                    self.machines.removeAll(where: { $0.id == machineID })
+                    self.sessions.removeAll(where: { session in
+                        session.metadata?.machineId == machineID || session.subtitle == machineID
+                    })
+                    self.listSessions()
+                    self.listMachines()
+                    onSuccess?()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.isDeletingMachine = false
+                    self.presentErrorAlert(message: "Delete machine error: \(error)")
+                }
+            }
         }
     }
 

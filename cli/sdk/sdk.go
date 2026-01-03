@@ -690,6 +690,50 @@ func (c *Client) listMachines() (resp string, err error) {
 	return string(encoded), nil
 }
 
+// DeleteMachineBuffer deletes a machine by id and returns the response JSON as
+// a gomobile-safe Buffer.
+func (c *Client) DeleteMachineBuffer(machineID string) (*Buffer, error) {
+	resp, err := c.deleteMachineDispatch(machineID)
+	if err != nil {
+		return nil, err
+	}
+	return newBufferFromString(resp), nil
+}
+
+// deleteMachineDispatch runs deleteMachine on the SDK dispatch queue.
+func (c *Client) deleteMachineDispatch(machineID string) (resp string, err error) {
+	value, err := c.dispatch.call(func() (interface{}, error) {
+		return c.deleteMachine(machineID)
+	})
+	if err != nil {
+		return "", err
+	}
+	if value == nil {
+		return "", nil
+	}
+	return value.(string), nil
+}
+
+// deleteMachine issues HTTP DELETE /v1/machines/:id.
+func (c *Client) deleteMachine(machineID string) (resp string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("DeleteMachine", r)
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+	machineID = strings.TrimSpace(machineID)
+	if machineID == "" {
+		return "", fmt.Errorf("machine id is required")
+	}
+	endpoint := fmt.Sprintf("/v1/machines/%s", url.PathEscape(machineID))
+	respBody, err := c.doRequest("DELETE", endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	return string(respBody), nil
+}
+
 // decodeBase64JSONString decodes a base64(JSON) string into a JSON string.
 func decodeBase64JSONString(payload string) (string, error) {
 	raw, err := base64.StdEncoding.DecodeString(payload)

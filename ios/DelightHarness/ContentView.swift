@@ -681,6 +681,8 @@ private struct MachineDetailView: View {
     @ObservedObject var model: HarnessViewModel
     let machine: MachineSummary
     @State private var customPath: String = ""
+    @State private var showDeleteConfirm: Bool = false
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ZStack {
@@ -783,12 +785,65 @@ private struct MachineDetailView: View {
                         Text(machine.flavor)
                             .foregroundColor(Theme.mutedText)
                     }
+                    HStack {
+                        Text("Machine ID")
+                        Spacer()
+                        Text(machine.id)
+                            .foregroundColor(Theme.mutedText)
+                            .textSelection(.enabled)
+                    }
+                }
+
+                Section {
+                    Button(role: .destructive) {
+                        showDeleteConfirm = true
+                    } label: {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Theme.warning.opacity(0.16))
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Theme.warning.opacity(0.5), lineWidth: 1)
+
+                            if model.isDeletingMachine {
+                                ProgressView()
+                                    .tint(Theme.warning)
+                            } else {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 16, weight: .semibold))
+                                    Text("Delete Machine")
+                                        .font(Theme.body)
+                                }
+                                .foregroundColor(Theme.warning)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .disabled(model.isDeletingMachine)
+                } footer: {
+                    Text("This deletes the machine and all associated sessions from the server. If the terminal is still running, it may re-register.")
+                        .font(Theme.caption)
+                        .foregroundColor(Theme.mutedText)
                 }
             }
             .scrollContentBackground(.hidden)
             .listStyle(.insetGrouped)
         }
         .navigationTitle(machine.host)
+        .alert("Delete Machine?", isPresented: $showDeleteConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                model.deleteMachine(machine.id) {
+                    dismiss()
+                }
+            }
+        } message: {
+            Text("This will remove the machine and its sessions from the server.")
+        }
     }
 }
 

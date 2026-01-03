@@ -67,6 +67,40 @@ func (q *Queries) GetAccessKey(ctx context.Context, arg GetAccessKeyParams) (Acc
 	return i, err
 }
 
+const listSessionIDsForMachine = `-- name: ListSessionIDsForMachine :many
+SELECT session_id
+FROM access_keys
+WHERE account_id = ? AND machine_id = ?
+`
+
+type ListSessionIDsForMachineParams struct {
+	AccountID string `json:"account_id"`
+	MachineID string `json:"machine_id"`
+}
+
+func (q *Queries) ListSessionIDsForMachine(ctx context.Context, arg ListSessionIDsForMachineParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listSessionIDsForMachine, arg.AccountID, arg.MachineID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var session_id string
+		if err := rows.Scan(&session_id); err != nil {
+			return nil, err
+		}
+		items = append(items, session_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateAccessKey = `-- name: UpdateAccessKey :execrows
 UPDATE access_keys
 SET data = ?, data_version = ?, updated_at = CURRENT_TIMESTAMP

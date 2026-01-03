@@ -281,12 +281,48 @@ func (h *MachineHandler) DeleteMachine(c *gin.Context) {
 		return
 	}
 
-	// Delete machine
-	if err := h.queries.DeleteMachine(c.Request.Context(), models.DeleteMachineParams{
+	ctx := c.Request.Context()
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "database error"})
+		return
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	qtx := h.queries.WithTx(tx)
+
+	sessionIDs, err := qtx.ListSessionIDsForMachine(ctx, models.ListSessionIDsForMachineParams{
+		AccountID: userID,
+		MachineID: machineID,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "database error"})
+		return
+	}
+
+	// Best-effort: "machines" don't have a direct FK relationship to sessions, so
+	// we treat "belonging to a machine" as "has an access key issued for this
+	// machine". This keeps the UI semantics intuitive (delete machine deletes the
+	// machine's terminals).
+	for _, sessionID := range sessionIDs {
+		if err := qtx.DeleteSession(ctx, sessionID); err != nil {
+			c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to delete session"})
+			return
+		}
+	}
+
+	// Delete machine (cascade deletes any remaining access_keys rows).
+	if err := qtx.DeleteMachine(ctx, models.DeleteMachineParams{
 		AccountID: userID,
 		ID:        machineID,
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to delete machine"})
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "database error"})
 		return
 	}
 
