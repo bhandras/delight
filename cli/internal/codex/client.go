@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bhandras/delight/cli/internal/version"
 	"github.com/bhandras/delight/shared/logger"
 )
 
@@ -208,7 +209,7 @@ func (c *Client) initialize() error {
 		},
 		"clientInfo": map[string]interface{}{
 			"name":    "delight-codex-client",
-			"version": "1.0.0",
+			"version": version.Version(),
 		},
 	}
 

@@ -1,8 +1,13 @@
 .PHONY: build run test clean install
 
+PKG := github.com/bhandras/delight/cli/internal/version
+
+COMMIT_HASH := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+LDFLAGS := -ldflags "-X $(PKG).CommitHash=$(COMMIT_HASH)"
+
 # Build the binary
 build:
-	go build -o delight ./cmd/delight
+	go build $(LDFLAGS) -o delight ./cmd/delight
 
 # Run the CLI
 run: build

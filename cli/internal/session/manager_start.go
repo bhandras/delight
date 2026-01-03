@@ -19,6 +19,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/crypto"
 	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
 	"github.com/bhandras/delight/cli/internal/storage"
+	"github.com/bhandras/delight/cli/internal/version"
 	"github.com/bhandras/delight/cli/internal/websocket"
 	"github.com/bhandras/delight/cli/pkg/types"
 	"github.com/bhandras/delight/shared/logger"
@@ -59,7 +60,7 @@ func (m *Manager) Start(workDir string) error {
 	m.metadata = &types.Metadata{
 		Path:           workDir,
 		Host:           hostname,
-		Version:        "1.0.0",
+		Version:        version.Version(),
 		OS:             "darwin", // TODO: detect OS
 		MachineID:      machineID,
 		HomeDir:        homeDir,
@@ -71,7 +72,7 @@ func (m *Manager) Start(workDir string) error {
 	m.machineMetadata = &types.MachineMetadata{
 		Host:              hostname,
 		Platform:          "darwin", // TODO: detect platform
-		DelightCliVersion: "1.0.0",
+		DelightCliVersion: version.Version(),
 		HomeDir:           homeDir,
 		DelightHomeDir:    m.cfg.DelightHome,
 	}

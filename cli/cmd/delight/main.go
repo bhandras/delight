@@ -20,6 +20,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/config"
 	"github.com/bhandras/delight/cli/internal/crypto"
 	"github.com/bhandras/delight/cli/internal/session"
+	"github.com/bhandras/delight/cli/internal/version"
 	"github.com/bhandras/delight/shared/logger"
 )
 
@@ -65,7 +66,7 @@ func run() error {
 		return nil
 	}
 	if wantsVersion(rawArgs) {
-		fmt.Println("delight-cli-go v1.0.0")
+		fmt.Printf("delight v%s\n", version.RichVersion())
 		return nil
 	}
 
