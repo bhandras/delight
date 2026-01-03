@@ -159,10 +159,10 @@ struct TerminalPairingReceiptSheet: View {
                             .foregroundColor(Theme.mutedText)
                     }
                     if let receipt = model.lastTerminalPairingReceipt {
-                        Section("Machine") {
+                        Section("Terminal") {
                             CopyableValueRow(title: "Host", value: receipt.host ?? "Not available yet")
-                            CopyableValueRow(title: "Machine ID", value: receipt.machineID ?? "Not available yet")
-                            Text("Host and Machine ID are only known once the terminal's machine connects and reports its metadata.")
+                            CopyableValueRow(title: "Terminal ID", value: receipt.terminalID ?? "Not available yet")
+                            Text("Host and Terminal ID are only known once the terminal connects and reports its metadata.")
                                 .font(Theme.caption)
                                 .foregroundColor(Theme.mutedText)
                         }
@@ -207,7 +207,7 @@ struct LogoutConfirmSheet: View {
                     Text("Log out?")
                         .font(Theme.title)
                         .foregroundColor(Theme.messageText)
-                    Text("This will remove local session state and hide machines and terminals until you create an account again.")
+                    Text("This will remove local session state and hide terminals until you create an account again.")
                         .font(Theme.body)
                         .foregroundColor(Theme.mutedText)
 
@@ -401,4 +401,3 @@ struct PermissionPromptSheet: View {
         }
     }
 }
-

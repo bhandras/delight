@@ -29,29 +29,29 @@ const (
 
 // Manager manages a Delight session with advanced Claude tracking.
 type Manager struct {
-	cfg                  *config.Config
-	token                string
-	machineID            string
-	sessionID            string
-	sessionTag           string
-	dataKey              []byte
-	masterSecret         []byte
-	wsClient             *websocket.Client
-	rpcManager           *websocket.RPCManager
-	machineClient        *websocket.Client
-	machineRPC           *websocket.RPCManager
-	machineMetaVer       int64
-	machineStateVer      int64
-	disableMachineSocket bool
-	metadata             *types.Metadata
-	metaVersion          int64
-	machineMetadata      *types.MachineMetadata
-	machineState         *types.DaemonState
-	debug                bool
-	fakeAgent            bool
-	acpSessionID         string
-	acpAgent             string
-	agent                string
+	cfg                   *config.Config
+	token                 string
+	terminalID            string
+	sessionID             string
+	sessionTag            string
+	dataKey               []byte
+	masterSecret          []byte
+	wsClient              *websocket.Client
+	rpcManager            *websocket.RPCManager
+	terminalClient        *websocket.Client
+	terminalRPC           *websocket.RPCManager
+	terminalMetaVer       int64
+	terminalStateVer      int64
+	disableTerminalSocket bool
+	metadata              *types.Metadata
+	metaVersion           int64
+	terminalMetadata      *types.TerminalMetadata
+	terminalState         *types.DaemonState
+	debug                 bool
+	fakeAgent             bool
+	acpSessionID          string
+	acpAgent              string
+	agent                 string
 
 	workDir string
 
@@ -78,7 +78,7 @@ type Manager struct {
 	sessionActorClosedOnce sync.Once
 	sessionActorClosed     chan struct{}
 
-	lastMachineKeepAliveSkipAt time.Time
+	lastTerminalKeepAliveSkipAt time.Time
 }
 
 // NewManager creates a new session manager.

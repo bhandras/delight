@@ -27,13 +27,13 @@ import (
 )
 
 type testEnv struct {
-	serverURL string
-	token     string
-	sessionID string
-	machineID string
-	serverBuf *bytes.Buffer
-	cliBuf    *bytes.Buffer
-	cleanup   func()
+	serverURL  string
+	token      string
+	sessionID  string
+	terminalID string
+	serverBuf  *bytes.Buffer
+	cliBuf     *bytes.Buffer
+	cleanup    func()
 }
 
 func TestFakeAgentRoundTrip(t *testing.T) {
@@ -355,7 +355,7 @@ func TestRPCRoundTrip(t *testing.T) {
 	}
 }
 
-func TestMachineRPCRoundTrip(t *testing.T) {
+func TestTerminalRPCRoundTrip(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -413,6 +413,12 @@ func TestMachineRPCRoundTrip(t *testing.T) {
 	)
 	cliCmd.Dir = filepath.Join(root, "cli")
 	cliCmd.Env = filterEnv(os.Environ(), "DEBUG")
+
+	terminalID, err := storage.GetOrCreateTerminalID(delightHome, cliCmd.Dir)
+	if err != nil {
+		t.Fatalf("get terminal id: %v", err)
+	}
+
 	var cliBuf bytes.Buffer
 	cliCmd.Stdout = &cliBuf
 	cliCmd.Stderr = &cliBuf
@@ -422,7 +428,6 @@ func TestMachineRPCRoundTrip(t *testing.T) {
 	defer stopProcess(t, cliCmd)
 
 	_ = waitForSessionWithLogs(t, serverURL, token, 20*time.Second, &cliBuf, &serverBuf)
-	machineID := waitForMachineID(t, filepath.Join(delightHome, "machine.id"))
 
 	sock := connectUserSocket(t, serverURL, token)
 	defer sock.Close()
@@ -432,7 +437,7 @@ func TestMachineRPCRoundTrip(t *testing.T) {
 		t.Fatalf("marshal rpc params: %v", err)
 	}
 
-	resp := waitForRPCMethodWithLogs(t, sock, machineID+":ping", string(paramsBytes), 20*time.Second, &cliBuf, &serverBuf)
+	resp := waitForRPCMethodWithLogs(t, sock, terminalID+":ping", string(paramsBytes), 20*time.Second, &cliBuf, &serverBuf)
 	ok, _ := resp["ok"].(bool)
 	if !ok {
 		t.Fatalf("rpc call failed: %+v\ncli logs:\n%s", resp, cliBuf.String())
@@ -537,7 +542,7 @@ func TestUsageReportEphemeral(t *testing.T) {
 	waitForEphemeralType(t, ephemeralCh, "usage", env.sessionID)
 }
 
-func TestMachineAliveEphemeral(t *testing.T) {
+func TestTerminalAliveEphemeral(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -558,17 +563,17 @@ func TestMachineAliveEphemeral(t *testing.T) {
 		}
 	})
 
-	machineSock := connectMachineSocket(t, env.serverURL, env.token, env.machineID)
-	defer machineSock.Close()
+	terminalSock := connectTerminalSocket(t, env.serverURL, env.token, env.terminalID)
+	defer terminalSock.Close()
 
-	if err := machineSock.Emit("machine-alive", map[string]interface{}{
-		"machineId": env.machineID,
-		"time":      time.Now().UnixMilli(),
+	if err := terminalSock.Emit("terminal-alive", map[string]interface{}{
+		"terminalId": env.terminalID,
+		"time":       time.Now().UnixMilli(),
 	}); err != nil {
-		t.Fatalf("emit machine-alive: %v", err)
+		t.Fatalf("emit terminal-alive: %v", err)
 	}
 
-	waitForEphemeralType(t, ephemeralCh, "machine-activity", env.machineID)
+	waitForEphemeralType(t, ephemeralCh, "terminal-activity", env.terminalID)
 }
 
 func TestACPFlowWithAwait(t *testing.T) {
@@ -807,6 +812,12 @@ func startServerAndCLI(t *testing.T) *testEnv {
 	cliCmd.Dir = filepath.Join(root, "cli")
 	cliCmd.Env = filterEnv(os.Environ(), "DEBUG")
 
+	terminalID, err := storage.GetOrCreateTerminalID(delightHome, cliCmd.Dir)
+	if err != nil {
+		stopProcess(t, serverCmd)
+		t.Fatalf("get terminal id: %v", err)
+	}
+
 	cliBuf := &bytes.Buffer{}
 	cliCmd.Stdout = cliBuf
 	cliCmd.Stderr = cliBuf
@@ -816,40 +827,20 @@ func startServerAndCLI(t *testing.T) *testEnv {
 	}
 
 	sessionID := waitForSessionWithLogs(t, serverURL, token, 20*time.Second, cliBuf, serverBuf)
-	machineID := waitForMachineID(t, filepath.Join(delightHome, "machine.id"))
 
 	env := &testEnv{
-		serverURL: serverURL,
-		token:     token,
-		sessionID: sessionID,
-		machineID: machineID,
-		serverBuf: serverBuf,
-		cliBuf:    cliBuf,
+		serverURL:  serverURL,
+		token:      token,
+		sessionID:  sessionID,
+		terminalID: terminalID,
+		serverBuf:  serverBuf,
+		cliBuf:     cliBuf,
 	}
 	env.cleanup = func() {
 		stopProcess(t, cliCmd)
 		stopProcess(t, serverCmd)
 	}
 	return env
-}
-
-func waitForMachineID(t *testing.T, path string) string {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-		id := strings.TrimSpace(string(data))
-		if id != "" {
-			return id
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatalf("machine id not found at %s", path)
-	return ""
 }
 
 func authToken(t *testing.T, serverURL string) string {
@@ -1177,7 +1168,7 @@ func connectSessionSocket(t *testing.T, serverURL, token, sessionID string) *soc
 	return sock
 }
 
-func connectMachineSocket(t *testing.T, serverURL, token, machineID string) *socket.Socket {
+func connectTerminalSocket(t *testing.T, serverURL, token, terminalID string) *socket.Socket {
 	t.Helper()
 
 	opts := socket.DefaultOptions()
@@ -1185,8 +1176,8 @@ func connectMachineSocket(t *testing.T, serverURL, token, machineID string) *soc
 	opts.SetTransports(types.NewSet(socket.Polling, socket.WebSocket))
 	opts.SetAuth(map[string]interface{}{
 		"token":      token,
-		"clientType": "machine-scoped",
-		"machineId":  machineID,
+		"clientType": "terminal-scoped",
+		"terminalId": terminalID,
 	})
 
 	sock := mustConnectSocket(t, serverURL, opts)

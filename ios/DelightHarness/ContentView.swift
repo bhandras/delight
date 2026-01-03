@@ -113,7 +113,7 @@ private struct SettingsView: View {
 
     var body: some View {
         let isLoggedIn = !model.token.isEmpty
-        let machines = machineSummaries(from: model.sessions, machines: model.machines)
+        let terminals = terminalSummaries(from: model.sessions, terminals: model.terminals)
         NavigationStack {
             ZStack {
                 Theme.background.ignoresSafeArea()
@@ -172,30 +172,30 @@ private struct SettingsView: View {
 
                         if isLoggedIn {
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("MACHINES")
+                                Text("TERMINALS")
                                     .font(.system(size: 13, weight: .semibold))
                                     .foregroundColor(Theme.mutedText)
                                     .padding(.horizontal, 4)
                                 FeatureListCard {
-                                    if machines.isEmpty {
+                                    if terminals.isEmpty {
                                         HStack(spacing: 12) {
                                             Image(systemName: "desktopcomputer")
                                                 .font(.system(size: 22))
                                                 .foregroundColor(Theme.mutedText)
-                                            Text("No machines connected yet.")
+                                            Text("No terminals connected yet.")
                                                 .font(Theme.caption)
                                                 .foregroundColor(Theme.mutedText)
                                             Spacer()
                                         }
                                         .padding(.vertical, 12)
                                     } else {
-                                        ForEach(Array(machines.enumerated()), id: \.element.id) { index, machine in
+                                        ForEach(Array(terminals.enumerated()), id: \.element.id) { index, terminal in
                                             NavigationLink {
-                                                MachineDetailView(model: model, machine: machine)
+                                                PairedTerminalDetailView(model: model, terminal: terminal)
                                             } label: {
-                                                MachineRow(machine: machine)
+                                                PairedTerminalRow(terminal: terminal)
                                             }
-                                            if index != machines.count - 1 {
+                                            if index != terminals.count - 1 {
                                                 Divider()
                                             }
                                         }
@@ -223,7 +223,7 @@ private struct SettingsView: View {
                                 .foregroundColor(Theme.mutedText)
                         }
 
-                        if isLoggedIn && model.sessions.isEmpty {
+                        if isLoggedIn && model.terminals.isEmpty {
                             SettingSection(title: "Pair Terminal") {
                                 PairTerminalForm(model: model, showScanner: $showScanner)
                             }
@@ -642,7 +642,7 @@ private struct AppearanceDetailView: View {
     }
 }
 
-private struct MachineSummary: Identifiable {
+private struct PairedTerminalSummary: Identifiable {
     let id: String
     let host: String
     let flavor: String
@@ -653,8 +653,8 @@ private struct MachineSummary: Identifiable {
     let sessions: [SessionSummary]
 }
 
-private struct MachineRow: View {
-    let machine: MachineSummary
+private struct PairedTerminalRow: View {
+    let terminal: PairedTerminalSummary
 
     var body: some View {
         HStack(spacing: 14) {
@@ -662,10 +662,10 @@ private struct MachineRow: View {
                 .font(.system(size: 22))
                 .foregroundColor(Theme.success)
             VStack(alignment: .leading, spacing: 4) {
-                Text(machine.host)
+                Text(terminal.host)
                     .font(Theme.body)
                     .foregroundColor(Theme.messageText)
-                Text("\(machine.flavor) • \(machine.online ? "online" : "offline")")
+                Text("\(terminal.flavor) • \(terminal.online ? "online" : "offline")")
                     .font(Theme.caption)
                     .foregroundColor(Theme.mutedText)
             }
@@ -677,10 +677,9 @@ private struct MachineRow: View {
     }
 }
 
-private struct MachineDetailView: View {
+private struct PairedTerminalDetailView: View {
     @ObservedObject var model: HarnessViewModel
-    let machine: MachineSummary
-    @State private var customPath: String = ""
+    let terminal: PairedTerminalSummary
     @State private var showDeleteConfirm: Bool = false
     @Environment(\.dismiss) private var dismiss
 
@@ -691,37 +690,11 @@ private struct MachineDetailView: View {
                 Section {
                     HStack(spacing: 10) {
                         Circle()
-                            .fill(machine.online ? Theme.success : Theme.muted)
+                            .fill(terminal.online ? Theme.success : Theme.muted)
                             .frame(width: 8, height: 8)
-                        Text(machine.online ? "online" : "offline")
+                        Text(terminal.online ? "online" : "offline")
                             .font(Theme.caption)
                             .foregroundColor(Theme.mutedText)
-                    }
-                }
-
-                Section("Launch New Session in Directory") {
-                    HStack {
-                        TextField("Enter custom path", text: $customPath)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled(true)
-                        Button {
-                        } label: {
-                            Image(systemName: "play.fill")
-                                .foregroundColor(Theme.mutedText)
-                        }
-                        .disabled(true)
-                    }
-                    let knownPaths = Array(Set(machine.sessions.compactMap { $0.metadata?.path }))
-                    if !knownPaths.isEmpty {
-                        ForEach(knownPaths.sorted(), id: \.self) { path in
-                            HStack(spacing: 8) {
-                                Image(systemName: "folder")
-                                    .foregroundColor(Theme.mutedText)
-                                Text(path)
-                                    .font(Theme.caption)
-                                    .foregroundColor(Theme.messageText)
-                            }
-                        }
                     }
                 }
 
@@ -729,8 +702,8 @@ private struct MachineDetailView: View {
                     HStack {
                         Text("Status")
                         Spacer()
-                        Text(machine.daemonStatus ?? (machine.online ? "likely alive" : "offline"))
-                            .foregroundColor(machine.online ? Theme.success : Theme.mutedText)
+                        Text(terminal.daemonStatus ?? (terminal.online ? "likely alive" : "offline"))
+                            .foregroundColor(terminal.online ? Theme.success : Theme.mutedText)
                     }
                     Button("Stop Daemon") {}
                         .foregroundColor(Theme.warning)
@@ -738,19 +711,19 @@ private struct MachineDetailView: View {
                     HStack {
                         Text("Last Known PID")
                         Spacer()
-                        Text(machine.daemonPid.map { String($0) } ?? "—")
+                        Text(terminal.daemonPid.map { String($0) } ?? "—")
                             .foregroundColor(Theme.mutedText)
                     }
                     HStack {
                         Text("Daemon State Version")
                         Spacer()
-                        Text(machine.daemonStateVersion.map { String($0) } ?? "—")
+                        Text(terminal.daemonStateVersion.map { String($0) } ?? "—")
                             .foregroundColor(Theme.mutedText)
                     }
                 }
 
                 Section("Previous Sessions (Up to 5 Most Recent)") {
-                    let recent = machine.sessions.sorted(by: { $0.updatedAt > $1.updatedAt }).prefix(5)
+                    let recent = terminal.sessions.sorted(by: { $0.updatedAt > $1.updatedAt }).prefix(5)
                     if recent.isEmpty {
                         Text("No recent sessions.")
                             .font(Theme.caption)
@@ -772,23 +745,23 @@ private struct MachineDetailView: View {
                     }
                 }
 
-                Section("Machine") {
+                Section("Terminal") {
                     HStack {
                         Text("Host")
                         Spacer()
-                        Text(machine.host)
+                        Text(terminal.host)
                             .foregroundColor(Theme.mutedText)
                     }
                     HStack {
                         Text("Flavor")
                         Spacer()
-                        Text(machine.flavor)
+                        Text(terminal.flavor)
                             .foregroundColor(Theme.mutedText)
                     }
                     HStack {
-                        Text("Machine ID")
+                        Text("Terminal ID")
                         Spacer()
-                        Text(machine.id)
+                        Text(terminal.id)
                             .foregroundColor(Theme.mutedText)
                             .textSelection(.enabled)
                     }
@@ -804,14 +777,14 @@ private struct MachineDetailView: View {
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .stroke(Theme.warning.opacity(0.5), lineWidth: 1)
 
-                            if model.isDeletingMachine {
+                            if model.isDeletingTerminal {
                                 ProgressView()
                                     .tint(Theme.warning)
                             } else {
                                 HStack(spacing: 10) {
                                     Image(systemName: "trash")
                                         .font(.system(size: 16, weight: .semibold))
-                                    Text("Delete Machine")
+                                    Text("Delete Terminal")
                                         .font(Theme.body)
                                 }
                                 .foregroundColor(Theme.warning)
@@ -823,9 +796,9 @@ private struct MachineDetailView: View {
                     .buttonStyle(.plain)
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-                    .disabled(model.isDeletingMachine)
+                    .disabled(model.isDeletingTerminal)
                 } footer: {
-                    Text("This deletes the machine and all associated sessions from the server. If the terminal is still running, it may re-register.")
+                    Text("This deletes the terminal and all associated sessions from the server. If the terminal is still running, it may re-register.")
                         .font(Theme.caption)
                         .foregroundColor(Theme.mutedText)
                 }
@@ -833,16 +806,16 @@ private struct MachineDetailView: View {
             .scrollContentBackground(.hidden)
             .listStyle(.insetGrouped)
         }
-        .navigationTitle(machine.host)
-        .alert("Delete Machine?", isPresented: $showDeleteConfirm) {
+        .navigationTitle(terminal.host)
+        .alert("Delete Terminal?", isPresented: $showDeleteConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive) {
-                model.deleteMachine(machine.id) {
+                model.deleteTerminal(terminal.id) {
                     dismiss()
                 }
             }
         } message: {
-            Text("This will remove the machine and its sessions from the server.")
+            Text("This will remove the terminal and its sessions from the server.")
         }
     }
 }
@@ -866,54 +839,33 @@ private struct AccountDetailRow: View {
     }
 }
 
-private func machineSummaries(from sessions: [SessionSummary], machines: [MachineInfo]) -> [MachineSummary] {
-    let machinesById = Dictionary(uniqueKeysWithValues: machines.map { ($0.id, $0) })
-    let grouped = Dictionary(grouping: sessions) { session in
-        session.metadata?.machineId ?? session.metadata?.host ?? session.subtitle ?? "unknown"
+private func terminalSummaries(from sessions: [SessionSummary], terminals: [TerminalInfo]) -> [PairedTerminalSummary] {
+    let sessionsByTerminalID = Dictionary(grouping: sessions) { session in
+        session.terminalID ?? session.metadata?.terminalId ?? "unknown"
     }
 
-    var summaries: [MachineSummary] = []
+    var summaries: [PairedTerminalSummary] = []
+    summaries.reserveCapacity(terminals.count)
 
-    for (machineKey, groupedSessions) in grouped {
-        let machineInfo = machinesById[machineKey]
-        let host = machineInfo?.metadata?.host
+    for terminal in terminals {
+        let groupedSessions = sessionsByTerminalID[terminal.id] ?? []
+        let host = terminal.metadata?.host
             ?? groupedSessions.compactMap { $0.metadata?.host }.first
-            ?? machineKey
+            ?? terminal.id
         let flavor = groupedSessions.compactMap { $0.metadata?.flavor }.first
-            ?? machineInfo?.metadata?.platform
+            ?? terminal.metadata?.platform
             ?? "unknown"
-        let online = machineInfo?.active ?? groupedSessions.contains(where: { $0.active })
-        let daemonPid = machineInfo?.daemonState?.pid
-        let daemonStateVersion = machineInfo?.daemonStateVersion
-        let daemonStatus = machineInfo?.daemonState?.status
-        let id = machineInfo?.id ?? machineKey
+        let online = terminal.active || groupedSessions.contains(where: { $0.active })
         summaries.append(
-            MachineSummary(
-                id: id,
+            PairedTerminalSummary(
+                id: terminal.id,
                 host: host,
                 flavor: flavor,
                 online: online,
-                daemonPid: daemonPid,
-                daemonStateVersion: daemonStateVersion,
-                daemonStatus: daemonStatus,
+                daemonPid: terminal.daemonState?.pid,
+                daemonStateVersion: terminal.daemonStateVersion,
+                daemonStatus: terminal.daemonState?.status,
                 sessions: groupedSessions
-            )
-        )
-    }
-
-    for machine in machines where grouped[machine.id] == nil {
-        let host = machine.metadata?.host ?? machine.id
-        let flavor = machine.metadata?.platform ?? "unknown"
-        summaries.append(
-            MachineSummary(
-                id: machine.id,
-                host: host,
-                flavor: flavor,
-                online: machine.active,
-                daemonPid: machine.daemonState?.pid,
-                daemonStateVersion: machine.daemonStateVersion,
-                daemonStatus: machine.daemonState?.status,
-                sessions: []
             )
         )
     }

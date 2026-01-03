@@ -2,9 +2,13 @@ package storage
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 // GenerateSecretKey generates a new 32-byte secret key
@@ -71,12 +75,12 @@ func GetOrCreateSecretKey(path string) ([]byte, error) {
 	return key, nil
 }
 
-// GenerateMachineID generates a new UUID-based machine ID
-func GenerateMachineID() (string, error) {
+// GenerateTerminalID generates a new UUID-based terminal ID.
+func GenerateTerminalID() (string, error) {
 	// Generate 16 random bytes for UUID v4
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("failed to generate machine ID: %w", err)
+		return "", fmt.Errorf("failed to generate terminal ID: %w", err)
 	}
 
 	// Set version (4) and variant bits
@@ -88,24 +92,51 @@ func GenerateMachineID() (string, error) {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
-// GetOrCreateMachineID loads or generates a stable machine ID
-func GetOrCreateMachineID(path string) (string, error) {
-	// Try to load existing ID
+const (
+	// terminalIDDirNameBytes is the number of bytes from sha256(workdir) to use
+	// as the directory discriminator for terminal ids.
+	terminalIDDirNameBytes = 12
+	terminalIDFileName     = "terminal.id"
+)
+
+// terminalIDPath returns the persisted terminal id path for a given workdir.
+//
+// We scope terminal ids to a directory so one paired terminal maps to one
+// directory. This avoids the "daemon machine with many terminals" pattern and
+// makes the authorization boundary explicit.
+func terminalIDPath(delightHome string, workDir string) string {
+	hash := sha256.Sum256([]byte(workDir))
+	dirKey := hex.EncodeToString(hash[:terminalIDDirNameBytes])
+	return filepath.Join(delightHome, "terminals", dirKey, terminalIDFileName)
+}
+
+// GetOrCreateTerminalID loads or generates a stable terminal id for a workdir.
+func GetOrCreateTerminalID(delightHome string, workDir string) (string, error) {
+	path := terminalIDPath(delightHome, workDir)
+
+	// Try to load existing ID.
 	data, err := os.ReadFile(path)
 	if err == nil {
-		return string(data), nil
+		id := strings.TrimSpace(string(data))
+		if id != "" {
+			return id, nil
+		}
 	}
 
-	// Generate new ID
-	id, err := GenerateMachineID()
+	// Generate new ID.
+	id, err := GenerateTerminalID()
 	if err != nil {
 		return "", err
 	}
 
-	// Save it with restrictive permissions
-	if err := os.WriteFile(path, []byte(id), 0600); err != nil {
-		return "", fmt.Errorf("failed to save machine ID: %w", err)
+	// Ensure parent directory exists.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("failed to create terminal id directory: %w", err)
 	}
 
+	// Save it with restrictive permissions.
+	if err := os.WriteFile(path, []byte(id), 0o600); err != nil {
+		return "", fmt.Errorf("failed to save terminal ID: %w", err)
+	}
 	return id, nil
 }

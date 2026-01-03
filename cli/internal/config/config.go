@@ -49,7 +49,7 @@ const (
 	defaultServerURL = "http://localhost:3005"
 
 	// defaultSocketIOTransport is the default Socket.IO transport used for the
-	// user and machine websocket clients.
+	// user and terminal websocket clients.
 	defaultSocketIOTransport = "websocket"
 
 	// defaultAgent is the default agent backend used by `delight run` when not

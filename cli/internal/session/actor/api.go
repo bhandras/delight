@@ -71,16 +71,16 @@ func WSDisconnected(reason string) framework.Input {
 	return evWSDisconnected{Reason: reason}
 }
 
-// MachineConnected returns an event input that indicates the machine websocket
+// TerminalConnected returns an event input that indicates the terminal websocket
 // connected.
-func MachineConnected() framework.Input {
-	return evMachineConnected{}
+func TerminalConnected() framework.Input {
+	return evTerminalConnected{}
 }
 
-// MachineDisconnected returns an event input that indicates the machine
+// TerminalDisconnected returns an event input that indicates the terminal
 // websocket disconnected.
-func MachineDisconnected(reason string) framework.Input {
-	return evMachineDisconnected{Reason: reason}
+func TerminalDisconnected(reason string) framework.Input {
+	return evTerminalDisconnected{Reason: reason}
 }
 
 // SessionUpdate returns an event input containing an inbound session-update payload.

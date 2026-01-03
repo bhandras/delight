@@ -38,7 +38,7 @@ struct PendingPermissionRequest: Identifiable, Equatable {
     var id: String { requestID }
 }
 
-/// SessionMetadata contains best-effort machine/session information extracted from
+/// SessionMetadata contains best-effort terminal/session information extracted from
 /// session metadata JSON (which may be plaintext JSON or base64-encoded JSON).
 struct SessionMetadata {
     let path: String?
@@ -49,7 +49,7 @@ struct SessionMetadata {
     let flavor: String?
     let daemonPid: Int?
     let daemonStateVersion: Int?
-    let machineId: String?
+    let terminalId: String?
 
     /// fromJSON parses a metadata payload that is either JSON or base64(JSON).
     static func fromJSON(_ json: String?) -> SessionMetadata? {
@@ -86,7 +86,7 @@ struct SessionMetadata {
             flavor: flavor,
             daemonPid: daemonPid,
             daemonStateVersion: daemonStateVersion,
-            machineId: payload.machineId
+            terminalId: payload.terminalId
         )
     }
 
@@ -250,6 +250,7 @@ struct SessionUIState: Decodable, Equatable {
 /// SessionSummary is a lightweight session row model used by the harness UI.
 struct SessionSummary: Identifiable {
     let id: String
+    let terminalID: String?
     let updatedAt: Int64
     let active: Bool
     let activeAt: Int64?
@@ -264,6 +265,7 @@ struct SessionSummary: Identifiable {
     func updatingActivity(active: Bool?, activeAt: Int64?, thinking: Bool?) -> SessionSummary {
         SessionSummary(
             id: id,
+            terminalID: terminalID,
             updatedAt: updatedAt,
             active: active ?? self.active,
             activeAt: activeAt ?? self.activeAt,
@@ -277,8 +279,8 @@ struct SessionSummary: Identifiable {
     }
 }
 
-/// MachineMetadata is a best-effort decoded metadata payload for a machine.
-struct MachineMetadata {
+/// TerminalMetadata is a best-effort decoded metadata payload for a terminal.
+struct TerminalMetadata {
     let host: String?
     let platform: String?
     let cliVersion: String?
@@ -286,14 +288,14 @@ struct MachineMetadata {
     let delightHomeDir: String?
 
     /// fromJSON parses a plaintext JSON metadata payload.
-    static func fromJSON(_ json: String?) -> MachineMetadata? {
+    static func fromJSON(_ json: String?) -> TerminalMetadata? {
         guard let json else {
             return nil
         }
-        guard let payload: MachineMetadataPayload = BridgeJSONDecoder.decode(json) else {
+        guard let payload: TerminalMetadataPayload = BridgeJSONDecoder.decode(json) else {
             return nil
         }
-        return MachineMetadata(
+        return TerminalMetadata(
             host: payload.host,
             platform: payload.platform,
             cliVersion: payload.cliVersion,
@@ -428,7 +430,7 @@ private struct SessionMetadataPayload: Decodable {
     let platform: String?
     let homeDir: String?
     let agent: String?
-    let machineId: String?
+    let terminalId: String?
 }
 
 /// SessionAgentStatePayload decodes the JSON wire payload for agent state.
@@ -458,8 +460,8 @@ private struct SessionAgentRequestPayload: Decodable {
     }
 }
 
-/// MachineMetadataPayload decodes machine metadata JSON.
-private struct MachineMetadataPayload: Decodable {
+/// TerminalMetadataPayload decodes terminal metadata JSON.
+private struct TerminalMetadataPayload: Decodable {
     let host: String?
     let platform: String?
     let cliVersion: String?
@@ -474,10 +476,10 @@ private struct DaemonStatePayload: Decodable {
     let startedAt: Int64OrString?
 }
 
-/// MachineInfo is a lightweight row model for the machine list UI.
-struct MachineInfo: Identifiable {
+/// TerminalInfo is a lightweight row model for the terminal list UI.
+struct TerminalInfo: Identifiable {
     let id: String
-    let metadata: MachineMetadata?
+    let metadata: TerminalMetadata?
     let daemonState: DaemonState?
     let daemonStateVersion: Int64
     let active: Bool
@@ -545,6 +547,6 @@ struct TerminalPairingReceipt: Identifiable {
     let id = UUID()
     let serverURL: String
     let host: String?
-    let machineID: String?
+    let terminalID: String?
     let terminalKey: String
 }

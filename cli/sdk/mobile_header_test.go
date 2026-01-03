@@ -26,7 +26,7 @@ func TestMobileObjCHeaderDoesNotExposeStringReturningAPIs(t *testing.T) {
 		[]byte("authWithKeyPair:(NSString"),
 		[]byte("getSessionMessages:(NSString"),
 		[]byte("listSessions:(NSError"),
-		[]byte("listMachines:(NSError"),
+		[]byte("listTerminals:(NSError"),
 		// NOTE: We only disallow the string-returning StartLogServer API. The
 		// Buffer-based `startLogServerBuffer` is allowed (and should remain
 		// available) for mobile.

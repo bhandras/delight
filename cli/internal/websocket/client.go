@@ -58,7 +58,7 @@ type Client struct {
 	serverURL  string
 	token      string
 	sessionID  string
-	machineID  string
+	terminalID string
 	clientType string
 	transport  string
 	socket     *socket.Socket
@@ -109,13 +109,13 @@ func NewClient(serverURL, token, sessionID, transport string, debug bool) *Clien
 	}
 }
 
-// NewMachineClient creates a machine-scoped Socket.IO client.
-func NewMachineClient(serverURL, token, machineID, transport string, debug bool) *Client {
+// NewTerminalClient creates a terminal-scoped Socket.IO client.
+func NewTerminalClient(serverURL, token, terminalID, transport string, debug bool) *Client {
 	return &Client{
 		serverURL:  serverURL,
 		token:      token,
-		machineID:  machineID,
-		clientType: "machine-scoped",
+		terminalID: terminalID,
+		clientType: "terminal-scoped",
 		transport:  normalizeTransport(transport),
 		handlers:   make(map[EventType]func(map[string]interface{})),
 		done:       make(chan struct{}),
@@ -180,7 +180,7 @@ func (c *Client) Connect() error {
 	token := c.token
 	clientType := c.clientType
 	sessionID := c.sessionID
-	machineID := c.machineID
+	terminalID := c.terminalID
 	transport := c.transport
 	prevSock := c.socket
 	c.socket = nil
@@ -229,8 +229,8 @@ func (c *Client) Connect() error {
 	switch clientType {
 	case "session-scoped":
 		auth.SessionID = sessionID
-	case "machine-scoped":
-		auth.MachineID = machineID
+	case "terminal-scoped":
+		auth.TerminalID = terminalID
 	}
 	authMap, ok := normalizePayload(auth).(map[string]any)
 	if !ok {

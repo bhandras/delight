@@ -739,16 +739,20 @@ private struct TerminalGroup: Identifiable {
 
 private func terminalGroups(from sessions: [SessionSummary]) -> [TerminalGroup] {
     let grouped = Dictionary(grouping: sessions) { session in
-        session.metadata?.host
-            ?? session.metadata?.machineId
+        session.terminalID
+            ?? session.metadata?.terminalId
             ?? session.subtitle
             ?? "unknown"
     }
     return grouped
         .map { key, value in
-            TerminalGroup(
+            let representative = value[0]
+            let displayName = sessionDisplayPath(for: representative)
+                ?? representative.metadata?.host
+                ?? key
+            return TerminalGroup(
                 id: key,
-                name: key,
+                name: displayName,
                 sessions: value.sorted(by: { ($0.title ?? $0.id) < ($1.title ?? $1.id) })
             )
         }

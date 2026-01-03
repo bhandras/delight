@@ -111,8 +111,8 @@ type State struct {
 	PersistWaiters []chan error
 
 	// Connection state (observability + UI gating).
-	WSConnected      bool
-	MachineConnected bool
+	WSConnected       bool
+	TerminalConnected bool
 
 	// Dedupe windows (populated by events) to suppress message echoes.
 	RecentRemoteInputs         []remoteInputRecord
@@ -412,20 +412,20 @@ type evWSDisconnected struct {
 // isSessionEvent marks evWSDisconnected as a session event.
 func (evWSDisconnected) isSessionEvent() {}
 
-type evMachineConnected struct {
+type evTerminalConnected struct {
 	actor.InputBase
 }
 
-// isSessionEvent marks evMachineConnected as a session event.
-func (evMachineConnected) isSessionEvent() {}
+// isSessionEvent marks evTerminalConnected as a session event.
+func (evTerminalConnected) isSessionEvent() {}
 
-type evMachineDisconnected struct {
+type evTerminalDisconnected struct {
 	actor.InputBase
 	Reason string
 }
 
-// isSessionEvent marks evMachineDisconnected as a session event.
-func (evMachineDisconnected) isSessionEvent() {}
+// isSessionEvent marks evTerminalDisconnected as a session event.
+func (evTerminalDisconnected) isSessionEvent() {}
 
 type evTimerFired struct {
 	actor.InputBase

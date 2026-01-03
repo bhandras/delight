@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// CUID generates a unique identifier (simplified version)
+// NewCUID generates a unique identifier (simplified version).
 func NewCUID() string {
 	return fmt.Sprintf("c%d", time.Now().UnixNano())
 }
@@ -16,7 +16,7 @@ type Metadata struct {
 	Host            string `json:"host"`
 	Version         string `json:"version"`
 	OS              string `json:"os"`
-	MachineID       string `json:"machineId"`
+	TerminalID      string `json:"terminalId"`
 	HomeDir         string `json:"homeDir"`
 	DelightHomeDir  string `json:"delightHomeDir"`
 	Flavor          string `json:"flavor,omitempty"`
@@ -101,8 +101,8 @@ type AgentMessage struct {
 	Meta    map[string]interface{} `json:"meta,omitempty"`
 }
 
-// MachineMetadata represents machine/terminal metadata
-type MachineMetadata struct {
+// TerminalMetadata represents terminal metadata.
+type TerminalMetadata struct {
 	Host              string `json:"host"`
 	Platform          string `json:"platform"`
 	DelightCliVersion string `json:"cliVersion"`

@@ -32,9 +32,9 @@ func (c *Client) ListSessions() (string, error) {
 	return c.listSessionsDispatch()
 }
 
-// ListMachines fetches machines and decrypts metadata/daemon state when possible.
-func (c *Client) ListMachines() (string, error) {
-	return c.listMachinesDispatch()
+// ListTerminals fetches terminals and decrypts metadata/daemon state when possible.
+func (c *Client) ListTerminals() (string, error) {
+	return c.listTerminalsDispatch()
 }
 
 // GetSessionMessages fetches session messages and decrypts message content.

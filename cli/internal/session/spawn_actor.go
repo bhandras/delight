@@ -341,7 +341,7 @@ func (r *spawnActorRuntime) handleStartChild(ctx context.Context, eff effStartCh
 	if eff.Agent == "acp" || eff.Agent == "claude" || eff.Agent == "codex" {
 		child.agent = eff.Agent
 	}
-	child.disableMachineSocket = true
+	child.disableTerminalSocket = true
 
 	if err := child.Start(eff.Directory); err != nil {
 		r.emit(evChildStartFailed{ReqID: eff.ReqID, Err: err})
@@ -426,7 +426,7 @@ func (r *spawnActorRuntime) handleRestore(ctx context.Context, eff effRestoreChi
 		if err != nil {
 			continue
 		}
-		child.disableMachineSocket = true
+		child.disableTerminalSocket = true
 		if err := child.Start(entry.Directory); err != nil {
 			continue
 		}

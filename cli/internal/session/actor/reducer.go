@@ -86,11 +86,11 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 	case evWSDisconnected:
 		state.WSConnected = false
 		return state, nil
-	case evMachineConnected:
-		state.MachineConnected = true
+	case evTerminalConnected:
+		state.TerminalConnected = true
 		return state, nil
-	case evMachineDisconnected:
-		state.MachineConnected = false
+	case evTerminalDisconnected:
+		state.TerminalConnected = false
 		return state, nil
 	case evTimerFired:
 		return reduceTimerFired(state, in)

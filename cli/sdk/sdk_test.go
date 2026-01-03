@@ -63,7 +63,7 @@ func (c *captureListener) waitUpdate(t *testing.T) {
 	}
 }
 
-func TestDecryptMachineString(t *testing.T) {
+func TestDecryptTerminalString(t *testing.T) {
 	client := NewClient("http://example.com")
 	secret := make([]byte, 32)
 	for i := range secret {
@@ -81,7 +81,7 @@ func TestDecryptMachineString(t *testing.T) {
 	require.NoError(t, err)
 	encoded := base64.StdEncoding.EncodeToString(encrypted)
 
-	decoded, err := client.decryptMachineString(encoded)
+	decoded, err := client.decryptTerminalString(encoded)
 	require.NoError(t, err)
 
 	var result map[string]interface{}
@@ -139,7 +139,7 @@ func TestListSessionsDecryptsMetadata(t *testing.T) {
 	require.Equal(t, "m2.local", meta["host"])
 }
 
-func TestListMachinesDecryptsMetadataAndDaemonState(t *testing.T) {
+func TestListTerminalsDecryptsMetadataAndDaemonState(t *testing.T) {
 	secret := make([]byte, 32)
 	for i := range secret {
 		secret[i] = byte(7)
@@ -152,13 +152,13 @@ func TestListMachinesDecryptsMetadataAndDaemonState(t *testing.T) {
 	require.NoError(t, err)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/machines" {
+		if r.URL.Path != "/v1/terminals" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		resp := []map[string]interface{}{
 			{
-				"id":                 "m1",
+				"id":                 "t1",
 				"active":             true,
 				"metadata":           base64.StdEncoding.EncodeToString(metadataEnc),
 				"daemonState":        base64.StdEncoding.EncodeToString(daemonEnc),
@@ -172,18 +172,18 @@ func TestListMachinesDecryptsMetadataAndDaemonState(t *testing.T) {
 	client := NewClient(srv.URL)
 	require.NoError(t, client.SetMasterKeyBase64(base64.StdEncoding.EncodeToString(secret)))
 
-	result, err := client.ListMachines()
+	result, err := client.ListTerminals()
 	require.NoError(t, err)
 
 	var decoded []map[string]interface{}
 	require.NoError(t, json.Unmarshal([]byte(result), &decoded))
 	require.Len(t, decoded, 1)
-	machine := decoded[0]
-	metadataJSON, _ := machine["metadata"].(string)
+	terminal := decoded[0]
+	metadataJSON, _ := terminal["metadata"].(string)
 	var meta map[string]interface{}
 	require.NoError(t, json.Unmarshal([]byte(metadataJSON), &meta))
 	require.Equal(t, "m2.local", meta["host"])
-	daemonJSON, _ := machine["daemonState"].(string)
+	daemonJSON, _ := terminal["daemonState"].(string)
 	var daemonState map[string]interface{}
 	require.NoError(t, json.Unmarshal([]byte(daemonJSON), &daemonState))
 	require.Equal(t, float64(123), daemonState["pid"])
@@ -531,14 +531,14 @@ func TestListSessionsMalformedJSONReturnsRaw(t *testing.T) {
 	require.Equal(t, "not-json", result)
 }
 
-func TestListMachinesMalformedJSONReturnsRaw(t *testing.T) {
+func TestListTerminalsMalformedJSONReturnsRaw(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("{\"machines\":123}"))
+		_, _ = w.Write([]byte("{\"terminals\":123}"))
 	}))
 	defer srv.Close()
 
 	client := NewClient(srv.URL)
-	result, err := client.ListMachines()
+	result, err := client.ListTerminals()
 	require.NoError(t, err)
-	require.Equal(t, "{\"machines\":123}", result)
+	require.Equal(t, "{\"terminals\":123}", result)
 }

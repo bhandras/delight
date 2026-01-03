@@ -3,15 +3,12 @@ package session
 import (
 	"bytes"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -27,7 +24,7 @@ import (
 )
 
 const (
-	// dataEncryptionKeyBytes is the byte length for session/machine data keys.
+	// dataEncryptionKeyBytes is the byte length for session/terminal data keys.
 	dataEncryptionKeyBytes = 32
 )
 
@@ -45,13 +42,12 @@ func (m *Manager) Start(workDir string) error {
 	// Store working directory for mode switching
 	m.workDir = workDir
 
-	// Get or create stable machine ID
-	machineIDPath := filepath.Join(m.cfg.DelightHome, "machine.id")
-	machineID, err := storage.GetOrCreateMachineID(machineIDPath)
+	// Get or create stable terminal ID scoped to this workdir.
+	terminalID, err := storage.GetOrCreateTerminalID(m.cfg.DelightHome, workDir)
 	if err != nil {
-		return fmt.Errorf("failed to get machine ID: %w", err)
+		return fmt.Errorf("failed to get terminal ID: %w", err)
 	}
-	m.machineID = machineID
+	m.terminalID = terminalID
 
 	// Initialize metadata
 	hostname, _ := os.Hostname()
@@ -62,14 +58,14 @@ func (m *Manager) Start(workDir string) error {
 		Host:           hostname,
 		Version:        version.Version(),
 		OS:             "darwin", // TODO: detect OS
-		MachineID:      machineID,
+		TerminalID:     terminalID,
 		HomeDir:        homeDir,
 		DelightHomeDir: m.cfg.DelightHome,
 		Flavor:         m.agent,
 	}
 
-	// Initialize machine metadata (best-effort)
-	m.machineMetadata = &types.MachineMetadata{
+	// Initialize terminal metadata (best-effort)
+	m.terminalMetadata = &types.TerminalMetadata{
 		Host:              hostname,
 		Platform:          "darwin", // TODO: detect platform
 		DelightCliVersion: version.Version(),
@@ -78,18 +74,18 @@ func (m *Manager) Start(workDir string) error {
 	}
 
 	// Initialize daemon state
-	m.machineState = &types.DaemonState{
+	m.terminalState = &types.DaemonState{
 		Status:    "running",
 		PID:       os.Getpid(),
 		StartedAt: time.Now().UnixMilli(),
 	}
 
-	// Create or update machine on server
-	if err := m.createMachine(); err != nil {
-		return fmt.Errorf("failed to create machine: %w", err)
+	// Create or update terminal on server
+	if err := m.createTerminal(); err != nil {
+		return fmt.Errorf("failed to create terminal: %w", err)
 	}
 
-	logger.Infof("Machine registered: %s", m.machineID)
+	logger.Infof("Terminal registered: %s", m.terminalID)
 
 	// Create session on server
 	if err := m.createSession(); err != nil {
@@ -167,45 +163,45 @@ func (m *Manager) Start(workDir string) error {
 		}
 	}
 
-	// Connect machine-scoped WebSocket (best-effort)
-	if !m.disableMachineSocket {
-		m.machineClient = websocket.NewMachineClient(m.cfg.ServerURL, m.token, m.machineID, m.cfg.SocketIOTransport, m.debug)
-		m.machineClient.OnConnect(func() {
+	// Connect terminal-scoped WebSocket (best-effort)
+	if !m.disableTerminalSocket {
+		m.terminalClient = websocket.NewTerminalClient(m.cfg.ServerURL, m.token, m.terminalID, m.cfg.SocketIOTransport, m.debug)
+		m.terminalClient.OnConnect(func() {
 			if m.sessionActor != nil {
-				_ = m.sessionActor.Enqueue(sessionactor.MachineConnected())
+				_ = m.sessionActor.Enqueue(sessionactor.TerminalConnected())
 			}
 		})
-		m.machineClient.OnDisconnect(func(reason string) {
+		m.terminalClient.OnDisconnect(func(reason string) {
 			if m.sessionActor != nil {
-				_ = m.sessionActor.Enqueue(sessionactor.MachineDisconnected(reason))
+				_ = m.sessionActor.Enqueue(sessionactor.TerminalDisconnected(reason))
 			}
 		})
-		if err := m.machineClient.Connect(); err != nil {
-			logger.Warnf("Machine WebSocket connection failed: %v", err)
-			m.machineClient = nil
+		if err := m.terminalClient.Connect(); err != nil {
+			logger.Warnf("Terminal WebSocket connection failed: %v", err)
+			m.terminalClient = nil
 		} else {
-			m.machineRPC = websocket.NewRPCManager(m.machineClient, m.debug)
-			m.machineRPC.SetEncryption(m.encryptMachine, m.decryptMachine)
-			m.machineRPC.SetupSocketHandlers(m.machineClient.RawSocket())
-			m.registerMachineRPCHandlers()
+			m.terminalRPC = websocket.NewRPCManager(m.terminalClient, m.debug)
+			m.terminalRPC.SetEncryption(m.encryptTerminal, m.decryptTerminal)
+			m.terminalRPC.SetupSocketHandlers(m.terminalClient.RawSocket())
+			m.registerTerminalRPCHandlers()
 
-			if m.machineClient.WaitForConnect(5 * time.Second) {
+			if m.terminalClient.WaitForConnect(5 * time.Second) {
 				if m.debug {
-					logger.Infof("Machine WebSocket connected")
+					logger.Infof("Terminal WebSocket connected")
 				}
-				m.machineRPC.RegisterAll()
-				_ = m.machineClient.EmitRaw("machine-alive", wire.MachineAlivePayload{
-					MachineID: m.machineID,
-					Time:      time.Now().UnixMilli(),
+				m.terminalRPC.RegisterAll()
+				_ = m.terminalClient.EmitRaw("terminal-alive", wire.TerminalAlivePayload{
+					TerminalID: m.terminalID,
+					Time:       time.Now().UnixMilli(),
 				})
-				if err := m.updateMachineState(); err != nil && m.debug {
-					logger.Warnf("Machine state update error: %v", err)
+				if err := m.updateTerminalState(); err != nil && m.debug {
+					logger.Warnf("Terminal state update error: %v", err)
 				}
-				if err := m.updateMachineMetadata(); err != nil && m.debug {
-					logger.Warnf("Machine metadata update error: %v", err)
+				if err := m.updateTerminalMetadata(); err != nil && m.debug {
+					logger.Warnf("Terminal metadata update error: %v", err)
 				}
 			} else if m.debug {
-				logger.Warnf("Machine WebSocket connection timeout")
+				logger.Warnf("Terminal WebSocket connection timeout")
 			}
 		}
 	}
@@ -338,9 +334,9 @@ func (m *Manager) initSessionActor() {
 func (m *Manager) createSession() error {
 	// Generate session tag (stable by default).
 	if m.cfg.ForceNewSession {
-		m.sessionTag = fmt.Sprintf("session-%d", time.Now().Unix())
+		m.sessionTag = fmt.Sprintf("%s-%d", m.terminalID, time.Now().Unix())
 	} else {
-		m.sessionTag = stableSessionTag(m.machineID, m.workDir)
+		m.sessionTag = stableSessionTag(m.terminalID)
 	}
 
 	// Ensure the per-session dataEncryptionKey is available.
@@ -364,6 +360,7 @@ func (m *Manager) createSession() error {
 	dataKeyB64 := base64.StdEncoding.EncodeToString(m.dataKey)
 	body, err := json.Marshal(wire.CreateSessionRequest{
 		Tag:               m.sessionTag,
+		TerminalID:        m.terminalID,
 		Metadata:          encodedMeta,
 		DataEncryptionKey: &dataKeyB64,
 	})
@@ -439,32 +436,35 @@ func (m *Manager) setSessionDataEncryptionKey(encoded string) error {
 	return nil
 }
 
-// stableSessionTag derives a stable tag for a (machine, workdir) pair.
-func stableSessionTag(machineID, workDir string) string {
-	hash := sha256.Sum256([]byte(workDir))
-	return fmt.Sprintf("m-%s-%s", machineID, hex.EncodeToString(hash[:6]))
+// stableSessionTag returns the stable tag used for the "primary" session for a
+// terminal.
+//
+// Under the one-terminal-per-directory model, using the terminal id directly
+// avoids duplicate sessions for the same paired directory.
+func stableSessionTag(terminalID string) string {
+	return terminalID
 }
 
-// createMachine creates or updates a machine on the server
-func (m *Manager) createMachine() error {
-	// Encrypt machine metadata
+// createTerminal creates or updates a terminal on the server.
+func (m *Manager) createTerminal() error {
+	// Encrypt terminal metadata
 	if len(m.masterSecret) != dataEncryptionKeyBytes {
 		return fmt.Errorf("master secret must be %d bytes, got %d", dataEncryptionKeyBytes, len(m.masterSecret))
 	}
-	encryptedMeta, err := crypto.EncryptWithDataKey(m.machineMetadata, m.masterSecret)
+	encryptedMeta, err := crypto.EncryptWithDataKey(m.terminalMetadata, m.masterSecret)
 	if err != nil {
-		return fmt.Errorf("failed to encrypt machine metadata: %w", err)
+		return fmt.Errorf("failed to encrypt terminal metadata: %w", err)
 	}
 
 	// Encrypt daemon state
-	encryptedState, err := crypto.EncryptWithDataKey(m.machineState, m.masterSecret)
+	encryptedState, err := crypto.EncryptWithDataKey(m.terminalState, m.masterSecret)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt daemon state: %w", err)
 	}
 
-	// Create machine request
-	body, err := json.Marshal(wire.CreateMachineRequest{
-		ID:          m.machineID,
+	// Create terminal request
+	body, err := json.Marshal(wire.CreateTerminalRequest{
+		ID:          m.terminalID,
 		Metadata:    base64.StdEncoding.EncodeToString(encryptedMeta),
 		DaemonState: base64.StdEncoding.EncodeToString(encryptedState),
 	})
@@ -473,7 +473,7 @@ func (m *Manager) createMachine() error {
 	}
 
 	// Send request
-	url := fmt.Sprintf("%s/v1/machines", m.cfg.ServerURL)
+	url := fmt.Sprintf("%s/v1/terminals", m.cfg.ServerURL)
 	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
@@ -495,17 +495,17 @@ func (m *Manager) createMachine() error {
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("create machine failed: %s - %s", resp.Status, string(respBody))
+		return fmt.Errorf("create terminal failed: %s - %s", resp.Status, string(respBody))
 	}
 
-	var response wire.CreateMachineResponse
+	var response wire.CreateTerminalResponse
 	if err := json.Unmarshal(respBody, &response); err == nil {
-		m.machineMetaVer = response.Machine.MetadataVersion
-		m.machineStateVer = response.Machine.DaemonStateVersion
+		m.terminalMetaVer = response.Terminal.MetadataVersion
+		m.terminalStateVer = response.Terminal.DaemonStateVersion
 	}
 
 	if m.debug {
-		logger.Infof("Machine created/updated successfully")
+		logger.Infof("Terminal created/updated successfully")
 	}
 
 	return nil
@@ -660,31 +660,31 @@ func (m *Manager) handleSessionUpdate(data map[string]interface{}) {
 	}
 }
 
-// keepAliveLoop sends periodic keep-alive pings for both machine and session.
+// keepAliveLoop sends periodic keep-alive pings for both terminal and session.
 func (m *Manager) keepAliveLoop() {
-	machineTicker := time.NewTicker(20 * time.Second)
+	terminalTicker := time.NewTicker(20 * time.Second)
 	sessionTicker := time.NewTicker(30 * time.Second)
-	defer machineTicker.Stop()
+	defer terminalTicker.Stop()
 	defer sessionTicker.Stop()
 
 	for {
 		select {
 		case <-m.stopCh:
 			return
-		case <-machineTicker.C:
-			// Send machine keep-alive via machine-scoped socket.
-			if m.machineClient != nil && m.machineClient.IsConnected() {
-				if err := m.machineClient.EmitRaw("machine-alive", wire.MachineAlivePayload{
-					MachineID: m.machineID,
-					Time:      time.Now().UnixMilli(),
+		case <-terminalTicker.C:
+			// Send terminal keep-alive via terminal-scoped socket.
+			if m.terminalClient != nil && m.terminalClient.IsConnected() {
+				if err := m.terminalClient.EmitRaw("terminal-alive", wire.TerminalAlivePayload{
+					TerminalID: m.terminalID,
+					Time:       time.Now().UnixMilli(),
 				}); err != nil && m.debug {
-					logger.Warnf("Machine keep-alive error: %v", err)
+					logger.Warnf("Terminal keep-alive error: %v", err)
 				}
 			} else if m.debug {
 				now := time.Now()
-				if m.lastMachineKeepAliveSkipAt.IsZero() || now.Sub(m.lastMachineKeepAliveSkipAt) > 2*time.Minute {
-					m.lastMachineKeepAliveSkipAt = now
-					logger.Debugf("Machine keep-alive skipped (no machine socket)")
+				if m.lastTerminalKeepAliveSkipAt.IsZero() || now.Sub(m.lastTerminalKeepAliveSkipAt) > 2*time.Minute {
+					m.lastTerminalKeepAliveSkipAt = now
+					logger.Debugf("Terminal keep-alive skipped (no terminal socket)")
 				}
 			}
 
@@ -739,8 +739,8 @@ func (m *Manager) Close() error {
 	if m.wsClient != nil {
 		m.wsClient.Close()
 	}
-	if m.machineClient != nil {
-		m.machineClient.Close()
+	if m.terminalClient != nil {
+		m.terminalClient.Close()
 	}
 
 	m.shutdownSpawnedSessions()

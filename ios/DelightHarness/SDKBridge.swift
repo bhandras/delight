@@ -270,7 +270,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var hasMoreHistory: Bool = false
     @Published var isLoadingHistory: Bool = false
     @Published var scrollRequest: ScrollRequest?
-    @Published var machines: [MachineInfo] = []
+    @Published var terminals: [TerminalInfo] = []
     @Published var logServerURL: String = ""
     @Published var logServerRunning: Bool = false
     @Published var showCrashReport: Bool = false
@@ -285,7 +285,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var isCreatingAccount: Bool = false
     @Published var isApprovingTerminal: Bool = false
     @Published var isLoggingOut: Bool = false
-    @Published var isDeletingMachine: Bool = false
+    @Published var isDeletingTerminal: Bool = false
     @Published var showAccountCreatedReceipt: Bool = false
     @Published var showTerminalPairingReceipt: Bool = false
     @Published var showLogoutConfirm: Bool = false
@@ -469,7 +469,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         selectedMetadata = nil
         messages = []
         sessions = []
-        machines = []
+        terminals = []
         permissionQueue = []
         activePermissionRequest = nil
         showPermissionPrompt = false
@@ -685,6 +685,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                                 let existing = self.sessions[index]
                                 self.sessions[index] = SessionSummary(
                                     id: existing.id,
+                                    terminalID: existing.terminalID,
                                     updatedAt: existing.updatedAt,
                                     active: existing.active,
                                     activeAt: existing.activeAt,
@@ -840,13 +841,15 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
-    private func parseTerminalURLMetadata(_ raw: String) -> (host: String?, machineID: String?) {
+    private func parseTerminalURLMetadata(_ raw: String) -> (host: String?, terminalID: String?) {
         guard let components = URLComponents(string: raw) else { return (nil, nil) }
         let host = components.queryItems?.first(where: { $0.name == "host" })?.value
-        let machineID =
-            components.queryItems?.first(where: { $0.name == "machineId" })?.value
+        let terminalID =
+            components.queryItems?.first(where: { $0.name == "terminalId" })?.value
+            ?? components.queryItems?.first(where: { $0.name == "terminal_id" })?.value
+            ?? components.queryItems?.first(where: { $0.name == "machineId" })?.value
             ?? components.queryItems?.first(where: { $0.name == "machine_id" })?.value
-        return (host, machineID)
+        return (host, terminalID)
     }
 
     func approveTerminal() {
@@ -888,7 +891,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     self.lastTerminalPairingReceipt = TerminalPairingReceipt(
                         serverURL: self.serverURL,
                         host: metadata.host,
-                        machineID: metadata.machineID,
+                        terminalID: metadata.terminalID,
                         terminalKey: terminalKey
                     )
                     self.showTerminalPairingReceipt = true
@@ -975,59 +978,57 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 return
             }
             parseSessions(json)
-            listMachines()
+            listTerminals()
             log("Sessions loaded")
         } catch {
             log("List sessions error: \(error)")
         }
     }
 
-    func listMachines() {
+    func listTerminals() {
         do {
             let responseBuf = try sdkCallSync {
-                try client.listMachinesBuffer()
+                try client.listTerminalsBuffer()
             }
             if let json = stringFromBuffer(responseBuf), !json.isEmpty {
-                parseMachines(json)
-                log("Machines loaded")
+                parseTerminals(json)
+                log("Terminals loaded")
             }
         } catch {
-            log("List machines error: \(error)")
+            log("List terminals error: \(error)")
         }
     }
 
-    /// deleteMachine deletes a machine (and any associated sessions) on the server.
+    /// deleteTerminal deletes a terminal (and any associated sessions) on the server.
     ///
     /// If the corresponding CLI is still running, it may re-register itself after
     /// deletion.
-    func deleteMachine(_ machineID: String, onSuccess: (() -> Void)? = nil) {
-        guard !isDeletingMachine else { return }
-        guard !machineID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            presentErrorAlert(message: "Machine id is required.")
+    func deleteTerminal(_ terminalID: String, onSuccess: (() -> Void)? = nil) {
+        guard !isDeletingTerminal else { return }
+        guard !terminalID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            presentErrorAlert(message: "Terminal id is required.")
             return
         }
 
-        isDeletingMachine = true
+        isDeletingTerminal = true
         sdkCallAsync {
             do {
                 _ = try self.sdkCallSync {
-                    try self.client.deleteMachineBuffer(machineID)
+                    try self.client.deleteTerminalBuffer(terminalID)
                 }
                 DispatchQueue.main.async {
-                    self.isDeletingMachine = false
-                    self.log("Machine deleted")
-                    self.machines.removeAll(where: { $0.id == machineID })
-                    self.sessions.removeAll(where: { session in
-                        session.metadata?.machineId == machineID || session.subtitle == machineID
-                    })
+                    self.isDeletingTerminal = false
+                    self.log("Terminal deleted")
+                    self.terminals.removeAll(where: { $0.id == terminalID })
+                    self.sessions.removeAll(where: { $0.terminalID == terminalID })
                     self.listSessions()
-                    self.listMachines()
+                    self.listTerminals()
                     onSuccess?()
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self.isDeletingMachine = false
-                    self.presentErrorAlert(message: "Delete machine error: \(error)")
+                    self.isDeletingTerminal = false
+                    self.presentErrorAlert(message: "Delete terminal error: \(error)")
                 }
             }
         }
@@ -1249,6 +1250,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 let prev = self.sessions[index]
                 self.sessions[index] = SessionSummary(
                     id: prev.id,
+                    terminalID: prev.terminalID,
                     updatedAt: prev.updatedAt,
                     active: prev.active,
                     activeAt: prev.activeAt,
@@ -1672,7 +1674,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 let activeAt: Int64?
                 let metadata: String?
                 let agentState: String?
-                let machineId: String?
+                let terminalId: String?
             }
             let sessions: [Session]
         }
@@ -1704,17 +1706,19 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 let metadata = SessionMetadata.fromJSON(session.metadata)
                 let agentState = SessionAgentState.fromJSON(session.agentState)
                 let uiState = uiByID[session.id]
+                let terminalID = session.terminalId ?? metadata?.terminalId
                 let title = metadata?.agent
                     ?? metadata?.summaryText
-                    ?? session.machineId
+                    ?? terminalID
                 return SessionSummary(
                     id: session.id,
+                    terminalID: terminalID,
                     updatedAt: session.updatedAt,
                     active: session.active,
                     activeAt: session.activeAt,
                     title: title,
                     subtitle: metadata?.host
-                        ?? session.machineId,
+                        ?? terminalID,
                     metadata: metadata,
                     agentState: agentState,
                     uiState: uiState,
@@ -1769,8 +1773,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
-    func parseMachines(_ json: String) {
-        struct MachinePayload: Decodable {
+    func parseTerminals(_ json: String) {
+        struct TerminalPayload: Decodable {
             let id: String?
             let metadata: String?
             let daemonState: String?
@@ -1778,28 +1782,28 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             let active: Bool?
             let activeAt: Int64?
         }
-        struct MachinesResponse: Decodable {
-            let machines: [MachinePayload]
+        struct TerminalsResponse: Decodable {
+            let terminals: [TerminalPayload]
         }
 
-        let payloads: [MachinePayload]
-        if let decoded = try? JSONCoding.decode([MachinePayload].self, from: json) {
+        let payloads: [TerminalPayload]
+        if let decoded = try? JSONCoding.decode([TerminalPayload].self, from: json) {
             payloads = decoded
-        } else if let decoded = try? JSONCoding.decode(MachinesResponse.self, from: json) {
-            payloads = decoded.machines
+        } else if let decoded = try? JSONCoding.decode(TerminalsResponse.self, from: json) {
+            payloads = decoded.terminals
         } else {
-            log("Parse machines error: invalid JSON payload")
+            log("Parse terminals error: invalid JSON payload")
             return
         }
 
-        let machines: [MachineInfo] = payloads.map { item in
+        let terminals: [TerminalInfo] = payloads.map { item in
             let id = item.id ?? UUID().uuidString
-            let metadata = MachineMetadata.fromJSON(item.metadata)
+            let metadata = TerminalMetadata.fromJSON(item.metadata)
             let daemonState = DaemonState.fromJSON(item.daemonState)
             let daemonStateVersion = item.daemonStateVersion ?? 0
             let active = item.active ?? false
             let activeAt = item.activeAt
-            return MachineInfo(
+            return TerminalInfo(
                 id: id,
                 metadata: metadata,
                 daemonState: daemonState,
@@ -1809,7 +1813,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             )
         }
         DispatchQueue.main.async {
-            self.machines = machines
+            self.terminals = terminals
         }
     }
 

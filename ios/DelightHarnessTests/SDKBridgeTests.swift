@@ -70,17 +70,17 @@ final class SDKBridgeTests: XCTestCase {
         waitForExpectations(timeout: 1.0)
     }
 
-    func testParseMachinesSetsMetadata() {
+    func testParseTerminalsSetsMetadata() {
         let model = HarnessViewModel()
         let json = """
-        [{"id":"m1","active":true,"metadata":"{\\"host\\":\\"m2.local\\",\\"platform\\":\\"darwin\\"}","daemonState":"{\\"pid\\":123,\\"status\\":\\"ok\\"}","daemonStateVersion":4}]
+        [{"id":"t1","active":true,"metadata":"{\\"host\\":\\"m2.local\\",\\"platform\\":\\"darwin\\"}","daemonState":"{\\"pid\\":123,\\"status\\":\\"ok\\"}","daemonStateVersion":4}]
         """
-        let expectation = expectation(description: "machines parsed")
-        model.parseMachines(json)
+        let expectation = expectation(description: "terminals parsed")
+        model.parseTerminals(json)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            XCTAssertEqual(model.machines.count, 1)
-            XCTAssertEqual(model.machines.first?.metadata?.host, "m2.local")
-            XCTAssertEqual(model.machines.first?.daemonState?.pid, 123)
+            XCTAssertEqual(model.terminals.count, 1)
+            XCTAssertEqual(model.terminals.first?.metadata?.host, "m2.local")
+            XCTAssertEqual(model.terminals.first?.daemonState?.pid, 123)
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1.0)
@@ -246,11 +246,11 @@ final class SDKBridgeTests: XCTestCase {
         XCTAssertEqual(state?.requests["r1"]?.createdAt, 123)
     }
 
-    func testMachineMetadataParsesCliVersion() {
+    func testTerminalMetadataParsesCliVersion() {
         let json = """
         {"host":"m2.local","platform":"darwin","cliVersion":"1.2.3","homeDir":"/Users/test"}
         """
-        let metadata = MachineMetadata.fromJSON(json)
+        let metadata = TerminalMetadata.fromJSON(json)
 
         XCTAssertEqual(metadata?.cliVersion, "1.2.3")
         XCTAssertEqual(metadata?.homeDir, "/Users/test")

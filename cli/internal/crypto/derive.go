@@ -68,7 +68,7 @@ func DeriveContentKeyPair(master []byte) (*[32]byte, *[32]byte, error) {
 	return &pub, &priv, nil
 }
 
-// DecryptDataEncryptionKey decrypts the session/machine dataEncryptionKey
+// DecryptDataEncryptionKey decrypts the session/terminal dataEncryptionKey
 // using the derived content keypair (box encryption, versioned with 0x00).
 func DecryptDataEncryptionKey(encryptedB64 string, master []byte) ([]byte, error) {
 	raw, err := base64.StdEncoding.DecodeString(encryptedB64)

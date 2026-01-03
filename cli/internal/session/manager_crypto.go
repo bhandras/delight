@@ -69,8 +69,8 @@ func (m *Manager) decrypt(dataB64 string) ([]byte, error) {
 	return nil, fmt.Errorf("unsupported encrypted payload format")
 }
 
-// encryptMachine encrypts daemon-scoped state using the master secret.
-func (m *Manager) encryptMachine(data []byte) (string, error) {
+// encryptTerminal encrypts terminal-scoped state using the master secret.
+func (m *Manager) encryptTerminal(data []byte) (string, error) {
 	if len(m.masterSecret) != 32 {
 		return "", fmt.Errorf("master secret must be 32 bytes, got %d", len(m.masterSecret))
 	}
@@ -81,8 +81,8 @@ func (m *Manager) encryptMachine(data []byte) (string, error) {
 	return base64.StdEncoding.EncodeToString(encrypted), nil
 }
 
-// decryptMachine decrypts daemon-scoped state using the master secret.
-func (m *Manager) decryptMachine(dataB64 string) ([]byte, error) {
+// decryptTerminal decrypts terminal-scoped state using the master secret.
+func (m *Manager) decryptTerminal(dataB64 string) ([]byte, error) {
 	encrypted, err := base64.StdEncoding.DecodeString(dataB64)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode base64: %w", err)

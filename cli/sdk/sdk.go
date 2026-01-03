@@ -623,19 +623,19 @@ func (c *Client) listSessions() (resp string, err error) {
 	return string(respBody), nil
 }
 
-// ListMachinesBuffer returns ListMachines JSON as a gomobile-safe Buffer.
-func (c *Client) ListMachinesBuffer() (*Buffer, error) {
-	resp, err := c.listMachinesDispatch()
+// ListTerminalsBuffer returns ListTerminals JSON as a gomobile-safe Buffer.
+func (c *Client) ListTerminalsBuffer() (*Buffer, error) {
+	resp, err := c.listTerminalsDispatch()
 	if err != nil {
 		return nil, err
 	}
 	return newBufferFromString(resp), nil
 }
 
-// listMachinesDispatch runs listMachines on the SDK dispatch queue.
-func (c *Client) listMachinesDispatch() (resp string, err error) {
+// listTerminalsDispatch runs listTerminals on the SDK dispatch queue.
+func (c *Client) listTerminalsDispatch() (resp string, err error) {
 	value, err := c.dispatch.call(func() (interface{}, error) {
-		return c.listMachines()
+		return c.listTerminals()
 	})
 	if err != nil {
 		return "", err
@@ -646,15 +646,15 @@ func (c *Client) listMachinesDispatch() (resp string, err error) {
 	return value.(string), nil
 }
 
-// listMachines fetches machines and best-effort decrypts encrypted fields.
-func (c *Client) listMachines() (resp string, err error) {
+// listTerminals fetches terminals and best-effort decrypts encrypted fields.
+func (c *Client) listTerminals() (resp string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			logPanic("ListMachines", r)
+			logPanic("ListTerminals", r)
 			err = fmt.Errorf("panic: %v", r)
 		}
 	}()
-	respBody, err := c.doRequest("GET", "/v1/machines", nil)
+	respBody, err := c.doRequest("GET", "/v1/terminals", nil)
 	if err != nil {
 		return "", err
 	}
@@ -665,20 +665,20 @@ func (c *Client) listMachines() (resp string, err error) {
 	}
 
 	for _, item := range decoded {
-		machine, ok := item.(map[string]interface{})
+		terminal, ok := item.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		metadataB64, _ := machine["metadata"].(string)
+		metadataB64, _ := terminal["metadata"].(string)
 		if metadataB64 != "" {
-			if decryptedJSON, err := c.decryptMachineString(metadataB64); err == nil {
-				machine["metadata"] = decryptedJSON
+			if decryptedJSON, err := c.decryptTerminalString(metadataB64); err == nil {
+				terminal["metadata"] = decryptedJSON
 			}
 		}
-		daemonStateB64, _ := machine["daemonState"].(string)
+		daemonStateB64, _ := terminal["daemonState"].(string)
 		if daemonStateB64 != "" {
-			if decryptedJSON, err := c.decryptMachineString(daemonStateB64); err == nil {
-				machine["daemonState"] = decryptedJSON
+			if decryptedJSON, err := c.decryptTerminalString(daemonStateB64); err == nil {
+				terminal["daemonState"] = decryptedJSON
 			}
 		}
 	}
@@ -690,20 +690,20 @@ func (c *Client) listMachines() (resp string, err error) {
 	return string(encoded), nil
 }
 
-// DeleteMachineBuffer deletes a machine by id and returns the response JSON as
+// DeleteTerminalBuffer deletes a terminal by id and returns the response JSON as
 // a gomobile-safe Buffer.
-func (c *Client) DeleteMachineBuffer(machineID string) (*Buffer, error) {
-	resp, err := c.deleteMachineDispatch(machineID)
+func (c *Client) DeleteTerminalBuffer(terminalID string) (*Buffer, error) {
+	resp, err := c.deleteTerminalDispatch(terminalID)
 	if err != nil {
 		return nil, err
 	}
 	return newBufferFromString(resp), nil
 }
 
-// deleteMachineDispatch runs deleteMachine on the SDK dispatch queue.
-func (c *Client) deleteMachineDispatch(machineID string) (resp string, err error) {
+// deleteTerminalDispatch runs deleteTerminal on the SDK dispatch queue.
+func (c *Client) deleteTerminalDispatch(terminalID string) (resp string, err error) {
 	value, err := c.dispatch.call(func() (interface{}, error) {
-		return c.deleteMachine(machineID)
+		return c.deleteTerminal(terminalID)
 	})
 	if err != nil {
 		return "", err
@@ -714,19 +714,19 @@ func (c *Client) deleteMachineDispatch(machineID string) (resp string, err error
 	return value.(string), nil
 }
 
-// deleteMachine issues HTTP DELETE /v1/machines/:id.
-func (c *Client) deleteMachine(machineID string) (resp string, err error) {
+// deleteTerminal issues HTTP DELETE /v1/terminals/:id.
+func (c *Client) deleteTerminal(terminalID string) (resp string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			logPanic("DeleteMachine", r)
+			logPanic("DeleteTerminal", r)
 			err = fmt.Errorf("panic: %v", r)
 		}
 	}()
-	machineID = strings.TrimSpace(machineID)
-	if machineID == "" {
-		return "", fmt.Errorf("machine id is required")
+	terminalID = strings.TrimSpace(terminalID)
+	if terminalID == "" {
+		return "", fmt.Errorf("terminal id is required")
 	}
-	endpoint := fmt.Sprintf("/v1/machines/%s", url.PathEscape(machineID))
+	endpoint := fmt.Sprintf("/v1/terminals/%s", url.PathEscape(terminalID))
 	respBody, err := c.doRequest("DELETE", endpoint, nil)
 	if err != nil {
 		return "", err
@@ -746,9 +746,9 @@ func decodeBase64JSONString(payload string) (string, error) {
 	return string(raw), nil
 }
 
-// decryptMachineString decrypts an AES-GCM encrypted JSON payload using the
+// decryptTerminalString decrypts an AES-GCM encrypted JSON payload using the
 // master key and returns a JSON string.
-func (c *Client) decryptMachineString(payload string) (string, error) {
+func (c *Client) decryptTerminalString(payload string) (string, error) {
 	c.mu.Lock()
 	secret := make([]byte, len(c.masterSecret))
 	copy(secret, c.masterSecret)
