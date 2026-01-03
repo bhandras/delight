@@ -46,10 +46,23 @@ in `-m` arguments; it will store the backslash and `n` characters literally.
 
 Use one of these instead:
 
-- Multiple `-m` flags (preferred): `git commit -S -m "subject" -m "body paragraph 1" -m "body paragraph 2"`
-  - Note: each `-m` adds a real newline between paragraphs.
+- Multiple `-m` flags (only for paragraphs): `git commit -S -m "subject" -m "body paragraph 1" -m "body paragraph 2"`
+  - Note: each `-m` adds a real blank line between paragraphs. Do **not** use
+    one `-m` per wrapped line, or you will create "double spaced" commit
+    messages with extra blank lines.
 - Shell $-quoting (zsh/bash): `git commit -S -m $'subject\n\nbody line 1\nbody line 2'`
 - Commit message file: `git commit -S -F /path/to/message.txt`
+
+Preferred approach (most robust):
+
+- Write a commit message file (wrapped to ≤72 columns) and use `-F`:
+  - `cat > /tmp/commit-msg.txt <<'EOF'`
+  - `pkg: Subject in present tense`
+  - ``
+  - `Body paragraph wrapped to 72 columns. Keep single newlines for wrapping`
+  - `and a blank line only between paragraphs.`
+  - `EOF`
+  - `git commit -S -F /tmp/commit-msg.txt`
 
 ### Commit Message Line Length (Important)
 
@@ -58,8 +71,9 @@ it must ensure every non-empty body line is wrapped to ≤72 characters.
 
 Preferred approach:
 
-- Use multiple `-m` flags and keep each `-m "..."` body paragraph line ≤72
-  characters.
+- Use `-F` with a pre-wrapped message file.
+- If using multiple `-m`, use them only for paragraphs (not wrapped lines), and
+  keep each paragraph line ≤72 characters.
 
 Before finishing a commit, validate the final message formatting:
 
