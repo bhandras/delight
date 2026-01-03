@@ -19,11 +19,11 @@ type VersionedAck struct {
 	// Message is an optional error annotation.
 	Message string `json:"message,omitempty"`
 
-	// Metadata is used by session/machine metadata updates.
+	// Metadata is used by session/terminal metadata updates.
 	Metadata string `json:"metadata,omitempty"`
 	// AgentState is used by session agentState updates.
 	AgentState string `json:"agentState,omitempty"`
-	// DaemonState is used by machine daemonState updates.
+	// DaemonState is used by terminal daemonState updates.
 	DaemonState string `json:"daemonState,omitempty"`
 }
 
@@ -55,28 +55,6 @@ type RPCAck struct {
 	Error string `json:"error,omitempty"`
 	// Result contains the RPC response payload when OK is true.
 	Result any `json:"result,omitempty"`
-}
-
-// AccessKeyLookupAck is the ACK response shape for access-key lookup.
-type AccessKeyLookupAck struct {
-	// OK indicates whether the lookup succeeded.
-	OK bool `json:"ok"`
-	// Error contains an error string when OK is false.
-	Error string `json:"error,omitempty"`
-	// AccessKey is the access key payload when OK is true; null when absent.
-	AccessKey *AccessKeyInfo `json:"accessKey"`
-}
-
-// AccessKeyInfo is the access key object returned by access-key lookups.
-type AccessKeyInfo struct {
-	// Data is the encrypted access key payload.
-	Data string `json:"data"`
-	// DataVersion is the version for optimistic concurrency.
-	DataVersion int64 `json:"dataVersion"`
-	// CreatedAt is a wall-clock timestamp in milliseconds since epoch.
-	CreatedAt int64 `json:"createdAt"`
-	// UpdatedAt is a wall-clock timestamp in milliseconds since epoch.
-	UpdatedAt int64 `json:"updatedAt"`
 }
 
 // ArtifactAck is the ACK response shape for artifact get/create/delete.

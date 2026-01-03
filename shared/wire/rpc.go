@@ -92,7 +92,7 @@ type AgentCapabilitiesResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
-// Machine-scoped RPC payloads (server -> daemon).
+// Terminal-scoped RPC payloads (server -> terminal).
 
 // SpawnSessionRequest requests starting a new CLI session for a directory.
 type SpawnSessionRequest struct {
@@ -102,8 +102,8 @@ type SpawnSessionRequest struct {
 	ApprovedNewDirectoryCreation bool `json:"approvedNewDirectoryCreation"`
 	// SessionID is the existing session id (if any) associated with the request.
 	SessionID string `json:"sessionId"`
-	// MachineID is the machine id for the daemon.
-	MachineID string `json:"machineId"`
+	// TerminalID is the terminal id for the CLI.
+	TerminalID string `json:"terminalId"`
 	// Agent is the agent flavor ("claude" or "codex").
 	Agent string `json:"agent"`
 }
@@ -145,7 +145,7 @@ type PingResponse struct {
 }
 
 // SpawnSessionResponse requests or reports the result of spawning a
-// session from a machine-scoped RPC call.
+// session from a terminal-scoped RPC call.
 type SpawnSessionResponse struct {
 	// Type identifies the response kind (e.g. "success").
 	Type string `json:"type"`

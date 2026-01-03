@@ -53,11 +53,11 @@ type SessionAlivePayload struct {
 	Thinking bool `json:"thinking"`
 }
 
-// MachineAlivePayload is the client -> server payload for the "machine-alive"
+// TerminalAlivePayload is the client -> server payload for the "terminal-alive"
 // event.
-type MachineAlivePayload struct {
-	// MachineID identifies the machine emitting the keep-alive.
-	MachineID string `json:"machineId"`
+type TerminalAlivePayload struct {
+	// TerminalID identifies the terminal emitting the keep-alive.
+	TerminalID string `json:"terminalId"`
 	// Time is a wall-clock timestamp in milliseconds since epoch.
 	Time int64 `json:"time"`
 }
@@ -165,17 +165,17 @@ type UpdateStatePayload struct {
 }
 
 // SocketAuthPayload is the client -> server Socket.IO auth payload used during
-// handshake for session-, machine-, and user-scoped sockets.
+// handshake for session-, terminal-, and user-scoped sockets.
 type SocketAuthPayload struct {
 	// Token is the bearer token for the authenticated user.
 	Token string `json:"token"`
 	// ClientType selects the connection scope ("user-scoped", "session-scoped",
-	// or "machine-scoped").
+	// or "terminal-scoped").
 	ClientType string `json:"clientType"`
 	// SessionID scopes a session-scoped socket.
 	SessionID string `json:"sessionId,omitempty"`
-	// MachineID scopes a machine-scoped socket.
-	MachineID string `json:"machineId,omitempty"`
+	// TerminalID scopes a terminal-scoped socket.
+	TerminalID string `json:"terminalId,omitempty"`
 }
 
 // RPCRegisterPayload is the client -> server payload for the "rpc-register"
@@ -185,23 +185,23 @@ type RPCRegisterPayload struct {
 	Method string `json:"method"`
 }
 
-// MachineUpdateStatePayload is the client -> server payload for the
-// "machine-update-state" event.
-type MachineUpdateStatePayload struct {
-	// MachineID identifies the machine being updated.
-	MachineID string `json:"machineId"`
+// TerminalUpdateStatePayload is the client -> server payload for the
+// "terminal-update-state" event.
+type TerminalUpdateStatePayload struct {
+	// TerminalID identifies the terminal being updated.
+	TerminalID string `json:"terminalId"`
 	// DaemonState is the encrypted daemon state payload.
 	DaemonState string `json:"daemonState"`
 	// ExpectedVersion is the optimistic concurrency version.
 	ExpectedVersion int64 `json:"expectedVersion"`
 }
 
-// MachineUpdateMetadataPayload is the client -> server payload for the
-// "machine-update-metadata" event.
-type MachineUpdateMetadataPayload struct {
-	// MachineID identifies the machine being updated.
-	MachineID string `json:"machineId"`
-	// Metadata is the encrypted machine metadata payload.
+// TerminalUpdateMetadataPayload is the client -> server payload for the
+// "terminal-update-metadata" event.
+type TerminalUpdateMetadataPayload struct {
+	// TerminalID identifies the terminal being updated.
+	TerminalID string `json:"terminalId"`
+	// Metadata is the encrypted terminal metadata payload.
 	Metadata string `json:"metadata"`
 	// ExpectedVersion is the optimistic concurrency version.
 	ExpectedVersion int64 `json:"expectedVersion"`

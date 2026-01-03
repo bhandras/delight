@@ -75,12 +75,12 @@ func TestGolden_UpdateEnvelope_NonMessageTypes(t *testing.T) {
 		raw  []byte
 	}{
 		{
-			name: "update_machine_daemon_state",
-			raw:  readCaptured(t, "session_update_event_update_machine_daemon_state.json"),
+			name: "update_terminal_daemon_state",
+			raw:  readCaptured(t, "session_update_event_update_terminal_daemon_state.json"),
 		},
 		{
-			name: "update_machine_metadata",
-			raw:  readCaptured(t, "session_update_event_update_machine_metadata.json"),
+			name: "update_terminal_metadata",
+			raw:  readCaptured(t, "session_update_event_update_terminal_metadata.json"),
 		},
 	}
 

@@ -1,11 +1,11 @@
 {
   "body": {
-    "machineId": "\u003cid\u003e",
+    "terminalId": "\u003cid\u003e",
     "metadata": {
       "value": "cipher",
       "version": 2
     },
-    "t": "update-machine"
+    "t": "update-terminal"
   },
   "createdAt": 1767034856144,
   "id": "c1767034856144915000",

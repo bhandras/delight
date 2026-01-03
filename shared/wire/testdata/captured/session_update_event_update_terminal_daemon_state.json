@@ -4,8 +4,8 @@
       "value": "cipher",
       "version": 2
     },
-    "machineId": "\u003cid\u003e",
-    "t": "update-machine"
+    "terminalId": "\u003cid\u003e",
+    "t": "update-terminal"
   },
   "createdAt": 1767034856140,
   "id": "c1767034856140863000",

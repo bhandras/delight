@@ -16,14 +16,14 @@ type VersionedAny struct {
 	Version int64 `json:"version"`
 }
 
-// EphemeralMachineActivityPayload is a user-scoped "ephemeral" event payload
-// for machine activity.
-type EphemeralMachineActivityPayload struct {
-	// Type must be "machine-activity".
+// EphemeralTerminalActivityPayload is a user-scoped "ephemeral" event payload
+// for terminal activity.
+type EphemeralTerminalActivityPayload struct {
+	// Type must be "terminal-activity".
 	Type string `json:"type"`
-	// ID is the machine id.
+	// ID is the terminal id.
 	ID string `json:"id"`
-	// Active is true when the machine is active.
+	// Active is true when the terminal is active.
 	Active bool `json:"active"`
 	// ActiveAt is a wall-clock timestamp in milliseconds since epoch.
 	ActiveAt int64 `json:"activeAt"`
@@ -68,10 +68,10 @@ type UpdateBodyDeleteSession struct {
 	SID string `json:"sid"`
 }
 
-// UpdateBodyNewMachine is the body for `t == "new-machine"`.
-type UpdateBodyNewMachine struct {
+// UpdateBodyNewTerminal is the body for `t == "new-terminal"`.
+type UpdateBodyNewTerminal struct {
 	T                  string  `json:"t"`
-	MachineID          string  `json:"machineId"`
+	TerminalID         string  `json:"terminalId"`
 	Seq                int64   `json:"seq"`
 	Metadata           string  `json:"metadata"`
 	MetadataVersion    int64   `json:"metadataVersion"`
@@ -84,10 +84,10 @@ type UpdateBodyNewMachine struct {
 	UpdatedAt          int64   `json:"updatedAt"`
 }
 
-// UpdateBodyUpdateMachine is the body for `t == "update-machine"`.
-type UpdateBodyUpdateMachine struct {
+// UpdateBodyUpdateTerminal is the body for `t == "update-terminal"`.
+type UpdateBodyUpdateTerminal struct {
 	T           string           `json:"t"`
-	MachineID   string           `json:"machineId"`
+	TerminalID  string           `json:"terminalId"`
 	Metadata    *VersionedString `json:"metadata,omitempty"`
 	DaemonState *VersionedString `json:"daemonState,omitempty"`
 }
