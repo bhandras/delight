@@ -157,6 +157,8 @@ struct TerminalDetailView: View {
     @ObservedObject var model: HarnessViewModel
     let session: SessionSummary
     @State private var initialScrollDone: Bool = false
+    @State private var showTerminalPropertiesSheet: Bool = false
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         let currentSession = model.sessions.first(where: { $0.id == session.id }) ?? session
@@ -200,6 +202,12 @@ struct TerminalDetailView: View {
                     onConsumeScrollRequest: { model.scrollRequest = nil }
                 )
                 .contentShape(Rectangle())
+                .highPriorityGesture(
+                    TapGesture(count: 2).onEnded {
+                        model.fetchMessages()
+                        model.scrollRequest = ScrollRequest(target: .bottom)
+                    }
+                )
                 .onTapGesture {
                     model.scrollRequest = ScrollRequest(target: .bottom)
                 }
@@ -238,10 +246,17 @@ struct TerminalDetailView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    model.fetchMessages()
+                    showTerminalPropertiesSheet = true
                 } label: {
-                    Image(systemName: "arrow.clockwise")
+                    Image(systemName: "gearshape")
                 }
+                .accessibilityLabel("Terminal Details")
+            }
+        }
+        .sheet(isPresented: $showTerminalPropertiesSheet) {
+            TerminalPropertiesSheet(model: model, session: currentSession) {
+                showTerminalPropertiesSheet = false
+                dismiss()
             }
         }
         .onAppear {
@@ -280,7 +295,7 @@ private struct TerminalAgentConfigControls: View {
                         showModelSheet = true
                     }
                 } label: {
-                    Image(systemName: "gearshape")
+                    Image(systemName: "brain")
                         .font(.system(size: 15, weight: .semibold))
                 }
                 .disabled(!isEnabled || !isOnline || isFetchingSettings)
@@ -364,6 +379,162 @@ private struct TerminalAgentConfigControls: View {
         .onChange(of: showPermissionsSheet) { newValue in
             if !newValue {
                 pendingSheet = nil
+            }
+        }
+    }
+}
+
+private struct TerminalPropertiesSheet: View {
+    @ObservedObject var model: HarnessViewModel
+    let session: SessionSummary
+    let onDeletedTerminal: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var showDeleteConfirm: Bool = false
+
+    var body: some View {
+        let terminalID = session.terminalID ?? session.metadata?.terminalId ?? "unknown"
+        let terminal = model.terminals.first(where: { $0.id == terminalID })
+        let host = terminal?.metadata?.host
+            ?? session.metadata?.host
+            ?? terminalID
+        let flavor = session.metadata?.flavor
+            ?? terminal?.metadata?.platform
+            ?? "unknown"
+        let online: Bool = {
+            if let ui = session.uiState {
+                if ui.state == "offline" || ui.state == "disconnected" {
+                    return false
+                }
+                return ui.connected
+            }
+            return terminal?.active ?? session.active
+        }()
+        let daemonStatus: String = {
+            if !online {
+                return "offline"
+            }
+            let status = terminal?.daemonState?.status?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return status.isEmpty ? "likely alive" : status
+        }()
+        let daemonPid = terminal?.daemonState?.pid ?? session.metadata?.daemonPid
+        let daemonVersion: Int64? = {
+            if let terminal {
+                return terminal.daemonStateVersion
+            }
+            if let version = session.metadata?.daemonStateVersion {
+                return Int64(version)
+            }
+            return nil
+        }()
+
+        NavigationStack {
+            ZStack {
+                Theme.background.ignoresSafeArea()
+                List {
+                    Section("Daemon") {
+                        HStack {
+                            Text("Status")
+                            Spacer()
+                            Text(daemonStatus)
+                                .foregroundColor(online ? Theme.success : Theme.mutedText)
+                        }
+                        HStack {
+                            Text("Last Known PID")
+                            Spacer()
+                            Text(daemonPid.map { String($0) } ?? "—")
+                                .foregroundColor(Theme.mutedText)
+                        }
+                        HStack {
+                            Text("Daemon State Version")
+                            Spacer()
+                            Text(daemonVersion.map { String($0) } ?? "—")
+                                .foregroundColor(Theme.mutedText)
+                        }
+                    }
+
+                    Section("Terminal") {
+                        HStack {
+                            Text("Host")
+                            Spacer()
+                            Text(host)
+                                .foregroundColor(Theme.mutedText)
+                        }
+                        HStack {
+                            Text("Flavor")
+                            Spacer()
+                            Text(flavor)
+                                .foregroundColor(Theme.mutedText)
+                        }
+                        HStack {
+                            Text("Terminal ID")
+                            Spacer()
+                            Text(terminalID)
+                                .foregroundColor(Theme.mutedText)
+                                .textSelection(.enabled)
+                        }
+                    }
+
+                    if terminalID != "unknown" {
+                        Section {
+                            Button(role: .destructive) {
+                                showDeleteConfirm = true
+                            } label: {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(Theme.warning.opacity(0.16))
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .stroke(Theme.warning.opacity(0.5), lineWidth: 1)
+
+                                    if model.isDeletingTerminal {
+                                        ProgressView()
+                                            .tint(Theme.warning)
+                                    } else {
+                                        HStack(spacing: 10) {
+                                            Image(systemName: "trash")
+                                                .font(.system(size: 16, weight: .semibold))
+                                            Text("Delete Terminal")
+                                                .font(Theme.body)
+                                        }
+                                        .foregroundColor(Theme.warning)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                            }
+                            .buttonStyle(.plain)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                            .disabled(model.isDeletingTerminal)
+                        } footer: {
+                            Text("This deletes the terminal and all associated sessions from the server. If the terminal is still running, it may re-register.")
+                                .font(Theme.caption)
+                                .foregroundColor(Theme.mutedText)
+                        }
+                    }
+                }
+                .scrollContentBackground(.hidden)
+                .listStyle(.insetGrouped)
+            }
+            .navigationTitle("Terminal")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") { dismiss() }
+                }
+            }
+            .alert("Delete Terminal?", isPresented: $showDeleteConfirm) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete", role: .destructive) {
+                    model.deleteTerminal(terminalID) {
+                        dismiss()
+                        DispatchQueue.main.async {
+                            onDeletedTerminal()
+                        }
+                    }
+                }
+            } message: {
+                Text("This will remove the terminal and its sessions from the server.")
             }
         }
     }
