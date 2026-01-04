@@ -590,6 +590,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         isCreatingAccount = true
         sdkCallAsync {
             do {
+                // Ensure the Go SDK uses the latest server URL. The SDK client is
+                // created once at startup, so without calling setServerURL here we
+                // could accidentally authenticate against a stale/default URL.
+                _ = try self.sdkCallSync {
+                    self.client.setServerURL(self.serverURL)
+                }
                 let tokenBuf = try self.sdkCallSync {
                     try self.client.auth(withKeyPairBuffer: self.publicKey, privateKeyB64: self.privateKey)
                 }
@@ -971,6 +977,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 log("Connect error: master key is empty")
                 return
             }
+            // Ensure auth uses the server URL currently shown in the UI.
+            sdkCallSync {
+                client.setServerURL(serverURL)
+            }
             if token.isEmpty {
                 if publicKey.isEmpty || privateKey.isEmpty {
                     log("Connect error: token missing and keypair not generated")
@@ -993,7 +1003,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 log("Auth ok")
             }
             try sdkCallSync {
-                client.setServerURL(serverURL)
                 client.setToken(token)
                 try client.setMasterKeyBase64(masterKey)
                 client.setListener(self)
