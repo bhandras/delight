@@ -136,28 +136,16 @@ private struct SettingsView: View {
                                 }
                                 Divider()
                                 NavigationLink {
-                                    ConnectionDetailView(model: model)
+                                    AccountDetailView(model: model)
                                 } label: {
                                     SettingMenuRow(
-                                        title: "Connection",
-                                        subtitle: "Configure server and status",
-                                        systemImage: "network",
-                                        tint: Color(red: 0.12, green: 0.6, blue: 0.55)
+                                        title: "Account",
+                                        subtitle: "Server URL and login",
+                                        systemImage: "person.circle",
+                                        tint: Color(red: 0.18, green: 0.52, blue: 0.96)
                                     )
                                 }
-
                                 if isLoggedIn {
-                                    Divider()
-                                    NavigationLink {
-                                        AccountDetailView(model: model)
-                                    } label: {
-                                        SettingMenuRow(
-                                            title: "Account",
-                                            subtitle: "Manage your account details",
-                                            systemImage: "person.circle",
-                                            tint: Color(red: 0.18, green: 0.52, blue: 0.96)
-                                        )
-                                    }
                                     Divider()
                                     NavigationLink {
                                         ResetKeysView(model: model)
@@ -170,16 +158,6 @@ private struct SettingsView: View {
                                         )
                                     }
                                 }
-                            }
-
-                            if !isLoggedIn {
-                                ActionButton(
-                                    title: model.isCreatingAccount ? "Creating…" : "Create Account",
-                                    systemImage: model.isCreatingAccount ? "hourglass" : "person.crop.circle.badge.plus"
-                                ) {
-                                    model.createAccount()
-                                }
-                                .disabled(model.isCreatingAccount)
                             }
                         }
 
@@ -210,42 +188,47 @@ private struct SettingsView: View {
     }
 }
 
-private struct ConnectionDetailView: View {
-    @ObservedObject var model: HarnessViewModel
+private struct ParsedConnectionStatus: Equatable {
+    let isConnected: Bool
+    let headline: String
+    let detail: String?
+    let tint: Color
+}
 
-    var body: some View {
-        ZStack {
-            Theme.background.ignoresSafeArea()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    FeatureListCard {
-                        VStack(alignment: .leading, spacing: 14) {
-                            TextField("Server URL", text: $model.serverURL)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled(true)
-                                .textFieldStyle(.roundedBorder)
-
-                            HStack(spacing: 12) {
-                                ActionButton(title: "Connect", systemImage: "bolt.horizontal.circle") {
-                                    model.connect()
-                                }
-                                ActionButton(title: "Disconnect", systemImage: "pause.circle") {
-                                    model.disconnect()
-                                }
-                                .tint(Theme.muted)
-                            }
-
-                            Text("Status: \(model.status)")
-                                .font(Theme.caption)
-                                .foregroundColor(Theme.mutedText)
-                        }
-                    }
-                }
-                .padding()
-            }
-        }
-        .navigationTitle("Connection")
+/// parseConnectionStatus normalizes the SDK status string into something we can
+/// render consistently.
+private func parseConnectionStatus(_ value: String) -> ParsedConnectionStatus {
+    let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    if normalized.lowercased() == "connected" {
+        return ParsedConnectionStatus(
+            isConnected: true,
+            headline: "Connected",
+            detail: nil,
+            tint: Theme.success
+        )
     }
+    if normalized.lowercased().hasPrefix("disconnected") {
+        return ParsedConnectionStatus(
+            isConnected: false,
+            headline: "Disconnected",
+            detail: nil,
+            tint: Theme.danger
+        )
+    }
+    if normalized.isEmpty {
+        return ParsedConnectionStatus(
+            isConnected: false,
+            headline: "Unknown",
+            detail: nil,
+            tint: Theme.mutedText
+        )
+    }
+    return ParsedConnectionStatus(
+        isConnected: false,
+        headline: "Unknown",
+        detail: normalized,
+        tint: Theme.mutedText
+    )
 }
 
 struct LoggedOutTerminalEmptyState: View {
@@ -443,31 +426,39 @@ private struct ResetKeysView: View {
     var body: some View {
         ZStack {
             Theme.background.ignoresSafeArea()
-            List {
-                Section("Reset Encryption Keys") {
-                    Text("This will remove your current keys, disconnect the app, and require re-approving terminals.")
-                        .font(Theme.caption)
-                        .foregroundColor(Theme.mutedText)
-                }
-                Section {
-                    Button {
-                        model.resetKeys()
-                        statusText = "Keys reset. Re-approve your terminal."
-                    } label: {
-                        Text("Reset Keys")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    FeatureListCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("Reset Encryption Keys")
+                                .font(Theme.sectionTitle)
+                                .foregroundColor(Theme.messageText)
+                                .padding(.vertical, 6)
+
+                            Text("This will remove your current keys, disconnect the app, and require re-approving terminals.")
+                                .font(Theme.body)
+                                .foregroundColor(Theme.mutedText)
+
+                            Divider()
+
+                            ActionButton(title: "Reset Keys", systemImage: "key.fill") {
+                                model.resetKeys()
+                                statusText = "Keys reset. Re-approve your terminal."
+                            }
                             .foregroundColor(Theme.warning)
+
+                            if !statusText.isEmpty {
+                                Divider()
+                                Text(statusText)
+                                    .font(Theme.caption)
+                                    .foregroundColor(Theme.success)
+                            }
+                        }
+                        .padding(.vertical, 8)
                     }
                 }
-                if !statusText.isEmpty {
-                    Section {
-                        Text(statusText)
-                            .font(Theme.caption)
-                            .foregroundColor(Theme.success)
-                    }
-                }
+                .padding()
             }
-            .scrollContentBackground(.hidden)
-            .listStyle(.insetGrouped)
         }
         .navigationTitle("Reset Keys")
     }
@@ -577,28 +568,115 @@ private struct DebugActionRow: View {
 private struct AccountDetailView: View {
     @ObservedObject var model: HarnessViewModel
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var isServerFieldFocused: Bool
 
     var body: some View {
+        let isLoggedIn = !model.token.isEmpty
+        let parsedStatus = parseConnectionStatus(model.status)
+        let trimmedURL = model.serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let canConnect = !trimmedURL.isEmpty && !parsedStatus.isConnected
+
         ZStack {
             Theme.background.ignoresSafeArea()
-            List {
-                Section("Account Details") {
-                    AccountDetailRow(title: "Public Key", value: model.publicKey)
-                    AccountDetailRow(title: "Token", value: model.token)
-                }
-                Section {
-                    Button {
-                        model.showLogoutConfirm = true
-                    } label: {
-                        Text("Log Out")
-                            .foregroundColor(Theme.warning)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    FeatureListCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Server URL")
+                                    .font(Theme.caption)
+                                    .foregroundColor(Theme.mutedText)
+                                TextField("http://localhost:3005", text: $model.serverURL)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled(true)
+                                    .textContentType(.URL)
+                                    .keyboardType(.URL)
+                                    .submitLabel(.done)
+                                    .focused($isServerFieldFocused)
+                                    .onSubmit {
+                                        isServerFieldFocused = false
+                                    }
+                                    .textFieldStyle(.roundedBorder)
+                            }
+
+                            if parsedStatus.isConnected {
+                                ActionButton(title: "Disconnect", systemImage: "pause.circle.fill") {
+                                    model.disconnect()
+                                }
+                                .tint(Theme.muted)
+                            } else {
+                                ActionButton(title: "Connect", systemImage: "bolt.horizontal.circle.fill") {
+                                    model.connect()
+                                }
+                                .disabled(!canConnect)
+                            }
+
+                            HStack(spacing: 10) {
+                                Circle()
+                                    .fill(parsedStatus.tint)
+                                    .frame(width: 10, height: 10)
+                                Text(parsedStatus.headline)
+                                    .font(Theme.caption)
+                                    .foregroundColor(Theme.mutedText)
+                                Spacer()
+                            }
+                        }
+                        .padding(.vertical, 8)
+                    }
+
+                    if isLoggedIn {
+                        FeatureListCard {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Text("Account Details")
+                                    .font(Theme.sectionTitle)
+                                    .foregroundColor(Theme.messageText)
+                                    .padding(.vertical, 6)
+                                Divider()
+                                AccountDetailRow(title: "Public Key", value: model.publicKey)
+                                Divider()
+                                AccountDetailRow(title: "Token", value: model.token)
+                                Divider()
+                                ActionButton(
+                                    title: "Log Out",
+                                    systemImage: "rectangle.portrait.and.arrow.right"
+                                ) {
+                                    model.showLogoutConfirm = true
+                                }
+                                .padding(.bottom, 8)
+                            }
+                        }
+                    } else {
+                        FeatureListCard {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Text("Account Details")
+                                    .font(Theme.sectionTitle)
+                                    .foregroundColor(Theme.messageText)
+                                    .padding(.vertical, 6)
+                                Divider()
+                                AccountDetailRow(title: "Public Key", value: "")
+                                Divider()
+                                AccountDetailRow(title: "Token", value: "")
+                                Divider()
+                                Text("Not logged in. Set your server URL and connect to create an account.")
+                                    .font(Theme.body)
+                                    .foregroundColor(Theme.mutedText)
+                                    .padding(.vertical, 6)
+                            }
+                        }
                     }
                 }
+                .padding()
             }
-            .scrollContentBackground(.hidden)
-            .listStyle(.insetGrouped)
         }
         .navigationTitle("Account")
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    isServerFieldFocused = false
+                }
+            }
+        }
         .onChange(of: model.token) { newValue in
             if newValue.isEmpty {
                 dismiss()
@@ -877,6 +955,7 @@ private struct AccountDetailRow: View {
 enum Theme {
     static let accent = Color(red: 0.1, green: 0.45, blue: 0.6)
     static let success = Color(red: 0.16, green: 0.65, blue: 0.45)
+    static let danger = Color(red: 0.9, green: 0.25, blue: 0.25)
     static let warning = Color(red: 0.9, green: 0.35, blue: 0.25)
     static let muted = Color.secondary.opacity(0.8)
     static let mutedText = Color.secondary
