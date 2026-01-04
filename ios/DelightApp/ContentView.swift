@@ -125,17 +125,6 @@ private struct SettingsView: View {
                                 .padding(.horizontal, 4)
                             FeatureListCard {
                                 NavigationLink {
-                                    ConnectionDetailView(model: model)
-                                } label: {
-                                    SettingMenuRow(
-                                        title: "Connection",
-                                        subtitle: "Configure server and status",
-                                        systemImage: "network",
-                                        tint: Color(red: 0.12, green: 0.6, blue: 0.55)
-                                    )
-                                }
-                                Divider()
-                                NavigationLink {
                                     AppearanceDetailView(model: model)
                                 } label: {
                                     SettingMenuRow(
@@ -143,6 +132,17 @@ private struct SettingsView: View {
                                         subtitle: "Customize how the app looks",
                                         systemImage: "paintpalette",
                                         tint: Color(red: 0.4, green: 0.36, blue: 0.9)
+                                    )
+                                }
+                                Divider()
+                                NavigationLink {
+                                    ConnectionDetailView(model: model)
+                                } label: {
+                                    SettingMenuRow(
+                                        title: "Connection",
+                                        subtitle: "Configure server and status",
+                                        systemImage: "network",
+                                        tint: Color(red: 0.12, green: 0.6, blue: 0.55)
                                     )
                                 }
 
@@ -218,26 +218,26 @@ private struct ConnectionDetailView: View {
             Theme.background.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    SettingSection(title: "Server") {
-                        TextField("Server URL", text: $model.serverURL)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled(true)
-                            .textFieldStyle(.roundedBorder)
-                    }
+                    FeatureListCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            TextField("Server URL", text: $model.serverURL)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled(true)
+                                .textFieldStyle(.roundedBorder)
 
-                    SettingSection(title: "Status") {
-                        Text("Status: \(model.status)")
-                            .font(Theme.caption)
-                            .foregroundColor(Theme.mutedText)
+                            HStack(spacing: 12) {
+                                ActionButton(title: "Connect", systemImage: "bolt.horizontal.circle") {
+                                    model.connect()
+                                }
+                                ActionButton(title: "Disconnect", systemImage: "pause.circle") {
+                                    model.disconnect()
+                                }
+                                .tint(Theme.muted)
+                            }
 
-                        HStack(spacing: 12) {
-                            ActionButton(title: "Connect", systemImage: "bolt.horizontal.circle") {
-                                model.connect()
-                            }
-                            ActionButton(title: "Disconnect", systemImage: "pause.circle") {
-                                model.disconnect()
-                            }
-                            .tint(Theme.muted)
+                            Text("Status: \(model.status)")
+                                .font(Theme.caption)
+                                .foregroundColor(Theme.mutedText)
                         }
                     }
                 }
