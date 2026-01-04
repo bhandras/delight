@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct DelightHarnessApp: App {
+struct DelightApp: App {
     init() {
         CrashLogger.setup()
     }

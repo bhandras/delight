@@ -1,5 +1,5 @@
 import XCTest
-@testable import DelightHarness
+@testable import DelightApp
 
 final class SDKBridgeTests: XCTestCase {
     func testParseMessagesContentStringFallback() {

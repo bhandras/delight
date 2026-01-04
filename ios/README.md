@@ -15,7 +15,7 @@ This produces `delight/cli/build/DelightSDK.xcframework`, which the Xcode projec
 ## Open in Xcode
 
 ```bash
-open delight/ios/DelightHarness.xcodeproj
+open delight/ios/DelightApp.xcodeproj
 ```
 
 Select a simulator or device, then Run.

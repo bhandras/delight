@@ -4,7 +4,7 @@ SIMULATOR_DEVICE ?= iPhone 16
 CONFIGURATION ?= Debug
 DERIVED_DATA ?= /tmp/delight-ios
 BUNDLE_ID ?= com.bhandras.delight.harness
-APP_PATH := $(DERIVED_DATA)/Build/Products/$(CONFIGURATION)-iphonesimulator/DelightHarness.app
+APP_PATH := $(DERIVED_DATA)/Build/Products/$(CONFIGURATION)-iphonesimulator/Delight.app
 SIMULATOR_UDID_FILE := $(DERIVED_DATA)/booted_simulator_udid
 
 .PHONY: ios-sdk ios-build ios-sim-boot ios-install ios-run
@@ -18,8 +18,8 @@ ios-sdk:
 
 ios-build: ios-sdk
 	xcodebuild \
-		-project ios/DelightHarness.xcodeproj \
-		-scheme DelightHarness \
+		-project ios/DelightApp.xcodeproj \
+		-scheme DelightApp \
 		-configuration $(CONFIGURATION) \
 		-sdk iphonesimulator \
 		-destination "platform=iOS Simulator,name=$(SIMULATOR_DEVICE)" \
@@ -47,8 +47,8 @@ ios-test: ios-sdk ios-sim-boot
 	rm -rf "$(IOS_TEST_RESULT)"
 	rm -rf "$(IOS_TEST_RESULT).xcresult"
 	xcodebuild \
-		-project ios/DelightHarness.xcodeproj \
-		-scheme DelightHarness \
+		-project ios/DelightApp.xcodeproj \
+		-scheme DelightApp \
 		-configuration $(CONFIGURATION) \
 		-sdk iphonesimulator \
 		-destination "platform=iOS Simulator,name=$(SIMULATOR_DEVICE)" \

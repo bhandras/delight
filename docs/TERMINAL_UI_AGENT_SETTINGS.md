@@ -32,7 +32,7 @@ agent engine).
 
 ### Terminal detail layout
 
-- Terminal detail is `TerminalDetailView` in `ios/DelightHarness/TerminalUI.swift`.
+- Terminal detail is `TerminalDetailView` in `ios/DelightApp/TerminalUI.swift`.
 - When showing `TerminalDetailView`, hide the bottom tab bar so the transcript
   occupies more height:
   - iOS 16+: `toolbar(.hidden, for: .tabBar)`
@@ -150,6 +150,6 @@ This is enforced both in the iOS UI (disabled buttons) and in the CLI handler.
 
 ## Validation
 
-- iOS builds: `xcodebuild -project ios/DelightHarness.xcodeproj -scheme DelightHarness ... build`
+- iOS builds: `xcodebuild -project ios/DelightApp.xcodeproj -scheme DelightApp ... build`
 - CLI builds/tests: run the package-level unit tests affected by new RPC and
   agent state persistence logic.

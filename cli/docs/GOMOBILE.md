@@ -38,7 +38,7 @@ See:
 
 - `cli/sdk/mobile_buffer.go`
 - `cli/sdk/mobile_keypair_buffers.go`
-- `ios/DelightHarness/SDKBridge.swift` (`stringFromBuffer(_:)`)
+- `ios/DelightApp/SDKBridge.swift` (`stringFromBuffer(_:)`)
 
 ## We also avoid exporting string-returning APIs on iOS/Android
 
@@ -77,4 +77,3 @@ When adding a new SDK function/method that needs to be called from iOS:
 2. Prefer `(...)(*Buffer, error)` and return `newBufferFromString(...)`.
 3. If you need binary data, return it as `*Buffer` as well.
 4. Keep the “desktop string API” (if you still want it) in a `//go:build !ios && !android` file.
-
