@@ -65,7 +65,8 @@ Caddy automatically provisions and renews Let's Encrypt certificates.
 Prereqs:
 
 - A DNS hostname pointing to your server (e.g. `api.example.com`)
-- TCP ports `80` and `443` reachable from the public internet
+- TCP port `443` reachable from the public internet
+  - Note: this deployment is HTTPS-only and does not bind host port `80`.
 
 Start:
 

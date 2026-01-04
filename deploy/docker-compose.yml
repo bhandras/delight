@@ -24,7 +24,6 @@ services:
       - DELIGHT_HOSTNAME=${DELIGHT_HOSTNAME}
       - DELIGHT_EMAIL=${DELIGHT_EMAIL:-}
     ports:
-      - "80:80"
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
