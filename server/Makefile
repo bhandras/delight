@@ -6,7 +6,7 @@ build:
 
 # Run the server
 run: build
-	( set -a; [ -f .env ] && . .env; set +a; ./server )
+	( set -a; [ -f .env ] && . ./.env; set +a; ./server )
 
 # Development mode with hot reload (requires air: go install github.com/cosmtrek/air@latest)
 dev:
