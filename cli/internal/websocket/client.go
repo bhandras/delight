@@ -202,9 +202,12 @@ func (c *Client) Connect() error {
 	switch transport {
 	case TransportWebSocket:
 		if debug {
-			logger.Debugf("Socket.IO transports: websocket only")
+			logger.Debugf("Socket.IO transports: polling + websocket")
 		}
-		opts.SetTransports(types.NewSet(socket.WebSocket))
+		// Prefer the standard Engine.IO flow: start with polling, then upgrade
+		// to websocket when possible. Some server/client implementations do not
+		// support websocket-only handshakes reliably.
+		opts.SetTransports(types.NewSet(socket.Polling, socket.WebSocket))
 	case TransportPolling:
 		if debug {
 			logger.Debugf("Socket.IO transports: polling only")
