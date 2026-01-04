@@ -123,8 +123,31 @@ private struct SettingsView: View {
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundColor(Theme.mutedText)
                                 .padding(.horizontal, 4)
-                            if isLoggedIn {
-                                FeatureListCard {
+                            FeatureListCard {
+                                NavigationLink {
+                                    ConnectionDetailView(model: model)
+                                } label: {
+                                    SettingMenuRow(
+                                        title: "Connection",
+                                        subtitle: "Configure server and status",
+                                        systemImage: "network",
+                                        tint: Color(red: 0.12, green: 0.6, blue: 0.55)
+                                    )
+                                }
+                                Divider()
+                                NavigationLink {
+                                    AppearanceDetailView(model: model)
+                                } label: {
+                                    SettingMenuRow(
+                                        title: "Appearance",
+                                        subtitle: "Customize how the app looks",
+                                        systemImage: "paintpalette",
+                                        tint: Color(red: 0.4, green: 0.36, blue: 0.9)
+                                    )
+                                }
+
+                                if isLoggedIn {
+                                    Divider()
                                     NavigationLink {
                                         AccountDetailView(model: model)
                                     } label: {
@@ -133,17 +156,6 @@ private struct SettingsView: View {
                                             subtitle: "Manage your account details",
                                             systemImage: "person.circle",
                                             tint: Color(red: 0.18, green: 0.52, blue: 0.96)
-                                        )
-                                    }
-                                    Divider()
-                                    NavigationLink {
-                                        AppearanceDetailView(model: model)
-                                    } label: {
-                                        SettingMenuRow(
-                                            title: "Appearance",
-                                            subtitle: "Customize how the app looks",
-                                            systemImage: "paintpalette",
-                                            tint: Color(red: 0.4, green: 0.36, blue: 0.9)
                                         )
                                     }
                                     Divider()
@@ -158,7 +170,9 @@ private struct SettingsView: View {
                                         )
                                     }
                                 }
-                            } else {
+                            }
+
+                            if !isLoggedIn {
                                 ActionButton(
                                     title: model.isCreatingAccount ? "Creating…" : "Create Account",
                                     systemImage: model.isCreatingAccount ? "hourglass" : "person.crop.circle.badge.plus"
@@ -167,25 +181,6 @@ private struct SettingsView: View {
                                 }
                                 .disabled(model.isCreatingAccount)
                             }
-                        }
-
-                        SettingSection(title: "Connection") {
-                            TextField("Server URL", text: $model.serverURL)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled(true)
-                                .textFieldStyle(.roundedBorder)
-                            HStack(spacing: 12) {
-                                ActionButton(title: "Connect", systemImage: "bolt.horizontal.circle") {
-                                    model.connect()
-                                }
-                                ActionButton(title: "Disconnect", systemImage: "pause.circle") {
-                                    model.disconnect()
-                                }
-                                .tint(Theme.muted)
-                            }
-                            Text("Status: \(model.status)")
-                                .font(Theme.caption)
-                                .foregroundColor(Theme.mutedText)
                         }
 
                         VStack(alignment: .leading, spacing: 8) {
@@ -212,6 +207,44 @@ private struct SettingsView: View {
             }
             .navigationTitle("Settings")
         }
+    }
+}
+
+private struct ConnectionDetailView: View {
+    @ObservedObject var model: HarnessViewModel
+
+    var body: some View {
+        ZStack {
+            Theme.background.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    SettingSection(title: "Server") {
+                        TextField("Server URL", text: $model.serverURL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled(true)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    SettingSection(title: "Status") {
+                        Text("Status: \(model.status)")
+                            .font(Theme.caption)
+                            .foregroundColor(Theme.mutedText)
+
+                        HStack(spacing: 12) {
+                            ActionButton(title: "Connect", systemImage: "bolt.horizontal.circle") {
+                                model.connect()
+                            }
+                            ActionButton(title: "Disconnect", systemImage: "pause.circle") {
+                                model.disconnect()
+                            }
+                            .tint(Theme.muted)
+                        }
+                    }
+                }
+                .padding()
+            }
+        }
+        .navigationTitle("Connection")
     }
 }
 
