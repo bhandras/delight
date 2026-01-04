@@ -1354,8 +1354,16 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             }
         }
 
-        // If we rendered a real message, ensure we clear thinking for this session.
-        updateSessionThinking(false, sessionID: sessionID)
+        // For Codex, "reasoning" records are rendered as transcript entries but
+        // they still represent in-flight work. Keep thinking enabled until we
+        // receive a non-reasoning record.
+        let codexType = extractCodexRecordType(from: content)
+        if codexType == "reasoning" || codexType == "tool-call" {
+            updateSessionThinking(true, sessionID: sessionID)
+        } else {
+            // If we rendered a real message, ensure we clear thinking for this session.
+            updateSessionThinking(false, sessionID: sessionID)
+        }
         return true
     }
 
@@ -2211,6 +2219,16 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             return
         }
         let content = normalizeContent(firstNonNull(message[UpdateFields.content], message[UpdateFields.data]))
+        if let codexType = extractCodexRecordType(from: content) {
+            if codexType == "reasoning" || codexType == "tool-call" {
+                updateSessionThinking(true, sessionID: targetSessionID)
+                return
+            }
+            if codexType == "message" || codexType == "tool-call-result" {
+                updateSessionThinking(false, sessionID: targetSessionID)
+                return
+            }
+        }
         let hasThinking = containsThinkingBlock(content)
         let blocks = extractBlocks(from: content, sessionID: targetSessionID)
         if hasThinking && blocks.isEmpty {
@@ -2438,6 +2456,38 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             }
         }
         return false
+    }
+
+    private func extractCodexRecordType(from content: JSONValue?) -> String? {
+        guard let content else { return nil }
+        if let dict = content.object {
+            if let type = dict[UpdateFields.type]?.string, type == "codex" {
+                return dict[UpdateFields.data]?.object?["type"]?.string
+            }
+            if let contentValue = dict[UpdateFields.content] {
+                if let nested = extractCodexRecordType(from: contentValue) {
+                    return nested
+                }
+            }
+            if let messageValue = dict[UpdateFields.message] {
+                if let nested = extractCodexRecordType(from: messageValue) {
+                    return nested
+                }
+            }
+            if let dataValue = dict[UpdateFields.data] {
+                if let nested = extractCodexRecordType(from: dataValue) {
+                    return nested
+                }
+            }
+        }
+        if let array = content.array {
+            for part in array {
+                if let nested = extractCodexRecordType(from: part) {
+                    return nested
+                }
+            }
+        }
+        return nil
     }
 
     private func updateSessionThinking(_ thinking: Bool) {

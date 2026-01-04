@@ -206,7 +206,7 @@ struct TerminalDetailView: View {
 
                 ConnectionStatusRow(
                     status: statusInfo(for: currentSession),
-                    activityText: currentSession.thinking ? vibingMessage(for: currentSession.id) : nil
+                    activityText: currentSession.thinking ? "thinking" : nil
                 )
                 .background(Theme.cardBackground)
                 TerminalAgentConfigControls(model: model, session: currentSession, isEnabled: isPhoneControlled)
@@ -697,7 +697,7 @@ private func statusInfo(for session: SessionSummary) -> SessionStatusInfo {
     }
     if session.thinking {
         return SessionStatusInfo(
-            text: "online",
+            text: "thinking",
             dotColor: Theme.accent,
             textColor: Theme.success,
             isPulsing: true

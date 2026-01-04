@@ -47,6 +47,7 @@ final class SDKBridgeTests: XCTestCase {
         model.sessions = [
             SessionSummary(
                 id: "s1",
+                terminalID: "t1",
                 updatedAt: 1,
                 active: true,
                 activeAt: nil,
@@ -128,13 +129,21 @@ final class SDKBridgeTests: XCTestCase {
         model.sessions = [
             SessionSummary(
                 id: "s1",
+                terminalID: "t1",
                 updatedAt: 0,
                 active: true,
                 activeAt: nil,
                 title: nil,
                 subtitle: nil,
                 metadata: nil,
-                agentState: SessionAgentState(controlledByUser: true, requests: [:]),
+                agentState: SessionAgentState(
+                    agentType: nil,
+                    controlledByUser: true,
+                    model: nil,
+                    reasoningEffort: nil,
+                    permissionMode: nil,
+                    requests: [:]
+                ),
                 uiState: nil,
                 thinking: false
             )
@@ -159,13 +168,21 @@ final class SDKBridgeTests: XCTestCase {
         model.sessions = [
             SessionSummary(
                 id: "s1",
+                terminalID: "t1",
                 updatedAt: 0,
                 active: true,
                 activeAt: nil,
                 title: nil,
                 subtitle: nil,
                 metadata: nil,
-                agentState: SessionAgentState(controlledByUser: true, requests: [:]),
+                agentState: SessionAgentState(
+                    agentType: nil,
+                    controlledByUser: true,
+                    model: nil,
+                    reasoningEffort: nil,
+                    permissionMode: nil,
+                    requests: [:]
+                ),
                 uiState: SessionUIState(
                     state: "remote",
                     connected: true,
@@ -189,6 +206,70 @@ final class SDKBridgeTests: XCTestCase {
             XCTAssertEqual(model.permissionQueue.count, 1)
             XCTAssertEqual(model.activePermissionRequest?.requestID, "r1")
             XCTAssertTrue(model.showPermissionPrompt)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
+
+    func testCodexReasoningUpdateSetsThinkingTrue() {
+        let model = HarnessViewModel()
+        model.sessionID = "s1"
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 0,
+                active: true,
+                activeAt: nil,
+                title: "codex",
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: nil,
+                thinking: false
+            )
+        ]
+
+        let json = """
+        {"body":{"t":"new-message","sid":"s1","message":{"id":"m1","content":{"role":"agent","content":{"type":"codex","data":{"type":"reasoning","message":"Evaluating minimal response"}}}}}}
+        """
+
+        let expectation = expectation(description: "thinking becomes true")
+        model.onUpdate(nil, updateJSON: json)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(model.sessions.first?.thinking, true)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
+
+    func testCodexMessageUpdateClearsThinking() {
+        let model = HarnessViewModel()
+        model.sessionID = "s1"
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 0,
+                active: true,
+                activeAt: nil,
+                title: "codex",
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: nil,
+                thinking: true
+            )
+        ]
+
+        let json = """
+        {"body":{"t":"new-message","sid":"s1","message":{"id":"m2","content":{"role":"agent","content":{"type":"codex","data":{"type":"message","message":"Done"}}}}}}
+        """
+
+        let expectation = expectation(description: "thinking becomes false")
+        model.onUpdate(nil, updateJSON: json)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(model.sessions.first?.thinking, false)
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1.0)
