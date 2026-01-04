@@ -167,43 +167,6 @@ type AgentOutputRecord struct {
 	Content AgentOutputContent `json:"content"`
 }
 
-// AgentCodexContent is a raw record content object of type "codex".
-type AgentCodexContent struct {
-	// Type must be "codex".
-	Type string `json:"type"`
-	// Data is the Codex event payload.
-	Data any `json:"data"`
-}
-
-// AgentCodexRecord is the plaintext raw record emitted for Codex events.
-type AgentCodexRecord struct {
-	// Role must be "agent".
-	Role string `json:"role"`
-	// Content is the Codex record content object.
-	Content AgentCodexContent `json:"content"`
-}
-
-// CodexRecord is the structured payload embedded inside an AgentCodexRecord.
-//
-// Fields like Input/Output may contain arbitrary JSON objects depending on the
-// Codex tool being invoked.
-type CodexRecord struct {
-	// Type identifies the Codex record kind.
-	Type string `json:"type"`
-	// Message contains user-visible text for message/reasoning records.
-	Message string `json:"message,omitempty"`
-	// CallID identifies a tool call for tool-call records.
-	CallID string `json:"callId,omitempty"`
-	// Name is the tool name for tool-call records.
-	Name string `json:"name,omitempty"`
-	// Input is the tool input object for tool-call records.
-	Input any `json:"input,omitempty"`
-	// Output is the tool output object for tool-call-result records.
-	Output any `json:"output,omitempty"`
-	// ID is a unique identifier for record correlation.
-	ID string `json:"id,omitempty"`
-}
-
 func validateContentBlocks(blocks []ContentBlock) error {
 	if len(blocks) == 0 {
 		return fmt.Errorf("content blocks required")

@@ -97,6 +97,8 @@ private struct UpdateEnvelope: Decodable {
     // Some sources include these at the root level.
     let sid: String?
     let id: String?
+    let sessionId: String?
+    let eventId: String?
     let t: String?
     let type: String?
     let message: JSONValue?
@@ -106,6 +108,14 @@ private struct UpdateEnvelope: Decodable {
     let activeAt: Int64?
     let thinking: Bool?
     let time: Int64?
+
+    // Root-level UI event payload (best-effort).
+    let kind: String?
+    let phase: String?
+    let status: String?
+    let briefMarkdown: String?
+    let fullMarkdown: String?
+    let atMs: Int64?
 
     // Root-level permission request payload (best-effort).
     let requestId: String?
@@ -122,6 +132,8 @@ private struct UpdateBody: Decodable {
     // Session identifiers appear as either `sid` or `id`.
     let sid: String?
     let id: String?
+    let sessionId: String?
+    let eventId: String?
 
     // Common payload fields (present depending on `t`/`type`).
     let ui: SessionUIState?
@@ -137,11 +149,20 @@ private struct UpdateBody: Decodable {
     let activeAt: Int64?
     let thinking: Bool?
     let time: Int64?
+
+    // UI event payload.
+    let kind: String?
+    let phase: String?
+    let status: String?
+    let briefMarkdown: String?
+    let fullMarkdown: String?
+    let atMs: Int64?
 }
 
 /// UpdateKind enumerates the update event discriminants sent by the server/SDK.
 private enum UpdateKind: String {
     case activity = "activity"
+    case uiEvent = "ui.event"
     case newMessage = "new-message"
     case permissionRequest = "permission-request"
     case sessionAlive = "session-alive"
@@ -174,6 +195,7 @@ private enum MessageValue {
         static let ciphertext = "ciphertext"
         static let encrypted = "encrypted"
         static let fileHistorySnapshot = "file-history-snapshot"
+        static let reasoning = "reasoning"
         static let thinking = "thinking"
         static let text = "text"
         static let toolCallDash = "tool-call"
@@ -181,12 +203,6 @@ private enum MessageValue {
         static let toolResultSnake = "tool_result"
         static let toolUseDash = "tool-use"
         static let toolUseSnake = "tool_use"
-
-        static let toolCallTypes: Set<String> = [
-            toolCallDash,
-            toolUseDash,
-            toolUseSnake,
-        ]
 
         static let toolResultTypes: Set<String> = [
             toolResultDash,
@@ -278,6 +294,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var appearanceMode: AppearanceMode = .system {
         didSet { persistSettings() }
     }
+    @Published var transcriptDetailLevel: TranscriptDetailLevel = .brief {
+        didSet {
+            persistSettings()
+            refreshUIEventMessages()
+        }
+    }
     @Published var permissionQueue: [PendingPermissionRequest] = []
     @Published var activePermissionRequest: PendingPermissionRequest?
     @Published var showPermissionPrompt: Bool = false
@@ -302,6 +324,17 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private let client: SdkClient
     private static let settingsKeyPrefix = "delight.harness."
     private var selectedMetadata: SessionMetadata?
+    /// thinkingOverrides stores the most recent thinking signal per session.
+    ///
+    /// Rationale:
+    /// - The active session view can remain onscreen even while the sessions list
+    ///   is refreshing, so updating only the `SessionSummary` value can drop UI
+    ///   updates.
+    /// - Thinking updates can arrive via multiple paths (activity ephemerals,
+    ///   Codex heuristics, optimistic send flow). This map keeps a stable
+    ///   best-effort value independent of session list refreshes.
+    private var thinkingOverrides: [String: Bool] = [:]
+    private var uiEventsByKey: [String: UIEventPayload] = [:]
     private var logLines: [String] = []
     private var needsSessionRefresh: Bool = false
     private var oldestLoadedSeq: Int64?
@@ -323,6 +356,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let loadedAppearanceMode =
             AppearanceMode(rawValue: defaults.string(forKey: Self.settingsKeyPrefix + "appearanceMode") ?? "")
             ?? .system
+        let loadedTranscriptDetailLevel =
+            TranscriptDetailLevel(rawValue: defaults.string(forKey: Self.settingsKeyPrefix + "transcriptDetailLevel") ?? "")
+            ?? .brief
         let loadedMasterKey = KeychainStore.string(for: "masterKey") ?? ""
         let loadedPublicKey = KeychainStore.string(for: "publicKey") ?? ""
         let loadedPrivateKey = KeychainStore.string(for: "privateKey") ?? ""
@@ -335,6 +371,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         serverURL = loadedServerURL
         token = loadedToken
         appearanceMode = loadedAppearanceMode
+        transcriptDetailLevel = loadedTranscriptDetailLevel
         masterKey = loadedMasterKey
         publicKey = loadedPublicKey
         privateKey = loadedPrivateKey
@@ -1203,6 +1240,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if handleSessionUIUpdate(updateJSON) {
                 return
             }
+            if handleUIEventUpdate(updateJSON) {
+                return
+            }
             handleActivityUpdate(updateJSON)
             handlePermissionRequestUpdate(updateJSON)
             if let updateSessionID = extractUpdateSessionID(from: updateJSON) {
@@ -1213,7 +1253,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     // "stale" pagination/ordering issues (limit=50) and also reduces load.
                     return
                 }
-                updateThinkingFromUpdate(updateJSON, targetSessionID: updateSessionID)
                 if shouldFetchMessages(fromUpdateJSON: updateJSON) {
                     sdkCallAsync {
                         guard self.sessionID == updateSessionID else { return }
@@ -1291,8 +1330,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             blocks = [.text(text)]
         }
         if blocks.isEmpty {
-            if containsThinkingBlock(content) {
-                // Thinking-only events are handled via `updateThinkingFromUpdate`.
+            if isIgnorableMessage(content) {
                 return true
             }
             logUnsupportedMessage(id: id, content: content)
@@ -1354,14 +1392,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             }
         }
 
-        // For Codex, "reasoning" records are rendered as transcript entries but
-        // they still represent in-flight work. Keep thinking enabled until we
-        // receive a non-reasoning record.
-        let codexType = extractCodexRecordType(from: content)
-        if codexType == "reasoning" || codexType == "tool-call" {
-            updateSessionThinking(true, sessionID: sessionID)
-        } else {
-            // If we rendered a real message, ensure we clear thinking for this session.
+        // A "real" assistant message implies the model finished a turn; clear any
+        // stale thinking state even if we missed an ephemeral UI event.
+        if role == .assistant {
             updateSessionThinking(false, sessionID: sessionID)
         }
         return true
@@ -1380,11 +1413,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         if isNullMessage(content) || isFileHistorySnapshot(content) || isToolResultMessage(content) {
             return false
         }
-        if containsThinkingBlock(content) && extractBlocks(from: content, sessionID: sessionID).isEmpty {
-            return false
-        }
-        if extractBlocks(from: content, sessionID: sessionID).isEmpty, extractText(from: content) == nil {
-            return false
+        let blocks = extractBlocks(from: content, sessionID: sessionID)
+        if blocks.isEmpty, extractText(from: content) == nil {
+            return !isIgnorableMessage(content)
         }
         return true
     }
@@ -1394,8 +1425,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         if targetID.isEmpty {
             DispatchQueue.main.async {
                 self.sessions = self.sessions.map { $0.updatingActivity(active: nil, activeAt: nil, thinking: false) }
+                self.thinkingOverrides.removeAll()
             }
             return
+        }
+        DispatchQueue.main.async {
+            self.thinkingOverrides[targetID] = false
         }
         updateSessionThinking(false)
     }
@@ -1416,6 +1451,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
         if let payload = extractActivityPayload(from: update) {
             DispatchQueue.main.async {
+                if let thinking = payload.thinking {
+                    self.thinkingOverrides[payload.id] = thinking
+                }
                 if let index = self.sessions.firstIndex(where: { $0.id == payload.id }) {
                     let updated = self.sessions[index].updatingActivity(
                         active: payload.active,
@@ -1430,6 +1468,165 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             // (remote/local/offline) stays SDK-owned and up-to-date.
             scheduleSessionsRefreshDebounced()
         }
+    }
+
+    private func handleUIEventUpdate(_ json: String) -> Bool {
+        guard let update = decodeUpdateEnvelope(json) else {
+            return false
+        }
+        guard let payload = extractUIEventPayload(from: update) else {
+            return false
+        }
+
+        // Always store the payload so we can re-render when LOD changes.
+        let key = uiEventKey(sessionID: payload.sessionID, eventID: payload.eventID)
+        DispatchQueue.main.async {
+            self.uiEventsByKey[key] = payload
+        }
+
+        if payload.kind == "thinking" {
+            let isThinking = payload.phase != "end"
+            DispatchQueue.main.async {
+                self.thinkingOverrides[payload.sessionID] = isThinking
+                if let index = self.sessions.firstIndex(where: { $0.id == payload.sessionID }) {
+                    self.sessions[index] = self.sessions[index].updatingActivity(
+                        active: nil,
+                        activeAt: nil,
+                        thinking: isThinking
+                    )
+                }
+            }
+        }
+
+        // Only mutate the visible transcript when the detail view is open for this session.
+        guard payload.sessionID == self.sessionID else { return true }
+
+        // If this is a "thinking end" event with no body, treat it as a state update only.
+        if payload.kind == "thinking",
+           payload.phase == "end",
+           payload.briefMarkdown.isEmpty,
+           payload.fullMarkdown.isEmpty {
+            removeUIEventMessage(eventID: payload.eventID)
+            return true
+        }
+
+        let markdown = uiEventMarkdown(payload)
+        if markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        applyUIEventMessage(payload, markdown: markdown)
+        return true
+    }
+
+    private func uiEventKey(sessionID: String, eventID: String) -> String {
+        "\(sessionID)|\(eventID)"
+    }
+
+    private func uiEventMarkdown(_ payload: UIEventPayload) -> String {
+        let brief = payload.briefMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        let full = payload.fullMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch transcriptDetailLevel {
+        case .brief:
+            return brief.isEmpty ? full : brief
+        case .full:
+            return full.isEmpty ? brief : full
+        }
+    }
+
+    private func applyUIEventMessage(_ payload: UIEventPayload, markdown: String) {
+        let blocks = splitMarkdownBlocks(markdown)
+        let item = MessageItem(
+            id: "ui-\(payload.eventID)",
+            seq: nil,
+            localID: nil,
+            uuid: nil,
+            role: .event,
+            blocks: blocks.isEmpty ? [.text(markdown)] : blocks,
+            createdAt: payload.atMs
+        )
+
+        DispatchQueue.main.async {
+            if let idx = self.messages.firstIndex(where: { $0.id == item.id }) {
+                self.messages[idx] = item
+            } else {
+                self.messages.append(item)
+            }
+            // Keep the transcript pinned to bottom for tool/thinking updates.
+            self.scrollRequest = ScrollRequest(target: .bottom)
+        }
+    }
+
+    private func removeUIEventMessage(eventID: String) {
+        let id = "ui-\(eventID)"
+        DispatchQueue.main.async {
+            if let idx = self.messages.firstIndex(where: { $0.id == id }) {
+                self.messages.remove(at: idx)
+            }
+        }
+    }
+
+    private func refreshUIEventMessages() {
+        let current = sessionID
+        guard !current.isEmpty else { return }
+
+        DispatchQueue.main.async {
+            for idx in self.messages.indices {
+                let message = self.messages[idx]
+                guard message.id.hasPrefix("ui-") else { continue }
+                let eventID = String(message.id.dropFirst(3))
+                let key = self.uiEventKey(sessionID: current, eventID: eventID)
+                guard let payload = self.uiEventsByKey[key] else { continue }
+                let markdown = self.uiEventMarkdown(payload)
+                let blocks = self.splitMarkdownBlocks(markdown)
+                self.messages[idx] = MessageItem(
+                    id: message.id,
+                    seq: message.seq,
+                    localID: message.localID,
+                    uuid: message.uuid,
+                    role: message.role,
+                    blocks: blocks.isEmpty ? [.text(markdown)] : blocks,
+                    createdAt: message.createdAt
+                )
+            }
+        }
+    }
+
+    private func extractUIEventPayload(from update: UpdateEnvelope) -> UIEventPayload? {
+        // Root-level UI event ephemerals.
+        if update.type == UpdateKind.uiEvent.rawValue || update.t == UpdateKind.uiEvent.rawValue {
+            let sessionID = update.sessionId ?? update.id ?? update.sid
+            let eventID = update.eventId
+            guard let sessionID, !sessionID.isEmpty,
+                  let eventID, !eventID.isEmpty else { return nil }
+            return UIEventPayload(
+                sessionID: sessionID,
+                eventID: eventID,
+                kind: update.kind ?? "",
+                phase: update.phase ?? "",
+                status: update.status ?? "",
+                briefMarkdown: update.briefMarkdown ?? "",
+                fullMarkdown: update.fullMarkdown ?? "",
+                atMs: update.atMs
+            )
+        }
+
+        guard let body = update.body else { return nil }
+        let bodyType = body.t ?? body.type
+        guard bodyType == UpdateKind.uiEvent.rawValue else { return nil }
+        let sessionID = body.sessionId ?? body.id ?? body.sid
+        let eventID = body.eventId
+        guard let sessionID, !sessionID.isEmpty,
+              let eventID, !eventID.isEmpty else { return nil }
+        return UIEventPayload(
+            sessionID: sessionID,
+            eventID: eventID,
+            kind: body.kind ?? "",
+            phase: body.phase ?? "",
+            status: body.status ?? "",
+            briefMarkdown: body.briefMarkdown ?? "",
+            fullMarkdown: body.fullMarkdown ?? "",
+            atMs: body.atMs
+        )
     }
 
     /// scheduleSessionsRefreshDebounced refreshes sessions after activity updates.
@@ -1653,6 +1850,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         defaults.set(serverURL, forKey: Self.settingsKeyPrefix + "serverURL")
         defaults.set(token, forKey: Self.settingsKeyPrefix + "token")
         defaults.set(appearanceMode.rawValue, forKey: Self.settingsKeyPrefix + "appearanceMode")
+        defaults.set(transcriptDetailLevel.rawValue, forKey: Self.settingsKeyPrefix + "transcriptDetailLevel")
     }
 
     private func persistKeys() {
@@ -1864,6 +2062,17 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let messages: [MessageItem]
         let hasMore: Bool
         let nextBeforeSeq: Int64?
+    }
+
+    private struct UIEventPayload {
+        let sessionID: String
+        let eventID: String
+        let kind: String
+        let phase: String
+        let status: String
+        let briefMarkdown: String
+        let fullMarkdown: String
+        let atMs: Int64?
     }
 
     private func applyMessagesResponse(
@@ -2096,7 +2305,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             itemsArray = []
         }
 
-        var sawThinkingOnly = false
         var messages: [MessageItem] = []
         var seenKeys = Set<String>()
         var richFallbackKeys = Set<String>()
@@ -2131,7 +2339,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 continue
             }
             let role = extractRole(from: dict, content: content)
-            let hasThinking = containsThinkingBlock(content)
             let localID = extractLocalID(from: dict)
             let uuid = extractMessageUUID(from: content)
             if localID == nil && uuid == nil {
@@ -2146,8 +2353,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 blocks = [.text(fallback)]
             }
             if blocks.isEmpty {
-                if hasThinking {
-                    sawThinkingOnly = true
+                if isIgnorableMessage(content) {
                     continue
                 }
                 self.logUnsupportedMessage(id: id, content: content)
@@ -2168,10 +2374,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 seenKeys.insert(primaryKey)
             }
             messages.append(MessageItem(id: id, seq: seq, localID: localID, uuid: uuid, role: role, blocks: blocks, createdAt: createdAt))
-        }
-
-        if sawThinkingOnly && messages.isEmpty {
-            log("Only thinking blocks found (no renderable messages).")
         }
 
         // Best-effort inference for servers/clients that don't include `page` metadata.
@@ -2203,39 +2405,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             return sessionID
         }
         return nil
-    }
-
-    private func updateThinkingFromUpdate(_ json: String) {
-        updateThinkingFromUpdate(json, targetSessionID: sessionID)
-    }
-
-    private func updateThinkingFromUpdate(_ json: String, targetSessionID: String?) {
-        guard let targetSessionID, !targetSessionID.isEmpty else {
-            return
-        }
-        guard let update = decodeUpdateEnvelope(json),
-              let messageValue = update.body?.message,
-              let message = messageValue.object else {
-            return
-        }
-        let content = normalizeContent(firstNonNull(message[UpdateFields.content], message[UpdateFields.data]))
-        if let codexType = extractCodexRecordType(from: content) {
-            if codexType == "reasoning" || codexType == "tool-call" {
-                updateSessionThinking(true, sessionID: targetSessionID)
-                return
-            }
-            if codexType == "message" || codexType == "tool-call-result" {
-                updateSessionThinking(false, sessionID: targetSessionID)
-                return
-            }
-        }
-        let hasThinking = containsThinkingBlock(content)
-        let blocks = extractBlocks(from: content, sessionID: targetSessionID)
-        if hasThinking && blocks.isEmpty {
-            updateSessionThinking(true, sessionID: targetSessionID)
-        } else if !blocks.isEmpty {
-            updateSessionThinking(false, sessionID: targetSessionID)
-        }
     }
 
     private func extractBlocks(from content: JSONValue?, sessionID: String?) -> [MessageBlock] {
@@ -2274,25 +2443,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                         blocks.append(contentsOf: splitMarkdownBlocks(text))
                         continue
                     }
-                    if type == MessageValue.BlockType.thinking {
-                        continue
-                    }
-                    if MessageValue.BlockType.toolCallTypes.contains(type) {
-                        let name = dict[MessageFields.name]?.string ?? "tool"
-                        if let summary = toolSummary(name: name, input: dict[MessageFields.input]) {
-                            blocks.append(.toolCall(summary))
-                        }
-                        continue
-                    }
-                    if MessageValue.BlockType.toolResultTypes.contains(type) {
-                        continue
-                    }
-                }
-                if let name = dict[MessageFields.name]?.string, let input = dict[MessageFields.input] {
-                    if let summary = toolSummary(name: name, input: input) {
-                        blocks.append(.toolCall(summary))
-                    }
-                    continue
                 }
                 if let text = dict[UpdateFields.text]?.string {
                     blocks.append(contentsOf: splitMarkdownBlocks(text))
@@ -2434,60 +2584,52 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return "fallback:\(role.rawValue):\(createdAt):\(sample)"
     }
 
-    private func containsThinkingBlock(_ content: JSONValue?) -> Bool {
+    /// isIgnorableMessage returns true for message payloads that we intentionally do not
+    /// render as transcript entries (e.g. tool-use blocks or thinking-only blocks).
+    ///
+    /// This helper is used only to decide whether we need to refetch the full messages
+    /// list after receiving an update. UI state (thinking/tool rendering) is driven by
+    /// `ui.event` ephemerals from the CLI.
+    private func isIgnorableMessage(_ content: JSONValue?) -> Bool {
+        if isToolResultMessage(content) {
+            return true
+        }
+
+        let ignorable: Set<String> = [
+            MessageValue.BlockType.thinking,
+            MessageValue.BlockType.reasoning,
+            MessageValue.BlockType.toolUseDash,
+            MessageValue.BlockType.toolUseSnake,
+            MessageValue.BlockType.toolResultDash,
+            MessageValue.BlockType.toolResultSnake,
+        ]
+        return containsAnyBlockType(content, types: ignorable)
+    }
+
+    /// containsAnyBlockType checks if a nested JSON value contains a structured content
+    /// block whose `type` matches one of the provided types.
+    private func containsAnyBlockType(_ content: JSONValue?, types: Set<String>) -> Bool {
         guard let content else { return false }
         if let dict = content.object {
-            if dict[UpdateFields.type]?.string == MessageValue.BlockType.thinking {
+            if let type = dict[UpdateFields.type]?.string, types.contains(type) {
                 return true
             }
-            if let inner = dict[UpdateFields.content], containsThinkingBlock(inner) {
+            if let inner = dict[UpdateFields.content], containsAnyBlockType(inner, types: types) {
                 return true
             }
-            if let message = dict[UpdateFields.message], containsThinkingBlock(message) {
+            if let message = dict[UpdateFields.message], containsAnyBlockType(message, types: types) {
                 return true
             }
-            if let data = dict[UpdateFields.data], containsThinkingBlock(data) {
+            if let data = dict[UpdateFields.data], containsAnyBlockType(data, types: types) {
                 return true
             }
         }
         if let array = content.array {
-            for part in array where containsThinkingBlock(part) {
+            for part in array where containsAnyBlockType(part, types: types) {
                 return true
             }
         }
         return false
-    }
-
-    private func extractCodexRecordType(from content: JSONValue?) -> String? {
-        guard let content else { return nil }
-        if let dict = content.object {
-            if let type = dict[UpdateFields.type]?.string, type == "codex" {
-                return dict[UpdateFields.data]?.object?["type"]?.string
-            }
-            if let contentValue = dict[UpdateFields.content] {
-                if let nested = extractCodexRecordType(from: contentValue) {
-                    return nested
-                }
-            }
-            if let messageValue = dict[UpdateFields.message] {
-                if let nested = extractCodexRecordType(from: messageValue) {
-                    return nested
-                }
-            }
-            if let dataValue = dict[UpdateFields.data] {
-                if let nested = extractCodexRecordType(from: dataValue) {
-                    return nested
-                }
-            }
-        }
-        if let array = content.array {
-            for part in array {
-                if let nested = extractCodexRecordType(from: part) {
-                    return nested
-                }
-            }
-        }
-        return nil
     }
 
     private func updateSessionThinking(_ thinking: Bool) {
@@ -2497,6 +2639,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private func updateSessionThinking(_ thinking: Bool, sessionID: String?) {
         guard let targetID = sessionID, !targetID.isEmpty else { return }
         DispatchQueue.main.async {
+            self.thinkingOverrides[targetID] = thinking
             if let index = self.sessions.firstIndex(where: { $0.id == targetID }) {
                 let updated = self.sessions[index].updatingActivity(
                     active: nil,
@@ -2506,6 +2649,16 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 self.sessions[index] = updated
             }
         }
+    }
+
+    /// isThinking returns the best-effort thinking state for a session.
+    func isThinking(sessionID: String) -> Bool {
+        let id = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if id.isEmpty { return false }
+        if let override = thinkingOverrides[id] {
+            return override
+        }
+        return sessions.first(where: { $0.id == id })?.thinking ?? false
     }
 
     private func extractText(from content: JSONValue?) -> String? {
@@ -2631,50 +2784,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             blocks.append(.text(tail))
         }
         return blocks
-    }
-
-    private func toolSummary(name: String, input: JSONValue?) -> ToolCallSummary? {
-        let normalized = name.lowercased()
-        let icon: String
-        switch normalized {
-        case "grep", "read":
-            icon = "eye"
-        case "bash", "codexbash":
-            icon = "terminal"
-        case "glob", "ls":
-            icon = "magnifyingglass"
-        case "edit", "multiedit", "write":
-            icon = "doc.text"
-        default:
-            icon = "wrench.and.screwdriver"
-        }
-
-        if normalized == "grep",
-           let dict = input?.object,
-           let pattern = dict[MessageFields.pattern]?.string {
-            return ToolCallSummary(title: "grep(pattern: \(pattern))", icon: icon, subtitle: nil)
-        }
-        if normalized == "read",
-           let dict = input?.object,
-           let filePath = dict[MessageFields.filePath]?.string {
-            return ToolCallSummary(title: displayPath(filePath), icon: icon, subtitle: nil)
-        }
-        if normalized == "glob",
-           let dict = input?.object,
-           let pattern = dict[MessageFields.pattern]?.string {
-            return ToolCallSummary(title: pattern, icon: icon, subtitle: nil)
-        }
-        if normalized == "ls",
-           let dict = input?.object,
-           let path = dict[MessageFields.path]?.string {
-            return ToolCallSummary(title: displayPath(path), icon: icon, subtitle: nil)
-        }
-        if normalized == "bash",
-           let dict = input?.object,
-           let command = dict[MessageFields.command]?.string {
-            return ToolCallSummary(title: command, icon: icon, subtitle: nil)
-        }
-        return ToolCallSummary(title: name, icon: icon, subtitle: nil)
     }
 
     private func displayPath(_ path: String) -> String {

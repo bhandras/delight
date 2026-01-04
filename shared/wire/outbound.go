@@ -77,6 +77,37 @@ type EphemeralActivityPayload struct {
 	ActiveAt int64 `json:"activeAt"`
 }
 
+// EphemeralUIEventPayload is the payload for a user-scoped "ephemeral" event of
+// type "ui.event".
+//
+// UI events provide a stable, engine-agnostic shape for transient tool/thinking
+// signals. Engines render brief/full Markdown strings so clients can display
+// them without parsing engine-specific payloads.
+type EphemeralUIEventPayload struct {
+	// Type must be "ui.event".
+	Type string `json:"type"`
+	// SessionID identifies which session the event belongs to.
+	SessionID string `json:"sessionId"`
+	// EventID uniquely identifies the UI event, allowing clients to update an
+	// in-flight tool/thinking row in-place as phases progress.
+	EventID string `json:"eventId"`
+
+	// Kind identifies the UI event kind (e.g. "thinking" or "tool").
+	Kind string `json:"kind"`
+	// Phase indicates lifecycle progress (e.g. "start", "update", "end").
+	Phase string `json:"phase"`
+	// Status is a best-effort status label (e.g. "running", "ok", "error").
+	Status string `json:"status"`
+
+	// BriefMarkdown is a compact Markdown rendering used for brief LOD.
+	BriefMarkdown string `json:"briefMarkdown,omitempty"`
+	// FullMarkdown is a detailed Markdown rendering used for full LOD.
+	FullMarkdown string `json:"fullMarkdown,omitempty"`
+
+	// AtMs is a wall-clock timestamp in milliseconds since epoch.
+	AtMs int64 `json:"atMs,omitempty"`
+}
+
 // PermissionRequestPayload is the client -> server payload for the
 // "permission-request" event.
 type PermissionRequestPayload struct {

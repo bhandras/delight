@@ -149,6 +149,17 @@ private struct SettingsView: View {
                                     }
                                     Divider()
                                     NavigationLink {
+                                        TranscriptDetailView(model: model)
+                                    } label: {
+                                        SettingMenuRow(
+                                            title: "Transcript",
+                                            subtitle: "Tool + thinking detail level",
+                                            systemImage: "text.bubble",
+                                            tint: Theme.accent
+                                        )
+                                    }
+                                    Divider()
+                                    NavigationLink {
                                         ResetKeysView(model: model)
                                     } label: {
                                         SettingMenuRow(
@@ -639,6 +650,34 @@ private struct AppearanceDetailView: View {
             .listStyle(.insetGrouped)
         }
         .navigationTitle("Appearance")
+    }
+}
+
+private struct TranscriptDetailView: View {
+    @ObservedObject var model: HarnessViewModel
+
+    var body: some View {
+        ZStack {
+            Theme.background.ignoresSafeArea()
+            List {
+                Section("Transcript") {
+                    Picker("Detail", selection: $model.transcriptDetailLevel) {
+                        ForEach(TranscriptDetailLevel.allCases) { level in
+                            Text(level.title).tag(level)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text("Brief shows a short gist. Full shows tool and thinking logs.")
+                        .font(Theme.caption)
+                        .foregroundColor(Theme.mutedText)
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .listStyle(.insetGrouped)
+        }
+        .navigationTitle("Transcript")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

@@ -205,8 +205,8 @@ struct TerminalDetailView: View {
                 }
 
                 ConnectionStatusRow(
-                    status: statusInfo(for: currentSession),
-                    activityText: currentSession.thinking ? "thinking" : nil
+                    status: statusInfo(for: currentSession, thinkingOverride: model.isThinking(sessionID: currentSession.id)),
+                    activityText: model.isThinking(sessionID: currentSession.id) ? "thinking" : nil
                 )
                 .background(Theme.cardBackground)
                 TerminalAgentConfigControls(model: model, session: currentSession, isEnabled: isPhoneControlled)
@@ -678,7 +678,8 @@ private struct SessionStatusInfo {
     let isPulsing: Bool
 }
 
-private func statusInfo(for session: SessionSummary) -> SessionStatusInfo {
+private func statusInfo(for session: SessionSummary, thinkingOverride: Bool? = nil) -> SessionStatusInfo {
+    let thinking = thinkingOverride ?? session.thinking
     if !session.active {
         return SessionStatusInfo(
             text: "offline",
@@ -695,7 +696,7 @@ private func statusInfo(for session: SessionSummary) -> SessionStatusInfo {
             isPulsing: true
         )
     }
-    if session.thinking {
+    if thinking {
         return SessionStatusInfo(
             text: "thinking",
             dotColor: Theme.accent,

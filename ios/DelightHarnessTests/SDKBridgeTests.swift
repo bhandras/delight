@@ -211,7 +211,7 @@ final class SDKBridgeTests: XCTestCase {
         waitForExpectations(timeout: 1.0)
     }
 
-    func testCodexReasoningUpdateSetsThinkingTrue() {
+    func testUIEventThinkingStartSetsThinkingTrue() {
         let model = HarnessViewModel()
         model.sessionID = "s1"
         model.sessions = [
@@ -221,7 +221,7 @@ final class SDKBridgeTests: XCTestCase {
                 updatedAt: 0,
                 active: true,
                 activeAt: nil,
-                title: "codex",
+                title: "agent",
                 subtitle: nil,
                 metadata: nil,
                 agentState: nil,
@@ -231,19 +231,20 @@ final class SDKBridgeTests: XCTestCase {
         ]
 
         let json = """
-        {"body":{"t":"new-message","sid":"s1","message":{"id":"m1","content":{"role":"agent","content":{"type":"codex","data":{"type":"reasoning","message":"Evaluating minimal response"}}}}}}
+        {"type":"ui.event","id":"s1","eventId":"thinking-1","kind":"thinking","phase":"start","status":"running","briefMarkdown":"Thinking…","fullMarkdown":"### Thinking\\n- step 1","atMs":123}
         """
 
         let expectation = expectation(description: "thinking becomes true")
         model.onUpdate(nil, updateJSON: json)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             XCTAssertEqual(model.sessions.first?.thinking, true)
+            XCTAssertTrue(model.messages.contains(where: { $0.id == "ui-thinking-1" }))
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1.0)
     }
 
-    func testCodexMessageUpdateClearsThinking() {
+    func testUIEventThinkingEndClearsThinkingAndRemovesMessage() {
         let model = HarnessViewModel()
         model.sessionID = "s1"
         model.sessions = [
@@ -253,7 +254,7 @@ final class SDKBridgeTests: XCTestCase {
                 updatedAt: 0,
                 active: true,
                 activeAt: nil,
-                title: "codex",
+                title: "agent",
                 subtitle: nil,
                 metadata: nil,
                 agentState: nil,
@@ -262,14 +263,19 @@ final class SDKBridgeTests: XCTestCase {
             )
         ]
 
-        let json = """
-        {"body":{"t":"new-message","sid":"s1","message":{"id":"m2","content":{"role":"agent","content":{"type":"codex","data":{"type":"message","message":"Done"}}}}}}
+        let start = """
+        {"type":"ui.event","id":"s1","eventId":"thinking-1","kind":"thinking","phase":"start","status":"running","briefMarkdown":"Thinking…","fullMarkdown":"### Thinking\\n- step 1","atMs":123}
+        """
+        let end = """
+        {"type":"ui.event","id":"s1","eventId":"thinking-1","kind":"thinking","phase":"end","status":"ok","briefMarkdown":"","fullMarkdown":"","atMs":124}
         """
 
-        let expectation = expectation(description: "thinking becomes false")
-        model.onUpdate(nil, updateJSON: json)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+        let expectation = expectation(description: "thinking clears and message removed")
+        model.onUpdate(nil, updateJSON: start)
+        model.onUpdate(nil, updateJSON: end)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             XCTAssertEqual(model.sessions.first?.thinking, false)
+            XCTAssertFalse(model.messages.contains(where: { $0.id == "ui-thinking-1" }))
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1.0)

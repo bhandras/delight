@@ -111,6 +111,84 @@ type Event interface {
 	isAgentEngineEvent()
 }
 
+// UIEventKind identifies the kind of UI event emitted by an engine.
+type UIEventKind string
+
+const (
+	// UIEventThinking indicates a thinking status/log event.
+	UIEventThinking UIEventKind = "thinking"
+	// UIEventTool indicates a tool lifecycle event.
+	UIEventTool UIEventKind = "tool"
+)
+
+// UIEventPhase indicates where in its lifecycle a UI event is.
+type UIEventPhase string
+
+const (
+	// UIEventPhaseStart indicates the event just started.
+	UIEventPhaseStart UIEventPhase = "start"
+	// UIEventPhaseUpdate indicates the event progressed but has not finished.
+	UIEventPhaseUpdate UIEventPhase = "update"
+	// UIEventPhaseEnd indicates the event finished.
+	UIEventPhaseEnd UIEventPhase = "end"
+)
+
+// UIEventStatus describes the best-effort status for a UI event.
+type UIEventStatus string
+
+const (
+	// UIEventStatusRunning indicates the work is in progress.
+	UIEventStatusRunning UIEventStatus = "running"
+	// UIEventStatusOK indicates the work completed successfully.
+	UIEventStatusOK UIEventStatus = "ok"
+	// UIEventStatusError indicates the work failed.
+	UIEventStatusError UIEventStatus = "error"
+	// UIEventStatusCanceled indicates the work was canceled/aborted.
+	UIEventStatusCanceled UIEventStatus = "canceled"
+)
+
+// EvUIEvent is an engine-emitted transient UI signal.
+//
+// Engines render brief/full Markdown strings so clients can display tool and
+// thinking updates without parsing engine-specific payloads.
+type EvUIEvent struct {
+	// Mode indicates which mode runner produced the event.
+	Mode Mode
+	// EventID uniquely identifies the UI event so clients can update it in-place.
+	EventID string
+	// Kind identifies which category this UI event represents.
+	Kind UIEventKind
+	// Phase indicates lifecycle progress for the event.
+	Phase UIEventPhase
+	// Status indicates success/failure/progress best-effort.
+	Status UIEventStatus
+	// BriefMarkdown is the brief rendering of the event (gist/one-liner).
+	BriefMarkdown string
+	// FullMarkdown is the detailed rendering of the event.
+	FullMarkdown string
+	// AtMs is the wall-clock timestamp (unix millis) when the event was observed.
+	AtMs int64
+}
+
+// isAgentEngineEvent marks EvUIEvent as an Event.
+func (EvUIEvent) isAgentEngineEvent() {}
+
+// EvThinking indicates whether an engine is currently working on a request.
+//
+// This is emitted as an ephemeral UI signal (e.g. for "thinking…" indicators).
+// It should not be persisted as durable session state.
+type EvThinking struct {
+	// Mode indicates which mode runner the thinking signal applies to.
+	Mode Mode
+	// Thinking is true while the engine is processing a turn.
+	Thinking bool
+	// AtMs is the wall-clock timestamp (unix millis) when the state was observed.
+	AtMs int64
+}
+
+// isAgentEngineEvent marks EvThinking as an Event.
+func (EvThinking) isAgentEngineEvent() {}
+
 // EvReady indicates the engine process/protocol is ready to accept input.
 type EvReady struct {
 	// Mode indicates whether the engine is ready in local or remote mode.

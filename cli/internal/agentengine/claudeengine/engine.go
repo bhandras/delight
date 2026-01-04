@@ -134,11 +134,14 @@ type Engine struct {
 	localExited  chan struct{}
 	localExitErr *error
 
-	remoteBridge  *claude.RemoteBridge
-	remoteCtx     context.Context
-	remoteCancel  context.CancelFunc
-	remoteExited  chan struct{}
-	remoteExitErr *error
+	remoteBridge    *claude.RemoteBridge
+	remoteCtx       context.Context
+	remoteCancel    context.CancelFunc
+	remoteExited    chan struct{}
+	remoteExitErr   *error
+	remoteTurnID    string
+	remoteThinking  bool
+	remoteToolNames map[string]string
 
 	waitOnce sync.Once
 	waitErr  error
@@ -148,17 +151,18 @@ type Engine struct {
 // New returns a new Claude engine instance.
 func New(workDir string, requester agentengine.PermissionRequester, debug bool) *Engine {
 	return &Engine{
-		workDir:      workDir,
-		debug:        debug,
-		requester:    requester,
-		config:       agentengine.AgentConfig{},
-		events:       make(chan agentengine.Event, 128),
-		closed:       make(chan struct{}),
-		waitCh:       make(chan struct{}),
-		localCtx:     context.Background(),
-		remoteCtx:    context.Background(),
-		localCancel:  func() {},
-		remoteCancel: func() {},
+		workDir:         workDir,
+		debug:           debug,
+		requester:       requester,
+		config:          agentengine.AgentConfig{},
+		events:          make(chan agentengine.Event, 128),
+		closed:          make(chan struct{}),
+		waitCh:          make(chan struct{}),
+		localCtx:        context.Background(),
+		remoteCtx:       context.Background(),
+		localCancel:     func() {},
+		remoteCancel:    func() {},
+		remoteToolNames: make(map[string]string),
 	}
 }
 
@@ -246,6 +250,10 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 	if bridge == nil {
 		return fmt.Errorf("claude remote bridge not running")
 	}
+
+	e.startRemoteTurn()
+	nowMs := time.Now().UnixMilli()
+	e.setRemoteThinking(true, nowMs)
 
 	meta := mergeClaudeMessageMeta(msg.Meta, cfg)
 	return bridge.SendUserMessage(msg.Text, meta)
@@ -500,6 +508,7 @@ func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSp
 		}
 
 		nowMs := time.Now().UnixMilli()
+		e.emitRemoteUIEventsFromRaw(raw, nowMs)
 		e.tryEmit(agentengine.EvOutboundRecord{
 			Mode:    agentengine.ModeRemote,
 			LocalID: types.NewCUID(),
@@ -727,6 +736,257 @@ func (e *Engine) handleRemotePermissionRequest(requestID string, toolName string
 		resp.Message = ""
 	}
 	return resp, nil
+}
+
+// startRemoteTurn resets per-turn state used for UI events.
+func (e *Engine) startRemoteTurn() {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.remoteTurnID = types.NewCUID()
+	e.mu.Unlock()
+}
+
+// setRemoteThinking updates the cached remote thinking state and emits
+// best-effort EvThinking and EvUIEvent updates.
+func (e *Engine) setRemoteThinking(thinking bool, atMs int64) {
+	if e == nil {
+		return
+	}
+	if atMs == 0 {
+		atMs = time.Now().UnixMilli()
+	}
+
+	e.mu.Lock()
+	if e.remoteThinking == thinking {
+		e.mu.Unlock()
+		return
+	}
+	e.remoteThinking = thinking
+	turnID := e.remoteTurnID
+	e.mu.Unlock()
+
+	e.tryEmit(agentengine.EvThinking{Mode: agentengine.ModeRemote, Thinking: thinking, AtMs: atMs})
+
+	if strings.TrimSpace(turnID) == "" {
+		return
+	}
+
+	phase := agentengine.UIEventPhaseUpdate
+	status := agentengine.UIEventStatusRunning
+	brief := "Thinking…"
+	if !thinking {
+		phase = agentengine.UIEventPhaseEnd
+		status = agentengine.UIEventStatusOK
+		brief = ""
+	}
+
+	e.tryEmit(agentengine.EvUIEvent{
+		Mode:          agentengine.ModeRemote,
+		EventID:       "thinking-" + turnID,
+		Kind:          agentengine.UIEventThinking,
+		Phase:         phase,
+		Status:        status,
+		BriefMarkdown: brief,
+		FullMarkdown:  "",
+		AtMs:          atMs,
+	})
+}
+
+// emitRemoteUIEventsFromRaw parses a Claude output record and emits UI events
+// (thinking/tool lifecycle) as rendered Markdown.
+func (e *Engine) emitRemoteUIEventsFromRaw(raw []byte, nowMs int64) {
+	if len(raw) == 0 {
+		return
+	}
+	rec, ok, err := wire.TryParseAgentOutputRecord(raw)
+	if err != nil || !ok || rec == nil {
+		return
+	}
+
+	msg := rec.Content.Data.Message
+	blocks := msg.Content
+	if len(blocks) == 0 {
+		return
+	}
+
+	for _, block := range blocks {
+		blockType := normalizeClaudeBlockType(block.Type)
+		switch blockType {
+		case "text":
+			if strings.TrimSpace(block.Text) != "" && msg.Role == "assistant" {
+				e.setRemoteThinking(false, nowMs)
+			}
+		case "thinking":
+			// Do not forward thinking content; treat it as a generic busy signal.
+			e.setRemoteThinking(true, nowMs)
+		case "tool-use":
+			e.emitClaudeToolUIStart(block, nowMs)
+		case "tool-result":
+			e.emitClaudeToolUIEnd(block, nowMs)
+		default:
+			continue
+		}
+	}
+}
+
+func normalizeClaudeBlockType(t string) string {
+	t = strings.TrimSpace(strings.ToLower(t))
+	t = strings.ReplaceAll(t, "_", "-")
+	return t
+}
+
+func (e *Engine) emitClaudeToolUIStart(block wire.ContentBlock, nowMs int64) {
+	toolID := ""
+	if block.Fields != nil {
+		if raw, ok := block.Fields["id"]; ok {
+			toolID, _ = raw.(string)
+		}
+	}
+	if strings.TrimSpace(toolID) == "" {
+		toolID = types.NewCUID()
+	}
+
+	name := "tool"
+	var input any
+	if block.Fields != nil {
+		if raw, ok := block.Fields["name"]; ok {
+			if s, ok := raw.(string); ok && s != "" {
+				name = s
+			}
+		}
+		input = block.Fields["input"]
+	}
+
+	e.mu.Lock()
+	if e.remoteToolNames == nil {
+		e.remoteToolNames = make(map[string]string)
+	}
+	e.remoteToolNames[toolID] = name
+	e.mu.Unlock()
+
+	brief, full := renderToolMarkdown(name, input, nil, agentengine.UIEventStatusRunning)
+	e.tryEmit(agentengine.EvUIEvent{
+		Mode:          agentengine.ModeRemote,
+		EventID:       "tool-" + toolID,
+		Kind:          agentengine.UIEventTool,
+		Phase:         agentengine.UIEventPhaseStart,
+		Status:        agentengine.UIEventStatusRunning,
+		BriefMarkdown: brief,
+		FullMarkdown:  full,
+		AtMs:          nowMs,
+	})
+}
+
+func (e *Engine) emitClaudeToolUIEnd(block wire.ContentBlock, nowMs int64) {
+	toolID := ""
+	status := agentengine.UIEventStatusOK
+	var output any
+
+	if block.Fields != nil {
+		if raw, ok := block.Fields["tool_use_id"]; ok {
+			toolID, _ = raw.(string)
+		}
+		if raw, ok := block.Fields["is_error"]; ok {
+			if v, ok := raw.(bool); ok && v {
+				status = agentengine.UIEventStatusError
+			}
+		}
+		output = block.Fields["content"]
+	}
+	if strings.TrimSpace(toolID) == "" {
+		toolID = types.NewCUID()
+	}
+
+	e.mu.Lock()
+	name := e.remoteToolNames[toolID]
+	delete(e.remoteToolNames, toolID)
+	e.mu.Unlock()
+	if strings.TrimSpace(name) == "" {
+		name = "tool"
+	}
+
+	brief, full := renderToolMarkdown(name, nil, output, status)
+	e.tryEmit(agentengine.EvUIEvent{
+		Mode:          agentengine.ModeRemote,
+		EventID:       "tool-" + toolID,
+		Kind:          agentengine.UIEventTool,
+		Phase:         agentengine.UIEventPhaseEnd,
+		Status:        status,
+		BriefMarkdown: brief,
+		FullMarkdown:  full,
+		AtMs:          nowMs,
+	})
+}
+
+func renderToolMarkdown(name string, input any, output any, status agentengine.UIEventStatus) (brief string, full string) {
+	normalized := strings.TrimSpace(strings.ToLower(name))
+	if normalized == "" {
+		normalized = "tool"
+	}
+
+	prefix := "🔧"
+	if status == agentengine.UIEventStatusOK {
+		prefix = "✅"
+	} else if status == agentengine.UIEventStatusError {
+		prefix = "❌"
+	}
+	brief = prefix + " " + normalized
+
+	heading := "### Tool: " + normalized
+	if status != "" && status != agentengine.UIEventStatusRunning {
+		heading += " (" + string(status) + ")"
+	}
+	fullLines := []string{heading}
+
+	if normalized == "bash" {
+		if cmd := extractBashCommand(input); cmd != "" {
+			brief = prefix + " bash: " + cmd
+			fullLines = append(fullLines, "", "```sh", cmd, "```")
+		}
+	} else if input != nil {
+		if pretty := prettyJSON(input, 2_000); pretty != "" {
+			fullLines = append(fullLines, "", "```json", pretty, "```")
+		}
+	}
+
+	if status != agentengine.UIEventStatusRunning && output != nil {
+		if pretty := prettyJSON(output, 2_000); pretty != "" {
+			fullLines = append(fullLines, "", "```", pretty, "```")
+		}
+	}
+
+	full = strings.TrimSpace(strings.Join(fullLines, "\n"))
+	return brief, full
+}
+
+func extractBashCommand(input any) string {
+	m, ok := input.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if raw, ok := m["command"]; ok {
+		if s, ok := raw.(string); ok {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
+func prettyJSON(value any, maxLen int) string {
+	if value == nil {
+		return ""
+	}
+	raw, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return ""
+	}
+	out := string(raw)
+	if maxLen > 0 && len(out) > maxLen {
+		out = out[:maxLen] + "…"
+	}
+	return out
 }
 
 func (e *Engine) tryEmit(ev agentengine.Event) {

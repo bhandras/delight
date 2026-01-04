@@ -114,6 +114,11 @@ type State struct {
 	WSConnected       bool
 	TerminalConnected bool
 
+	// Thinking reports whether the remote engine is currently processing a turn.
+	// It is surfaced via session keep-alives and activity ephemerals so mobile
+	// clients can show a live "thinking" indicator.
+	Thinking bool
+
 	// Dedupe windows (populated by events) to suppress message echoes.
 	RecentRemoteInputs         []remoteInputRecord
 	RecentOutboundUserLocalIDs []outboundLocalIDRecord
@@ -376,6 +381,38 @@ type evEngineRolloutPath struct {
 
 // isSessionEvent marks evEngineRolloutPath as a session event.
 func (evEngineRolloutPath) isSessionEvent() {}
+
+// evEngineThinking indicates whether the active runner is currently processing a turn.
+type evEngineThinking struct {
+	actor.InputBase
+	Gen      int64
+	Mode     Mode
+	Thinking bool
+	NowMs    int64
+}
+
+// isSessionEvent marks evEngineThinking as a session event.
+func (evEngineThinking) isSessionEvent() {}
+
+// evEngineUIEvent is a rendered UI event emitted by the active engine.
+type evEngineUIEvent struct {
+	actor.InputBase
+	Gen  int64
+	Mode Mode
+
+	EventID string
+	Kind    string
+	Phase   string
+	Status  string
+
+	BriefMarkdown string
+	FullMarkdown  string
+
+	NowMs int64
+}
+
+// isSessionEvent marks evEngineUIEvent as a session event.
+func (evEngineUIEvent) isSessionEvent() {}
 
 type evPermissionRequested struct {
 	actor.InputBase

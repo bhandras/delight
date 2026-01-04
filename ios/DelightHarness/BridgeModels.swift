@@ -26,6 +26,22 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// TranscriptDetailLevel controls how much detail to show for transient tool
+/// and thinking UI events.
+enum TranscriptDetailLevel: String, CaseIterable, Identifiable {
+    case brief
+    case full
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .brief: return "Brief"
+        case .full: return "Full"
+        }
+    }
+}
+
 /// PendingPermissionRequest represents a remote-mode tool permission request that
 /// should be surfaced as a modal in the harness UI.
 struct PendingPermissionRequest: Identifiable, Equatable {

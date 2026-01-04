@@ -87,6 +87,33 @@ func (r *Runtime) runEngineEvents(ctx context.Context, engine agentengine.AgentE
 
 func (r *Runtime) handleEngineEvent(ev agentengine.Event, emit func(framework.Input)) {
 	switch v := ev.(type) {
+	case agentengine.EvThinking:
+		gen, mode := r.engineGenForMode(v.Mode)
+		nowMs := v.AtMs
+		if nowMs == 0 {
+			nowMs = time.Now().UnixMilli()
+		}
+		emit(evEngineThinking{Gen: gen, Mode: mode, Thinking: v.Thinking, NowMs: nowMs})
+	case agentengine.EvUIEvent:
+		gen, mode := r.engineGenForMode(v.Mode)
+		nowMs := v.AtMs
+		if nowMs == 0 {
+			nowMs = time.Now().UnixMilli()
+		}
+		if mode == ModeRemote {
+			r.printRemoteUIEventIfApplicable(v, nowMs)
+		}
+		emit(evEngineUIEvent{
+			Gen:           gen,
+			Mode:          mode,
+			EventID:       v.EventID,
+			Kind:          string(v.Kind),
+			Phase:         string(v.Phase),
+			Status:        string(v.Status),
+			BriefMarkdown: v.BriefMarkdown,
+			FullMarkdown:  v.FullMarkdown,
+			NowMs:         nowMs,
+		})
 	case agentengine.EvReady:
 		gen, mode := r.engineGenForMode(v.Mode)
 		if mode == ModeLocal {

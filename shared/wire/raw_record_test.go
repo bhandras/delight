@@ -68,7 +68,7 @@ func TestTryParseAgentOutputRecord(t *testing.T) {
 }
 
 func TestTryParseAgentOutputRecord_NonOutput(t *testing.T) {
-	rec, ok, err := TryParseAgentOutputRecord([]byte(`{"role":"agent","content":{"type":"codex","data":{}}}`))
+	rec, ok, err := TryParseAgentOutputRecord([]byte(`{"role":"agent","content":{"type":"text","data":{}}}`))
 	require.NoError(t, err)
 	require.False(t, ok)
 	require.Nil(t, rec)

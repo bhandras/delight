@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -91,6 +92,9 @@ type Engine struct {
 	remotePermissionMode  string
 	remoteModel           string
 	remoteReasoningEffort string
+	remoteThinking        bool
+	remoteTurnID          string
+	remoteThinkingSteps   []string
 	remoteWaitStarted     bool
 
 	localCmd               *exec.Cmd
@@ -192,6 +196,9 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 		return fmt.Errorf("codex remote mode not active")
 	}
 
+	e.startRemoteTurn()
+	e.setRemoteThinking(true, time.Now().UnixMilli())
+
 	permissionMode = normalizePermissionMode(permissionMode)
 	model = strings.TrimSpace(model)
 	reasoningEffort = strings.TrimSpace(reasoningEffort)
@@ -211,6 +218,7 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 
 	if !active {
 		if _, err := client.StartSession(ctx, cfg); err != nil {
+			e.setRemoteThinking(false, time.Now().UnixMilli())
 			return err
 		}
 		e.mu.Lock()
@@ -226,6 +234,7 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 		e.mu.Lock()
 		e.remoteSessionActive = false
 		e.mu.Unlock()
+		e.setRemoteThinking(false, time.Now().UnixMilli())
 		return err
 	}
 	e.emitIdentifiers()
@@ -594,11 +603,21 @@ func (e *Engine) detachLocalLocked() localStopHandle {
 func (e *Engine) stopRemoteAndWait(ctx context.Context) error {
 	e.mu.Lock()
 	client := e.remoteClient
+	wasThinking := e.remoteThinking
 	e.remoteClient = nil
 	e.remoteEnabled = false
 	e.remoteSessionActive = false
+	e.remoteThinking = false
 	e.remoteWaitStarted = false
 	e.mu.Unlock()
+
+	if wasThinking {
+		e.tryEmit(agentengine.EvThinking{
+			Mode:     agentengine.ModeRemote,
+			Thinking: false,
+			AtMs:     time.Now().UnixMilli(),
+		})
+	}
 
 	// Only one Codex process should be active at a time. When leaving remote
 	// mode, fully close the MCP server so switching to local doesn't leave
@@ -663,10 +682,7 @@ func (e *Engine) handleRolloutEvent(ev rollout.Event) {
 			AtMs:               v.AtMs,
 		})
 	case rollout.EvAssistantMessage:
-		raw, err := marshalCodexRecord(wire.CodexRecord{
-			Type:    "message",
-			Message: v.Text,
-		})
+		raw, err := marshalAssistantTextRecord(v.Text, "unknown")
 		if err != nil {
 			return
 		}
@@ -694,56 +710,206 @@ func (e *Engine) handleMCPEvent(event map[string]interface{}) {
 
 	switch evtType {
 	case "agent_message":
+		e.setRemoteThinking(false, time.Now().UnixMilli())
 		message := coerceString(event, "message")
 		if strings.TrimSpace(message) == "" {
 			return
 		}
-		e.emitCodexRecord(wire.CodexRecord{Type: "message", Message: message})
+		raw, err := marshalAssistantTextRecord(message, "unknown")
+		if err != nil {
+			return
+		}
+		e.tryEmit(agentengine.EvOutboundRecord{
+			Mode:    agentengine.ModeRemote,
+			LocalID: types.NewCUID(),
+			Payload: raw,
+			AtMs:    time.Now().UnixMilli(),
+		})
 	case "agent_reasoning":
+		e.setRemoteThinking(true, time.Now().UnixMilli())
 		text := coerceString(event, "text", "message")
 		if strings.TrimSpace(text) == "" {
 			return
 		}
-		e.emitCodexRecord(wire.CodexRecord{Type: "reasoning", Message: text})
+		e.appendRemoteThinkingStep(text)
 	case "exec_command_begin", "exec_approval_request":
+		e.setRemoteThinking(true, time.Now().UnixMilli())
 		callID := coerceString(event, "call_id", "callId")
 		if callID == "" {
 			callID = types.NewCUID()
 		}
-		input := filterMap(event, "type", "call_id", "callId")
-		e.emitCodexRecord(wire.CodexRecord{
-			Type:   "tool-call",
-			CallID: callID,
-			Name:   "CodexBash",
-			Input:  input,
-			ID:     types.NewCUID(),
-		})
+		e.emitRemoteToolUIEventStart(callID, event)
 	case "exec_command_end":
+		// Keep thinking=true until we see an agent_message; Codex may execute
+		// multiple tools per turn before producing the final assistant message.
 		callID := coerceString(event, "call_id", "callId")
 		if callID == "" {
 			callID = types.NewCUID()
 		}
-		output := filterMap(event, "type", "call_id", "callId")
-		e.emitCodexRecord(wire.CodexRecord{
-			Type:   "tool-call-result",
-			CallID: callID,
-			Output: output,
-			ID:     types.NewCUID(),
-		})
+		e.emitRemoteToolUIEventEnd(callID, event)
 	}
 }
 
-// emitCodexRecord encodes a CodexRecord and emits it as an outbound record event.
-func (e *Engine) emitCodexRecord(record wire.CodexRecord) {
-	raw, err := marshalCodexRecord(record)
-	if err != nil {
+// startRemoteTurn resets per-turn state used for UI events (thinking log).
+func (e *Engine) startRemoteTurn() {
+	if e == nil {
 		return
 	}
-	e.tryEmit(agentengine.EvOutboundRecord{
-		Mode:    agentengine.ModeRemote,
-		LocalID: types.NewCUID(),
-		Payload: raw,
-		AtMs:    time.Now().UnixMilli(),
+	e.mu.Lock()
+	e.remoteTurnID = types.NewCUID()
+	e.remoteThinkingSteps = nil
+	e.mu.Unlock()
+}
+
+// appendRemoteThinkingStep records a best-effort "thinking" status snippet and emits a UI event.
+func (e *Engine) appendRemoteThinkingStep(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	const maxSteps = 16
+	const maxStepLen = 120
+	if len(text) > maxStepLen {
+		text = text[:maxStepLen] + "…"
+	}
+
+	e.mu.Lock()
+	if len(e.remoteThinkingSteps) > 0 && e.remoteThinkingSteps[len(e.remoteThinkingSteps)-1] == text {
+		e.mu.Unlock()
+		return
+	}
+	e.remoteThinkingSteps = append(e.remoteThinkingSteps, text)
+	if len(e.remoteThinkingSteps) > maxSteps {
+		e.remoteThinkingSteps = e.remoteThinkingSteps[len(e.remoteThinkingSteps)-maxSteps:]
+	}
+	turnID := e.remoteTurnID
+	steps := append([]string(nil), e.remoteThinkingSteps...)
+	e.mu.Unlock()
+
+	if strings.TrimSpace(turnID) == "" {
+		return
+	}
+
+	brief := "Thinking…"
+	full := "### Thinking\n"
+	for _, step := range steps {
+		full += "- " + step + "\n"
+		brief = step
+	}
+
+	e.tryEmit(agentengine.EvUIEvent{
+		Mode:          agentengine.ModeRemote,
+		EventID:       "thinking-" + turnID,
+		Kind:          agentengine.UIEventThinking,
+		Phase:         agentengine.UIEventPhaseUpdate,
+		Status:        agentengine.UIEventStatusRunning,
+		BriefMarkdown: brief,
+		FullMarkdown:  strings.TrimSpace(full),
+		AtMs:          time.Now().UnixMilli(),
+	})
+}
+
+// emitRemoteToolUIEventStart emits a best-effort tool start UI event for Codex exec commands.
+func (e *Engine) emitRemoteToolUIEventStart(callID string, event map[string]interface{}) {
+	command := coerceString(event, "command", "cmd", "codex_command")
+	if strings.TrimSpace(command) == "" {
+		command = "exec"
+	}
+	brief := "🔧 bash: " + strings.TrimSpace(command)
+	full := "### Tool: bash\n\n```sh\n" + strings.TrimSpace(command) + "\n```"
+
+	e.tryEmit(agentengine.EvUIEvent{
+		Mode:          agentengine.ModeRemote,
+		EventID:       "tool-" + callID,
+		Kind:          agentengine.UIEventTool,
+		Phase:         agentengine.UIEventPhaseStart,
+		Status:        agentengine.UIEventStatusRunning,
+		BriefMarkdown: brief,
+		FullMarkdown:  full,
+		AtMs:          time.Now().UnixMilli(),
+	})
+}
+
+// emitRemoteToolUIEventEnd emits a best-effort tool end UI event for Codex exec commands.
+func (e *Engine) emitRemoteToolUIEventEnd(callID string, event map[string]interface{}) {
+	command := coerceString(event, "command", "cmd", "codex_command")
+	if strings.TrimSpace(command) == "" {
+		command = "exec"
+	}
+	status := agentengine.UIEventStatusOK
+	if exit := coerceInt(event, "exit_code", "exitCode", "code"); exit != 0 {
+		status = agentengine.UIEventStatusError
+	}
+	briefPrefix := "✅"
+	if status == agentengine.UIEventStatusError {
+		briefPrefix = "❌"
+	}
+	brief := briefPrefix + " bash: " + strings.TrimSpace(command)
+	full := "### Tool: bash (" + string(status) + ")\n\n```sh\n" + strings.TrimSpace(command) + "\n```"
+
+	e.tryEmit(agentengine.EvUIEvent{
+		Mode:          agentengine.ModeRemote,
+		EventID:       "tool-" + callID,
+		Kind:          agentengine.UIEventTool,
+		Phase:         agentengine.UIEventPhaseEnd,
+		Status:        status,
+		BriefMarkdown: brief,
+		FullMarkdown:  full,
+		AtMs:          time.Now().UnixMilli(),
+	})
+}
+
+// setRemoteThinking updates the cached remote thinking state and emits a
+// best-effort EvThinking when the value changes.
+func (e *Engine) setRemoteThinking(thinking bool, atMs int64) {
+	if e == nil {
+		return
+	}
+	if atMs == 0 {
+		atMs = time.Now().UnixMilli()
+	}
+
+	e.mu.Lock()
+	if e.remoteThinking == thinking {
+		e.mu.Unlock()
+		return
+	}
+	e.remoteThinking = thinking
+	e.mu.Unlock()
+
+	e.tryEmit(agentengine.EvThinking{
+		Mode:     agentengine.ModeRemote,
+		Thinking: thinking,
+		AtMs:     atMs,
+	})
+
+	e.mu.Lock()
+	turnID := e.remoteTurnID
+	e.mu.Unlock()
+	if strings.TrimSpace(turnID) == "" {
+		return
+	}
+
+	phase := agentengine.UIEventPhaseUpdate
+	status := agentengine.UIEventStatusRunning
+	if !thinking {
+		phase = agentengine.UIEventPhaseEnd
+		status = agentengine.UIEventStatusOK
+	}
+	brief := "Thinking…"
+	if !thinking {
+		brief = ""
+	}
+
+	e.tryEmit(agentengine.EvUIEvent{
+		Mode:          agentengine.ModeRemote,
+		EventID:       "thinking-" + turnID,
+		Kind:          agentengine.UIEventThinking,
+		Phase:         phase,
+		Status:        status,
+		BriefMarkdown: brief,
+		FullMarkdown:  "",
+		AtMs:          atMs,
 	})
 }
 
@@ -806,16 +972,39 @@ func (e *Engine) tryEmit(ev agentengine.Event) {
 	}
 }
 
-// marshalCodexRecord encodes a CodexRecord into an AgentCodexRecord JSON payload.
-func marshalCodexRecord(data any) ([]byte, error) {
-	payload := wire.AgentCodexRecord{
+// marshalAssistantTextRecord encodes a plain assistant text message as an AgentOutputRecord.
+func marshalAssistantTextRecord(text string, model string) ([]byte, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, fmt.Errorf("assistant text required")
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = "unknown"
+	}
+
+	rec := wire.AgentOutputRecord{
 		Role: "agent",
-		Content: wire.AgentCodexContent{
-			Type: "codex",
-			Data: data,
+		Content: wire.AgentOutputContent{
+			Type: "output",
+			Data: wire.AgentOutputData{
+				Type:             "assistant",
+				IsSidechain:      false,
+				IsCompactSummary: false,
+				IsMeta:           false,
+				UUID:             types.NewCUID(),
+				ParentUUID:       nil,
+				Message: wire.AgentMessage{
+					Role:  "assistant",
+					Model: model,
+					Content: []wire.ContentBlock{
+						{Type: "text", Text: text},
+					},
+				},
+			},
 		},
 	}
-	return json.Marshal(payload)
+	return json.Marshal(rec)
 }
 
 // marshalUserTextRecord encodes a user text record matching mobile plaintext payloads.
@@ -904,6 +1093,41 @@ func coerceString(event map[string]interface{}, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// coerceInt returns the first key that can be interpreted as an integer.
+func coerceInt(event map[string]interface{}, keys ...string) int64 {
+	for _, key := range keys {
+		raw, ok := event[key]
+		if !ok || raw == nil {
+			continue
+		}
+		switch v := raw.(type) {
+		case int:
+			return int64(v)
+		case int64:
+			return v
+		case float64:
+			return int64(v)
+		case string:
+			s := strings.TrimSpace(v)
+			if s == "" {
+				continue
+			}
+			if parsed, err := strconv.ParseInt(s, 10, 64); err == nil {
+				return parsed
+			}
+		default:
+			s := strings.TrimSpace(fmt.Sprint(v))
+			if s == "" {
+				continue
+			}
+			if parsed, err := strconv.ParseInt(s, 10, 64); err == nil {
+				return parsed
+			}
+		}
+	}
+	return 0
 }
 
 // filterMap copies event into a new map excluding the given keys.

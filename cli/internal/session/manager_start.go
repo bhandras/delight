@@ -148,7 +148,11 @@ func (m *Manager) Start(workDir string) error {
 		if m.wsClient.WaitForConnect(5 * time.Second) {
 			logger.Infof("WebSocket connected")
 			m.rpcManager.RegisterAll()
-			_ = m.wsClient.KeepSessionAlive(m.sessionID, m.thinking)
+			thinking := m.thinking
+			if m.sessionActor != nil {
+				thinking = m.sessionActor.State().Thinking
+			}
+			_ = m.wsClient.KeepSessionAlive(m.sessionID, thinking)
 			// Persist the initial agent state immediately so mobile can derive
 			// control mode deterministically (and to migrate any legacy/invalid
 			// agentState on the server).
@@ -691,7 +695,11 @@ func (m *Manager) keepAliveLoop() {
 		case <-sessionTicker.C:
 			// Send session keep-alive.
 			if m.wsClient != nil && m.wsClient.IsConnected() {
-				if err := m.wsClient.KeepSessionAlive(m.sessionID, m.thinking); err != nil && m.debug {
+				thinking := m.thinking
+				if m.sessionActor != nil {
+					thinking = m.sessionActor.State().Thinking
+				}
+				if err := m.wsClient.KeepSessionAlive(m.sessionID, thinking); err != nil && m.debug {
 					logger.Warnf("Session keep-alive error: %v", err)
 				}
 				// AgentState persistence retries are actor-owned; do not attempt to

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/bhandras/delight/cli/internal/agentengine"
 	"github.com/bhandras/delight/shared/wire"
 	"golang.org/x/term"
 )
@@ -131,15 +132,36 @@ func (r *Runtime) printRemoteRecordIfApplicable(plaintext []byte) {
 			return
 		}
 	}
+}
 
-	// 3) Codex record.
-	var codexRecord wire.AgentCodexRecord
-	if err := json.Unmarshal(plaintext, &codexRecord); err == nil {
-		if codexRecord.Role == "agent" && codexRecord.Content.Type == "codex" {
-			r.printCodexRecord(codexRecord.Content.Data)
-			return
-		}
+func (r *Runtime) printRemoteUIEventIfApplicable(ev agentengine.EvUIEvent, atMs int64) {
+	if r == nil {
+		return
 	}
+
+	r.mu.Lock()
+	localActive := r.engineLocalInteractive
+	r.mu.Unlock()
+	if localActive {
+		return
+	}
+
+	body := strings.TrimSpace(ev.BriefMarkdown)
+	if body == "" {
+		body = strings.TrimSpace(ev.FullMarkdown)
+	}
+	if body == "" {
+		return
+	}
+
+	header := "[event]"
+	switch ev.Kind {
+	case agentengine.UIEventThinking:
+		header = "[thinking]"
+	case agentengine.UIEventTool:
+		header = "[tool]"
+	}
+	r.printSection(header, body)
 }
 
 func (r *Runtime) printAgentOutputRecord(rec *wire.AgentOutputRecord) {
@@ -157,100 +179,11 @@ func (r *Runtime) printAgentOutputRecord(rec *wire.AgentOutputRecord) {
 		}
 		r.printSection("[user]", text)
 	case "assistant":
-		// Thinking blocks (if present).
-		for _, block := range blocks {
-			if block.Type != "thinking" && block.Type != "reasoning" {
-				continue
-			}
-			text := strings.TrimSpace(block.Text)
-			if text == "" {
-				if v, ok := block.Fields["text"].(string); ok {
-					text = strings.TrimSpace(v)
-				}
-			}
-			if text != "" {
-				r.printSection("[thinking]", text)
-			}
-		}
-
-		// Tool blocks.
-		for _, block := range blocks {
-			switch block.Type {
-			case "tool_use":
-				name, _ := block.Fields["name"].(string)
-				id, _ := block.Fields["id"].(string)
-				input := block.Fields["input"]
-				header := "[tool]"
-				if name != "" && id != "" {
-					header = fmt.Sprintf("[tool] %s (%s)", name, id)
-				} else if name != "" {
-					header = fmt.Sprintf("[tool] %s", name)
-				} else if id != "" {
-					header = fmt.Sprintf("[tool] (%s)", id)
-				}
-				r.printJSONSection(header, input)
-			case "tool_result":
-				toolUseID, _ := block.Fields["tool_use_id"].(string)
-				content := block.Fields["content"]
-				header := "[tool-result]"
-				if toolUseID != "" {
-					header = fmt.Sprintf("[tool-result] (%s)", toolUseID)
-				}
-				r.printJSONSection(header, content)
-			}
-		}
-
 		// Assistant reply text blocks.
 		text := extractTextBlocks(blocks)
 		if strings.TrimSpace(text) != "" {
 			r.printSection("[agent]", text)
 		}
-	default:
-		return
-	}
-}
-
-func (r *Runtime) printCodexRecord(raw any) {
-	if raw == nil {
-		return
-	}
-
-	encoded, err := json.Marshal(raw)
-	if err != nil {
-		return
-	}
-
-	var rec wire.CodexRecord
-	if err := json.Unmarshal(encoded, &rec); err != nil || rec.Type == "" {
-		// Unknown shape, just skip. (We can add a fallback later if desired.)
-		return
-	}
-
-	switch rec.Type {
-	case "message":
-		if strings.TrimSpace(rec.Message) != "" {
-			r.printSection("[agent]", rec.Message)
-		}
-	case "reasoning":
-		if strings.TrimSpace(rec.Message) != "" {
-			r.printSection("[thinking]", rec.Message)
-		}
-	case "tool-call":
-		header := "[tool]"
-		if rec.Name != "" && rec.CallID != "" {
-			header = "[tool] " + rec.Name + " (" + rec.CallID + ")"
-		} else if rec.Name != "" {
-			header = "[tool] " + rec.Name
-		} else if rec.CallID != "" {
-			header = "[tool] (" + rec.CallID + ")"
-		}
-		r.printJSONSection(header, rec.Input)
-	case "tool-call-result":
-		header := "[tool-result]"
-		if rec.CallID != "" {
-			header = "[tool-result] (" + rec.CallID + ")"
-		}
-		r.printJSONSection(header, rec.Output)
 	default:
 		return
 	}

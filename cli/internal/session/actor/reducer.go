@@ -7,6 +7,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/agentengine"
 	"github.com/bhandras/delight/cli/pkg/types"
+	"github.com/bhandras/delight/shared/wire"
 )
 
 const (
@@ -65,6 +66,10 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 			state.RolloutPath = in.Path
 		}
 		return state, nil
+	case evEngineThinking:
+		return reduceEngineThinking(state, in)
+	case evEngineUIEvent:
+		return reduceEngineUIEvent(state, in)
 	case evPermissionRequested:
 		return reducePermissionRequested(state, in)
 	case evDesktopTakeback:
@@ -449,6 +454,7 @@ func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 	case ModeRemote:
 		state.Mode = ModeRemote
 		state.FSM = StateRemoteStarting
+		state.Thinking = false
 		state.RemoteRunner = runnerHandle{gen: gen, running: false}
 		state.AgentState.ControlledByUser = false
 		state = refreshAgentStateJSON(state)
@@ -468,6 +474,7 @@ func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 	case ModeLocal:
 		state.Mode = ModeLocal
 		state.FSM = StateLocalStarting
+		state.Thinking = false
 		state.LocalRunner = runnerHandle{gen: gen, running: false}
 		state.AgentState.ControlledByUser = true
 		state = refreshAgentStateJSON(state)
@@ -560,6 +567,7 @@ func reduceRunnerExited(state State, ev evRunnerExited) (State, []actor.Effect) 
 		if state.RemoteRunner.gen == ev.Gen {
 			state.RemoteRunner.running = false
 		}
+		state.Thinking = false
 	}
 	// If we were starting, fail the pending switch.
 	if state.FSM == StateLocalStarting || state.FSM == StateRemoteStarting {
@@ -594,6 +602,7 @@ func reduceRunnerExited(state State, ev evRunnerExited) (State, []actor.Effect) 
 		// Otherwise: move to local running on failure (runtime will decide).
 		state.FSM = StateLocalRunning
 		state.Mode = ModeLocal
+		state.Thinking = false
 		return state, nil
 	}
 
@@ -605,6 +614,7 @@ func reduceRunnerExited(state State, ev evRunnerExited) (State, []actor.Effect) 
 		gen := state.RunnerGen
 		state.Mode = ModeLocal
 		state.FSM = StateLocalStarting
+		state.Thinking = false
 		state.LocalRunner = runnerHandle{gen: gen, running: false}
 		state.AgentState.ControlledByUser = true
 		state = refreshAgentStateJSON(state)
@@ -651,6 +661,73 @@ func reduceRemoteSend(state State, cmd cmdRemoteSend) (State, []actor.Effect) {
 	}
 	return state, []actor.Effect{
 		effRemoteSend{Gen: state.RunnerGen, Text: cmd.Text, Meta: cmd.Meta, LocalID: cmd.LocalID},
+	}
+}
+
+// reduceEngineThinking applies engine "thinking" signals to the session state
+// and emits an activity ephemeral so mobile clients can render status updates.
+func reduceEngineThinking(state State, ev evEngineThinking) (State, []actor.Effect) {
+	if ev.Gen != 0 && ev.Gen != state.RunnerGen {
+		return state, nil
+	}
+	// Only surface thinking updates while remote mode is running. This avoids
+	// toggling mobile UI while the desktop owns the session.
+	if ev.Mode != ModeRemote || state.FSM != StateRemoteRunning {
+		return state, nil
+	}
+	if state.SessionID == "" {
+		return state, nil
+	}
+	if state.Thinking == ev.Thinking {
+		return state, nil
+	}
+
+	state.Thinking = ev.Thinking
+	activeAt := ev.NowMs
+	if activeAt < 0 {
+		activeAt = 0
+	}
+
+	return state, []actor.Effect{
+		effEmitEphemeral{Payload: wire.EphemeralActivityPayload{
+			Type:     "activity",
+			ID:       state.SessionID,
+			Active:   true,
+			Thinking: state.Thinking,
+			ActiveAt: activeAt,
+		}},
+	}
+}
+
+// reduceEngineUIEvent forwards rendered UI events (tool/thinking) to mobile clients.
+func reduceEngineUIEvent(state State, ev evEngineUIEvent) (State, []actor.Effect) {
+	if ev.Gen != 0 && ev.Gen != state.RunnerGen {
+		return state, nil
+	}
+	if ev.Mode != ModeRemote || state.FSM != StateRemoteRunning {
+		return state, nil
+	}
+	if state.SessionID == "" || ev.EventID == "" {
+		return state, nil
+	}
+
+	if ev.Kind == string(agentengine.UIEventThinking) {
+		thinking := ev.Phase != string(agentengine.UIEventPhaseEnd)
+		state.Thinking = thinking
+	}
+
+	return state, []actor.Effect{
+		effEmitEphemeral{Payload: wire.EphemeralUIEventPayload{
+			Type:          "ui.event",
+			SessionID:     state.SessionID,
+			EventID:       ev.EventID,
+			Kind:          ev.Kind,
+			Phase:         ev.Phase,
+			Status:        ev.Status,
+			BriefMarkdown: ev.BriefMarkdown,
+			FullMarkdown:  ev.FullMarkdown,
+			AtMs:          ev.NowMs,
+		}},
 	}
 }
 
