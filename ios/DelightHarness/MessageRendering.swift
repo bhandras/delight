@@ -122,6 +122,23 @@ private struct MarkdownText: View {
             .markdownBlockStyle(\.heading4, body: compactHeading)
             .markdownBlockStyle(\.heading5, body: compactHeading)
             .markdownBlockStyle(\.heading6, body: compactHeading)
+            .markdownBlockStyle(\.codeBlock) { configuration in
+                ScrollView(.horizontal) {
+                    configuration.label
+                        .fixedSize(horizontal: false, vertical: true)
+                        .relativeLineSpacing(.em(Typography.paragraphLineSpacingEm))
+                        .padding(12)
+                        .background(Theme.codeBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .markdownTextStyle {
+                            FontFamilyVariant(.monospaced)
+                            FontSize(max(fontSize * 0.9, 12))
+                            ForegroundColor(Theme.codeText)
+                            BackgroundColor(nil)
+                        }
+                }
+                .markdownMargin(top: .zero, bottom: .em(Typography.paragraphBottomMarginEm))
+            }
             .markdownBlockStyle(\.paragraph) { configuration in
                 configuration.label
                     .fixedSize(horizontal: false, vertical: true)

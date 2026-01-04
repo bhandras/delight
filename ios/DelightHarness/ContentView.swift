@@ -658,7 +658,7 @@ private struct AppearanceDetailView: View {
     }
 }
 
-private struct TerminalTextSizeView: View {
+struct TerminalTextSizeView: View {
     @ObservedObject var model: HarnessViewModel
 
     var body: some View {

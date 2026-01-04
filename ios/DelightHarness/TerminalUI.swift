@@ -130,12 +130,13 @@ private struct TerminalRow: View {
 
     var body: some View {
         let status = statusInfo(for: session)
+        let agentLabel = terminalAgentLabel(for: session)
         HStack(spacing: 12) {
             Circle()
                 .fill(status.dotColor)
                 .frame(width: 12, height: 12)
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.title ?? session.id)
+                Text(agentLabel)
                     .font(.system(size: 16, weight: .semibold))
                     .lineLimit(1)
                 Text(sessionDisplayPath(for: session) ?? session.subtitle ?? status.text)
@@ -158,10 +159,12 @@ struct TerminalDetailView: View {
     let session: SessionSummary
     @State private var initialScrollDone: Bool = false
     @State private var showTerminalPropertiesSheet: Bool = false
+    @State private var showTextSizeSheet: Bool = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         let currentSession = model.sessions.first(where: { $0.id == session.id }) ?? session
+        let agentLabel = terminalAgentLabel(for: currentSession)
         let ui = currentSession.uiState
         let uiState = ui?.state ?? "disconnected"
         // The phone should only send input when it controls the session.
@@ -241,7 +244,7 @@ struct TerminalDetailView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 2) {
-                    Text(session.title ?? "Terminal")
+                    Text(agentLabel)
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundColor(Theme.messageText)
                     if let path = sessionDisplayPath(for: session) {
@@ -251,13 +254,13 @@ struct TerminalDetailView: View {
                     }
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showTerminalPropertiesSheet = true
-                } label: {
-                    Image(systemName: "gearshape")
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                ToolbarIconButton(systemImage: "textformat.size", accessibilityLabel: "Text Size") {
+                    showTextSizeSheet = true
                 }
-                .accessibilityLabel("Terminal Details")
+                ToolbarIconButton(systemImage: "gearshape", accessibilityLabel: "Terminal Details") {
+                    showTerminalPropertiesSheet = true
+                }
             }
         }
         .sheet(isPresented: $showTerminalPropertiesSheet) {
@@ -266,11 +269,52 @@ struct TerminalDetailView: View {
                 dismiss()
             }
         }
+        .sheet(isPresented: $showTextSizeSheet) {
+            NavigationStack {
+                TerminalTextSizeView(model: model)
+            }
+        }
         .onAppear {
             initialScrollDone = false
             model.selectSession(session.id)
         }
     }
+}
+
+private struct ToolbarIconButton: View {
+    let systemImage: String
+    let accessibilityLabel: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(Theme.mutedText)
+                .padding(8)
+                .background(Theme.cardBackground)
+                .clipShape(Circle())
+                .overlay(
+                    Circle()
+                        .stroke(Color(uiColor: .separator).opacity(0.6), lineWidth: 1)
+                )
+        }
+        .accessibilityLabel(accessibilityLabel)
+        .buttonStyle(.plain)
+    }
+}
+
+/// terminalAgentLabel returns the best-effort agent identifier for display in
+/// the terminal header.
+///
+/// `SessionSummary.title` is sourced from session metadata, which can lag or be
+/// static even if the user changes agent engines. Prefer the durable `agentState`
+/// when available.
+private func terminalAgentLabel(for session: SessionSummary) -> String {
+    let agent = session.agentState?.agentType
+        ?? session.metadata?.agent
+        ?? "terminal"
+    return agent.isEmpty ? "terminal" : agent
 }
 
 private struct TerminalAgentConfigControls: View {
@@ -405,9 +449,17 @@ private struct TerminalPropertiesSheet: View {
         let host = terminal?.metadata?.host
             ?? session.metadata?.host
             ?? terminalID
-        let flavor = session.metadata?.flavor
-            ?? terminal?.metadata?.platform
-            ?? "unknown"
+        let agent = terminalAgentLabel(for: session)
+        let platform = terminal?.metadata?.platform ?? "unknown"
+        let flavor = session.metadata?.flavor ?? "unknown"
+        let flavorDisplay: String = {
+            // Treat "Flavor" as the agent identifier instead of mixing static
+            // session metadata with the current engine selection.
+            if agent != "terminal" {
+                return agent
+            }
+            return flavor == "unknown" ? platform : flavor
+        }()
         let online: Bool = {
             if let ui = session.uiState {
                 if ui.state == "offline" || ui.state == "disconnected" {
@@ -468,9 +520,15 @@ private struct TerminalPropertiesSheet: View {
                                 .foregroundColor(Theme.mutedText)
                         }
                         HStack {
+                            Text("Platform")
+                            Spacer()
+                            Text(platform)
+                                .foregroundColor(Theme.mutedText)
+                        }
+                        HStack {
                             Text("Flavor")
                             Spacer()
-                            Text(flavor)
+                            Text(flavorDisplay)
                                 .foregroundColor(Theme.mutedText)
                         }
                         HStack {
