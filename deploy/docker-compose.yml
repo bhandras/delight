@@ -4,13 +4,13 @@ services:
       context: ..
       dockerfile: server/Dockerfile
     restart: unless-stopped
+    user: "0:0"
     environment:
       # Required for JWT signing.
       - DELIGHT_MASTER_SECRET=${DELIGHT_MASTER_SECRET}
     volumes:
       - ${DELIGHT_DATA_DIR:-../deploy-data}/server:/data
     command:
-      - /server
       - --addr=:3005
       - --db-path=/data/delight.db
       - --log-file=/data/server.log
