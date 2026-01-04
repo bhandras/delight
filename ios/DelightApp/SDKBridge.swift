@@ -498,8 +498,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func startup() {
-        if CrashLogger.consumeCrashFlag() {
-            crashReportText = crashLogTail()
+        if let crashReport = CrashLogger.consumeCrashReport() {
+            crashReportText = crashReport
             showCrashReport = true
             resetAfterCrash()
         }
