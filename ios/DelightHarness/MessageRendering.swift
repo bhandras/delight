@@ -6,6 +6,7 @@ import MarkdownUI
 /// The view is used by `TerminalMessagesView` inside a `UITableView` cell.
 struct MessageBubble: View {
     let message: MessageItem
+    let fontSize: CGFloat
 
     /// Layout holds display constants for the terminal transcript.
     enum Layout {
@@ -30,7 +31,7 @@ struct MessageBubble: View {
             if message.role == .user { Spacer(minLength: Layout.oppositeSideSpacerMinimum) }
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(Array(message.blocks.enumerated()), id: \.offset) { _, block in
-                    MessageBlockView(block: block)
+                    MessageBlockView(block: block, fontSize: fontSize)
                 }
             }
             .padding(message.role == .user ? 8 : 0)
@@ -48,35 +49,27 @@ struct MessageBubble: View {
 
 private struct MessageBlockView: View {
     let block: MessageBlock
+    let fontSize: CGFloat
 
     var body: some View {
         switch block {
         case .text(let text):
-            MarkdownText(text: text)
+            MarkdownText(text: text, fontSize: fontSize)
         case .code(let language, let content):
-            CodeBlockView(language: language, content: content)
+            CodeBlockView(language: language, content: content, fontSize: fontSize)
         case .toolCall(let summary):
-            ToolChipView(summary: summary)
+            ToolChipView(summary: summary, fontSize: fontSize)
         }
     }
 }
 
 private struct MarkdownText: View {
     let text: String
+    let fontSize: CGFloat
 
     /// Typography holds constants for Markdown rendering in the terminal
     /// transcript.
     enum Typography {
-        /// bodyFontFamily is the family name used by MarkdownUI's font system.
-        ///
-        /// MarkdownUI composes font families with weight/style dynamically,
-        /// which is different from `Font.custom` (that uses a PostScript face
-        /// name like "AvenirNext-Regular").
-        static let bodyFontFamily: String = "Avenir Next"
-
-        /// bodyFontSize matches `Theme.body` (see `ContentView.swift`).
-        static let bodyFontSize: CGFloat = 16
-
         /// paragraphBottomMarginEm keeps paragraphs readable without the large
         /// default Markdown spacing.
         static let paragraphBottomMarginEm: Double = 0.35
@@ -94,20 +87,29 @@ private struct MarkdownText: View {
 
     var body: some View {
         Markdown(formatMarkdownForDisplay(text))
+            // Force MarkdownUI to rebuild its internal attributed string when
+            // the user changes font size.
+            .id(Int(fontSize))
             // MarkdownUI's built-in GitHub theme applies a background color to
             // all text, which reads like a "highlight" behind every paragraph
             // in our chat UI. Keep the rendering minimal and let the bubble
             // backgrounds define the container instead.
             .markdownTheme(.basic)
-            .markdownTextStyle(\.text) {
-                FontFamily(.custom(Typography.bodyFontFamily))
-                FontSize(Typography.bodyFontSize)
+            // Set the transcript typography via MarkdownUI's `textStyle`
+            // environment rather than `Theme.text`.
+            //
+            // MarkdownUI's `Markdown` view applies its own `ScaledFontSizeModifier`
+            // based on the current `textStyle` environment. By setting `FontSize`
+            // here, the desired value flows through that scaling path and is
+            // applied consistently across paragraphs/headings.
+            .markdownTextStyle {
+                FontSize(fontSize)
                 ForegroundColor(Theme.messageText)
                 BackgroundColor(nil)
             }
             .markdownTextStyle(\.code) {
                 FontFamilyVariant(.monospaced)
-                FontSize(.em(0.9))
+                FontSize(max(fontSize * 0.9, 12))
                 ForegroundColor(Theme.codeText)
                 BackgroundColor(Theme.codeBackground)
             }
@@ -209,16 +211,18 @@ private struct MarkdownText: View {
 private struct CodeBlockView: View {
     let language: String?
     let content: String
+    let fontSize: CGFloat
 
     var body: some View {
+        let codeFontSize = CGFloat(TerminalAppearance.codeFontSize(for: Double(fontSize)))
         VStack(alignment: .leading, spacing: 8) {
             if let language, !language.isEmpty {
                 Text(language)
-                    .font(Theme.codeLabel)
+                    .font(.system(size: max(codeFontSize - 3, 10), weight: .semibold, design: .monospaced))
                     .foregroundColor(Theme.accent)
             }
             Text(content)
-                .font(Theme.codeFont)
+                .font(.system(size: codeFontSize, weight: .regular, design: .monospaced))
                 .foregroundColor(Theme.codeText)
         }
         .padding(12)
@@ -233,16 +237,18 @@ private struct CodeBlockView: View {
 
 private struct ToolChipView: View {
     let summary: ToolCallSummary
+    let fontSize: CGFloat
 
     var body: some View {
+        let chipFontSize = CGFloat(TerminalAppearance.chipFontSize(for: Double(fontSize)))
         if summary.icon == "sparkles" {
-            ActivityChip(text: summary.title)
+            ActivityChip(text: summary.title, fontSize: chipFontSize)
         } else {
             HStack(spacing: 6) {
                 Image(systemName: summary.icon)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: chipFontSize, weight: .semibold))
                 Text(summary.title)
-                    .font(Theme.caption)
+                    .font(.custom("AvenirNext-Medium", size: chipFontSize))
                     .lineLimit(1)
             }
             .padding(.horizontal, 10)
@@ -257,12 +263,13 @@ private struct ToolChipView: View {
 /// ActivityChip renders a short "thinking"/activity label with animated trailing dots.
 struct ActivityChip: View {
     let text: String
+    let fontSize: CGFloat
 
     var body: some View {
         let label = stripTrailingEllipsis(text)
         HStack {
             Text(label)
-                .font(Theme.caption)
+                .font(.custom("AvenirNext-Medium", size: fontSize))
                 .foregroundColor(Theme.accent)
             AnimatedDots(color: Theme.accent)
         }

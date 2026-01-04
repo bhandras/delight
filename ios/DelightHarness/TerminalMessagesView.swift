@@ -16,6 +16,7 @@ struct TerminalMessagesView: UIViewRepresentable {
     /// Optional external scroll request (e.g. scroll-to-bottom). The view consumes the request.
     let scrollRequest: ScrollRequest?
     let onConsumeScrollRequest: () -> Void
+    let fontSize: CGFloat
 
     /// Layout holds display constants for the transcript list.
     enum Layout {
@@ -75,47 +76,64 @@ struct TerminalMessagesView: UIViewRepresentable {
             }
         }
 
-        // Detect whether we're prepending older messages by checking if the previous first
-        // message still exists but moved down (index increased).
         let previousFirstID = context.coordinator.lastFirstMessageID
         let previousLastID = context.coordinator.lastLastMessageID
         let newFirstID = messages.first?.id
         let newLastID = messages.last?.id
 
-        let oldContentHeight = uiView.contentSize.height
-        let oldOffsetY = uiView.contentOffset.y
+        let fontSizeChanged = Int(context.coordinator.lastFontSize) != Int(fontSize)
+        let messageCountChanged = context.coordinator.lastMessageCount != messages.count
+        let messageEdgeChanged = (previousFirstID != newFirstID) || (previousLastID != newLastID)
+        let shouldReload = fontSizeChanged || messageCountChanged || messageEdgeChanged
 
-        uiView.reloadData()
-        uiView.layoutIfNeeded()
+        if shouldReload {
+            // Detect whether we're prepending older messages by checking if the previous first
+            // message still exists but moved down (index increased).
+            let oldContentHeight = uiView.contentSize.height
+            let oldOffsetY = uiView.contentOffset.y
 
-        if let previousFirstID,
-           let oldIndex = context.coordinator.lastIndexByID[previousFirstID],
-           let newIndex = messages.firstIndex(where: { $0.id == previousFirstID }),
-           newIndex > oldIndex {
-            // We prepended content (older messages).
-            // Preserve the current viewport by shifting the content offset down by the
-            // delta in content height (standard "infinite scroll" behavior).
-            //
-            // This keeps the user's reading position stable while injecting older messages
-            // above, letting them scroll up to see the newly loaded content.
-            let newContentHeight = uiView.contentSize.height
-            let delta = newContentHeight - oldContentHeight
-            uiView.setContentOffset(CGPoint(x: 0, y: oldOffsetY + delta), animated: false)
-        } else if !context.coordinator.didInitialScrollToBottom,
-                  !messages.isEmpty {
-            // First non-empty render: scroll to bottom.
-            context.coordinator.scrollToBottom(uiView, animated: false)
-            context.coordinator.didInitialScrollToBottom = true
-        } else if let previousLastID,
-                  previousLastID != newLastID,
-                  context.coordinator.wasNearBottomBeforeUpdate {
-            // New messages appended while the user is (roughly) at the bottom -> keep pinned.
-            context.coordinator.scrollToBottom(uiView, animated: true)
+            uiView.reloadData()
+
+            // `UITableView` can keep cached row heights when only the hosted SwiftUI
+            // content changes (e.g. font size). `beginUpdates/endUpdates` forces a
+            // fresh layout pass.
+            if fontSizeChanged {
+                uiView.beginUpdates()
+                uiView.endUpdates()
+            }
+            uiView.layoutIfNeeded()
+
+            if let previousFirstID,
+               let oldIndex = context.coordinator.lastIndexByID[previousFirstID],
+               let newIndex = messages.firstIndex(where: { $0.id == previousFirstID }),
+               newIndex > oldIndex {
+                // We prepended content (older messages).
+                // Preserve the current viewport by shifting the content offset down by the
+                // delta in content height (standard "infinite scroll" behavior).
+                //
+                // This keeps the user's reading position stable while injecting older messages
+                // above, letting them scroll up to see the newly loaded content.
+                let newContentHeight = uiView.contentSize.height
+                let delta = newContentHeight - oldContentHeight
+                uiView.setContentOffset(CGPoint(x: 0, y: oldOffsetY + delta), animated: false)
+            } else if !context.coordinator.didInitialScrollToBottom,
+                      !messages.isEmpty {
+                // First non-empty render: scroll to bottom.
+                context.coordinator.scrollToBottom(uiView, animated: false)
+                context.coordinator.didInitialScrollToBottom = true
+            } else if let previousLastID,
+                      previousLastID != newLastID,
+                      context.coordinator.wasNearBottomBeforeUpdate {
+                // New messages appended while the user is (roughly) at the bottom -> keep pinned.
+                context.coordinator.scrollToBottom(uiView, animated: true)
+            }
+
+            context.coordinator.lastFirstMessageID = newFirstID
+            context.coordinator.lastLastMessageID = newLastID
+            context.coordinator.lastMessageCount = messages.count
+            context.coordinator.lastFontSize = fontSize
+            context.coordinator.lastIndexByID = Dictionary(uniqueKeysWithValues: messages.enumerated().map { ($0.element.id, $0.offset) })
         }
-
-        context.coordinator.lastFirstMessageID = newFirstID
-        context.coordinator.lastLastMessageID = newLastID
-        context.coordinator.lastIndexByID = Dictionary(uniqueKeysWithValues: messages.enumerated().map { ($0.element.id, $0.offset) })
 
         // Consume external scroll requests.
         if let request = scrollRequest {
@@ -140,6 +158,8 @@ struct TerminalMessagesView: UIViewRepresentable {
         var lastFirstMessageID: String?
         var lastLastMessageID: String?
         var lastIndexByID: [String: Int] = [:]
+        var lastMessageCount: Int = 0
+        var lastFontSize: CGFloat = 0
 
         // Set during scroll events; used by updateUIView to decide whether to auto-scroll.
         var wasNearBottomBeforeUpdate: Bool = true
@@ -155,7 +175,10 @@ struct TerminalMessagesView: UIViewRepresentable {
         func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
             let message = parent.messages[indexPath.row]
 
-            let reuseID = "MessageCell"
+            // Include font size in the reuse identifier so changing the
+            // transcript font forces a fresh hosting configuration instead of
+            // reusing a cached view hierarchy.
+            let reuseID = "MessageCell-\(Int(parent.fontSize))"
             let cell = tableView.dequeueReusableCell(withIdentifier: reuseID) ?? UITableViewCell(style: .default, reuseIdentifier: reuseID)
             cell.backgroundColor = .clear
             cell.contentView.backgroundColor = .clear
@@ -163,7 +186,7 @@ struct TerminalMessagesView: UIViewRepresentable {
 
             if #available(iOS 16.0, *) {
                 cell.contentConfiguration = UIHostingConfiguration {
-                    MessageBubble(message: message)
+                    MessageBubble(message: message, fontSize: parent.fontSize)
                         .padding(.vertical, Layout.messageVerticalPadding)
                         .padding(.horizontal, MessageBubble.Layout.cellHorizontalPadding)
                 }

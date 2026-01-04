@@ -148,17 +148,6 @@ private struct SettingsView: View {
                                     }
                                     Divider()
                                     NavigationLink {
-                                        TranscriptDetailView(model: model)
-                                    } label: {
-                                        SettingMenuRow(
-                                            title: "Transcript",
-                                            subtitle: "Tool + thinking detail level",
-                                            systemImage: "text.bubble",
-                                            tint: Theme.accent
-                                        )
-                                    }
-                                    Divider()
-                                    NavigationLink {
                                         ResetKeysView(model: model)
                                     } label: {
                                         SettingMenuRow(
@@ -588,55 +577,248 @@ private struct AccountDetailView: View {
 private struct AppearanceDetailView: View {
     @ObservedObject var model: HarnessViewModel
 
+    /// verboseBinding maps the boolean toggle to the stored detail level enum.
+    private var verboseBinding: Binding<Bool> {
+        Binding(
+            get: { model.transcriptDetailLevel == .full },
+            set: { enabled in
+                model.transcriptDetailLevel = enabled ? .full : .brief
+            }
+        )
+    }
+
     var body: some View {
         ZStack {
             Theme.background.ignoresSafeArea()
-            List {
-                Section("Appearance") {
-                    Picker("Theme", selection: $model.appearanceMode) {
-                        ForEach(AppearanceMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    FeatureListCard {
+                        NavigationLink {
+                            AppearanceModeSelectionView(model: model)
+                        } label: {
+                            SettingValueRow(
+                                title: "Appearance",
+                                subtitle: appearanceSubtitle(for: model.appearanceMode),
+                                systemImage: "circle.lefthalf.filled",
+                                tint: Theme.accent,
+                                value: appearanceValue(for: model.appearanceMode)
+                            )
+                        }
+                        Divider()
+                        NavigationLink {
+                            TerminalTextSizeView(model: model)
+                        } label: {
+                            SettingValueRow(
+                                title: "Text Size",
+                                subtitle: "Terminal transcript",
+                                systemImage: "textformat.size",
+                                tint: Color(red: 0.4, green: 0.36, blue: 0.9),
+                                value: "\(Int(model.terminalFontSize))"
+                            )
+                        }
+                        Divider()
+                        SettingToggleRow(
+                            title: "Verbose transcript",
+                            subtitle: "Show tool and thinking logs",
+                            systemImage: "text.bubble",
+                            tint: Theme.accent,
+                            isOn: verboseBinding
+                        )
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                }
+            }
+        }
+        .navigationTitle("Appearance")
+    }
+
+    /// appearanceValue renders the short label used by the row's trailing value.
+    private func appearanceValue(for mode: AppearanceMode) -> String {
+        switch mode {
+        case .system:
+            return "Adaptive"
+        case .light:
+            return "Light"
+        case .dark:
+            return "Dark"
+        }
+    }
+
+    /// appearanceSubtitle renders the row subtitle based on the chosen mode.
+    private func appearanceSubtitle(for mode: AppearanceMode) -> String {
+        switch mode {
+        case .system:
+            return "Match system settings"
+        case .light:
+            return "Always use light mode"
+        case .dark:
+            return "Always use dark mode"
+        }
+    }
+}
+
+private struct TerminalTextSizeView: View {
+    @ObservedObject var model: HarnessViewModel
+
+    var body: some View {
+        ZStack {
+            Theme.background.ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 16) {
+                FeatureListCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("Text Size")
+                                .font(Theme.body)
+                                .foregroundColor(Theme.messageText)
+                            Spacer()
+                            Text("\(Int(model.terminalFontSize))")
+                                .font(Theme.caption)
+                                .foregroundColor(Theme.mutedText)
+                        }
+                        Slider(
+                            value: $model.terminalFontSize,
+                            in: TerminalAppearance.minFontSize...TerminalAppearance.maxFontSize,
+                            step: TerminalAppearance.fontSizeStep
+                        )
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Preview")
+                                .font(Theme.caption)
+                                .foregroundColor(Theme.mutedText)
+                            Text("The quick brown fox jumps over the lazy dog.")
+                                .font(.custom("AvenirNext-Regular", size: CGFloat(model.terminalFontSize)))
+                                .foregroundColor(Theme.messageText)
+                            Text("echo \"hello\"")
+                                .font(.system(size: CGFloat(TerminalAppearance.codeFontSize(for: model.terminalFontSize)), weight: .regular, design: .monospaced))
+                                .foregroundColor(Theme.codeText)
+                                .padding(10)
+                                .background(Theme.codeBackground)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .padding(.vertical, 8)
+                }
+                .padding(.horizontal, 16)
+                Spacer()
+            }
+            .padding(.top, 12)
+        }
+        .navigationTitle("Text Size")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
 
-                    Text("System follows your device appearance setting.")
+private struct SettingValueRow: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let tint: Color
+    let value: String
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: systemImage)
+                .font(.system(size: 26))
+                .foregroundColor(tint)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(Theme.body)
+                    .foregroundColor(Theme.messageText)
+                Text(subtitle)
+                    .font(Theme.caption)
+                    .foregroundColor(Theme.mutedText)
+            }
+            Spacer()
+            Text(value)
+                .foregroundColor(Theme.mutedText)
+            Image(systemName: "chevron.right")
+                .foregroundColor(Theme.mutedText)
+        }
+        .padding(.vertical, 12)
+    }
+}
+
+private struct SettingToggleRow: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let tint: Color
+    let isOn: Binding<Bool>
+
+    var body: some View {
+        Toggle(isOn: isOn) {
+            HStack(spacing: 14) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 26))
+                    .foregroundColor(tint)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(Theme.body)
+                        .foregroundColor(Theme.messageText)
+                    Text(subtitle)
                         .font(Theme.caption)
                         .foregroundColor(Theme.mutedText)
                 }
             }
-            .scrollContentBackground(.hidden)
-            .listStyle(.insetGrouped)
+            .padding(.vertical, 12)
         }
-        .navigationTitle("Appearance")
+        .tint(Theme.accent)
     }
 }
 
-private struct TranscriptDetailView: View {
+private struct AppearanceModeSelectionView: View {
     @ObservedObject var model: HarnessViewModel
 
     var body: some View {
         ZStack {
             Theme.background.ignoresSafeArea()
             List {
-                Section("Transcript") {
-                    Picker("Detail", selection: $model.transcriptDetailLevel) {
-                        ForEach(TranscriptDetailLevel.allCases) { level in
-                            Text(level.title).tag(level)
-                        }
+                Section {
+                    AppearanceModeOptionRow(title: "Adaptive", subtitle: "Match system settings", isSelected: model.appearanceMode == .system) {
+                        model.appearanceMode = .system
                     }
-                    .pickerStyle(.segmented)
-
-                    Text("Brief shows a short gist. Full shows tool and thinking logs.")
-                        .font(Theme.caption)
-                        .foregroundColor(Theme.mutedText)
+                    AppearanceModeOptionRow(title: "Light", subtitle: "Always use light mode", isSelected: model.appearanceMode == .light) {
+                        model.appearanceMode = .light
+                    }
+                    AppearanceModeOptionRow(title: "Dark", subtitle: "Always use dark mode", isSelected: model.appearanceMode == .dark) {
+                        model.appearanceMode = .dark
+                    }
                 }
             }
             .scrollContentBackground(.hidden)
             .listStyle(.insetGrouped)
         }
-        .navigationTitle("Transcript")
+        .navigationTitle("Appearance")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct AppearanceModeOptionRow: View {
+    let title: String
+    let subtitle: String
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(Theme.body)
+                        .foregroundColor(Theme.messageText)
+                    Text(subtitle)
+                        .font(Theme.caption)
+                        .foregroundColor(Theme.mutedText)
+                }
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(Theme.accent)
+                }
+            }
+            .padding(.vertical, 4)
+        }
     }
 }
 

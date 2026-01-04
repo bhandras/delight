@@ -300,6 +300,16 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             refreshUIEventMessages()
         }
     }
+    @Published var terminalFontSize: Double = TerminalAppearance.defaultFontSize {
+        didSet {
+            let clamped = TerminalAppearance.clampFontSize(terminalFontSize)
+            if terminalFontSize != clamped {
+                terminalFontSize = clamped
+                return
+            }
+            persistSettings()
+        }
+    }
     @Published var permissionQueue: [PendingPermissionRequest] = []
     @Published var activePermissionRequest: PendingPermissionRequest?
     @Published var showPermissionPrompt: Bool = false
@@ -359,6 +369,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let loadedTranscriptDetailLevel =
             TranscriptDetailLevel(rawValue: defaults.string(forKey: Self.settingsKeyPrefix + "transcriptDetailLevel") ?? "")
             ?? .brief
+        let loadedTerminalFontSizeRaw = defaults.object(forKey: Self.settingsKeyPrefix + "terminalFontSize") as? Double
+        let loadedTerminalFontSize = TerminalAppearance.clampFontSize(
+            loadedTerminalFontSizeRaw ?? TerminalAppearance.defaultFontSize
+        )
         let loadedMasterKey = KeychainStore.string(for: "masterKey") ?? ""
         let loadedPublicKey = KeychainStore.string(for: "publicKey") ?? ""
         let loadedPrivateKey = KeychainStore.string(for: "privateKey") ?? ""
@@ -372,6 +386,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         token = loadedToken
         appearanceMode = loadedAppearanceMode
         transcriptDetailLevel = loadedTranscriptDetailLevel
+        terminalFontSize = loadedTerminalFontSize
         masterKey = loadedMasterKey
         publicKey = loadedPublicKey
         privateKey = loadedPrivateKey
@@ -1851,6 +1866,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         defaults.set(token, forKey: Self.settingsKeyPrefix + "token")
         defaults.set(appearanceMode.rawValue, forKey: Self.settingsKeyPrefix + "appearanceMode")
         defaults.set(transcriptDetailLevel.rawValue, forKey: Self.settingsKeyPrefix + "transcriptDetailLevel")
+        defaults.set(terminalFontSize, forKey: Self.settingsKeyPrefix + "terminalFontSize")
     }
 
     private func persistKeys() {

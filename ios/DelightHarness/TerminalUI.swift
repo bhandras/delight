@@ -199,8 +199,13 @@ struct TerminalDetailView: View {
                     isLoadingHistory: model.isLoadingHistory,
                     onLoadOlder: { model.fetchOlderMessages() },
                     scrollRequest: model.scrollRequest,
-                    onConsumeScrollRequest: { model.scrollRequest = nil }
+                    onConsumeScrollRequest: { model.scrollRequest = nil },
+                    fontSize: CGFloat(model.terminalFontSize)
                 )
+                // Force a transcript re-host when font size changes so the
+                // underlying UITableView + hosted SwiftUI views are rebuilt.
+                // This avoids stale layout when toggling appearance settings.
+                .id("transcript-\(currentSession.id)-\(Int(model.terminalFontSize))")
                 .contentShape(Rectangle())
                 .highPriorityGesture(
                     TapGesture(count: 2).onEnded {
@@ -214,7 +219,9 @@ struct TerminalDetailView: View {
 
                 ConnectionStatusRow(
                     status: statusInfo(for: currentSession, thinkingOverride: model.isThinking(sessionID: currentSession.id)),
-                    activityText: model.isThinking(sessionID: currentSession.id) ? "thinking" : nil
+                    activityText: model.isThinking(sessionID: currentSession.id) ? "thinking" : nil,
+                    activityChipFontSize: CGFloat(TerminalAppearance.chipFontSize(for: model.terminalFontSize)),
+                    labelFontSize: CGFloat(max(model.terminalFontSize * 0.75, 12))
                 )
                 .background(Theme.cardBackground)
                 TerminalAgentConfigControls(model: model, session: currentSession, isEnabled: isPhoneControlled)
@@ -295,7 +302,7 @@ private struct TerminalAgentConfigControls: View {
                         showModelSheet = true
                     }
                 } label: {
-                    Image(systemName: "brain")
+                    Image(systemName: "lightbulb")
                         .font(.system(size: 15, weight: .semibold))
                 }
                 .disabled(!isEnabled || !isOnline || isFetchingSettings)
@@ -763,16 +770,18 @@ private struct ControlStatusBanner: View {
 private struct ConnectionStatusRow: View {
     let status: SessionStatusInfo
     let activityText: String?
+    let activityChipFontSize: CGFloat
+    let labelFontSize: CGFloat
 
     var body: some View {
         HStack(spacing: 8) {
             StatusDot(color: status.dotColor, isPulsing: status.isPulsing, size: 7)
             Text(status.text)
-                .font(Theme.caption)
+                .font(.custom("AvenirNext-Medium", size: labelFontSize))
                 .foregroundColor(status.textColor)
             Spacer()
             if let activityText {
-                ActivityChip(text: activityText)
+                ActivityChip(text: activityText, fontSize: activityChipFontSize)
             }
         }
         .padding(.horizontal, 16)

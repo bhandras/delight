@@ -42,6 +42,46 @@ enum TranscriptDetailLevel: String, CaseIterable, Identifiable {
     }
 }
 
+/// TerminalAppearance defines user-facing presentation defaults for terminal
+/// transcript rendering.
+enum TerminalAppearance {
+    /// defaultFontSize is the initial font size for terminal transcripts.
+    static let defaultFontSize: Double = 16
+
+    /// minFontSize is the smallest font size exposed to users.
+    static let minFontSize: Double = 13
+
+    /// maxFontSize is the largest font size exposed to users.
+    static let maxFontSize: Double = 22
+
+    /// fontSizeStep is the increment used by the UI stepper.
+    static let fontSizeStep: Double = 1
+
+    /// minCodeFontSize keeps code blocks readable when the body font is small.
+    static let minCodeFontSize: Double = 12
+
+    /// minChipFontSize keeps tool/thinking chips readable when the body font is small.
+    static let minChipFontSize: Double = 11
+
+    /// maxChipFontSize prevents tool/thinking chips from becoming oversized.
+    static let maxChipFontSize: Double = 14
+
+    /// clampFontSize bounds a font size selection to the supported range.
+    static func clampFontSize(_ value: Double) -> Double {
+        min(max(value, minFontSize), maxFontSize)
+    }
+
+    /// codeFontSize returns a derived code font size for a transcript base font.
+    static func codeFontSize(for baseFontSize: Double) -> Double {
+        max(baseFontSize * 0.9, minCodeFontSize)
+    }
+
+    /// chipFontSize returns a derived chip font size for a transcript base font.
+    static func chipFontSize(for baseFontSize: Double) -> Double {
+        min(max(baseFontSize * 0.75, minChipFontSize), maxChipFontSize)
+    }
+}
+
 /// PendingPermissionRequest represents a remote-mode tool permission request that
 /// should be surfaced as a modal in the harness UI.
 struct PendingPermissionRequest: Identifiable, Equatable {
