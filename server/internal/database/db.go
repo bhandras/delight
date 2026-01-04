@@ -2,11 +2,18 @@ package database
 
 import (
 	"database/sql"
+	"embed"
 	"fmt"
-	"os"
+	"io/fs"
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+// schemaMigrationsFS embeds the SQL schema migrations so the server can run as
+// a single binary without needing access to the source tree at runtime.
+//
+//go:embed migrations/001_initial.sql
+var schemaMigrationsFS embed.FS
 
 type DB struct {
 	*sql.DB
@@ -59,7 +66,7 @@ func runMigrations(db *sql.DB) error {
 	}
 
 	// Read the migration file
-	migrationSQL, err := os.ReadFile("internal/database/migrations/001_initial.sql")
+	migrationSQL, err := fs.ReadFile(schemaMigrationsFS, "migrations/001_initial.sql")
 	if err != nil {
 		return fmt.Errorf("failed to read migration file: %w", err)
 	}
