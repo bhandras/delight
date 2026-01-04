@@ -2,7 +2,7 @@ services:
   server:
     build:
       context: ..
-      dockerfile: ../server/Dockerfile
+      dockerfile: server/Dockerfile
     restart: unless-stopped
     environment:
       # Required for JWT signing.
