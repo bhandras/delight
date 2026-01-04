@@ -143,7 +143,123 @@ func (h *SessionHandler) CreateSession(c *gin.Context) {
 			c.JSON(http.StatusConflict, types.ErrorResponse{Error: "session tag already in use"})
 			return
 		}
-		// Session exists; ensure it has a dataEncryptionKey.
+
+		// Session exists; best-effort refresh metadata/agentState so the session row
+		// reflects the current CLI configuration (for example after restarting the
+		// CLI with a different agent).
+		var metadataUpdate *protocolwire.VersionedString
+		var agentStateUpdate *protocolwire.VersionedString
+
+		if req.Metadata != "" && existing.Metadata != req.Metadata {
+			expected := existing.MetadataVersion
+			next := expected + 1
+			rows, err := h.queries.UpdateSessionMetadata(c.Request.Context(), models.UpdateSessionMetadataParams{
+				Metadata:          req.Metadata,
+				MetadataVersion:   next,
+				ID:                existing.ID,
+				MetadataVersion_2: expected,
+			})
+			if err != nil || rows == 0 {
+				// Retry once with the current version to avoid leaving stale metadata.
+				current, getErr := h.queries.GetSessionByID(c.Request.Context(), existing.ID)
+				if getErr == nil && current.Metadata != req.Metadata {
+					expected = current.MetadataVersion
+					next = expected + 1
+					rows, err = h.queries.UpdateSessionMetadata(c.Request.Context(), models.UpdateSessionMetadataParams{
+						Metadata:          req.Metadata,
+						MetadataVersion:   next,
+						ID:                existing.ID,
+						MetadataVersion_2: expected,
+					})
+				}
+			}
+			if err == nil && rows > 0 {
+				metadataUpdate = &protocolwire.VersionedString{
+					Value:   req.Metadata,
+					Version: next,
+				}
+			}
+		}
+
+		if req.AgentState != nil {
+			desired := *req.AgentState
+			current := ""
+			if existing.AgentState.Valid {
+				current = existing.AgentState.String
+			}
+			if desired != "" && desired != current {
+				expected := existing.AgentStateVersion
+				next := expected + 1
+				stateVal := sql.NullString{Valid: true, String: desired}
+				rows, err := h.queries.UpdateSessionAgentState(c.Request.Context(), models.UpdateSessionAgentStateParams{
+					AgentState:          stateVal,
+					AgentStateVersion:   next,
+					ID:                  existing.ID,
+					AgentStateVersion_2: expected,
+				})
+				if err != nil || rows == 0 {
+					// Retry once with the current version to avoid leaving stale state.
+					currentSession, getErr := h.queries.GetSessionByID(c.Request.Context(), existing.ID)
+					if getErr == nil {
+						current = ""
+						if currentSession.AgentState.Valid {
+							current = currentSession.AgentState.String
+						}
+					}
+					if getErr == nil && desired != current {
+						expected = currentSession.AgentStateVersion
+						next = expected + 1
+						rows, err = h.queries.UpdateSessionAgentState(c.Request.Context(), models.UpdateSessionAgentStateParams{
+							AgentState:          stateVal,
+							AgentStateVersion:   next,
+							ID:                  existing.ID,
+							AgentStateVersion_2: expected,
+						})
+					}
+				}
+				if err == nil && rows > 0 {
+					agentStateUpdate = &protocolwire.VersionedString{
+						Value:   desired,
+						Version: next,
+					}
+				}
+			}
+		}
+
+		if metadataUpdate != nil || agentStateUpdate != nil {
+			// Make sure list ordering reflects that this session was refreshed.
+			if _, err := h.db.ExecContext(c.Request.Context(), `UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?`, existing.ID); err != nil {
+				logger.Debugf("Failed to bump session updated_at: %v", err)
+			}
+
+			if h.updates != nil {
+				userSeq, err := h.queries.UpdateAccountSeq(c.Request.Context(), userID)
+				if err != nil {
+					logger.Errorf("Failed to allocate user seq for update-session: %v", err)
+				} else {
+					h.updates.EmitUpdateToUser(userID, protocolwire.UpdateEvent{
+						ID:        types.NewCUID(),
+						Seq:       userSeq,
+						CreatedAt: time.Now().UnixMilli(),
+						Body: protocolwire.UpdateBodyUpdateSession{
+							T:          "update-session",
+							ID:         existing.ID,
+							Metadata:   metadataUpdate,
+							AgentState: agentStateUpdate,
+						},
+					})
+				}
+			}
+		}
+
+		// Refresh the session row if we changed anything (best-effort).
+		if metadataUpdate != nil || agentStateUpdate != nil {
+			if current, err := h.queries.GetSessionByID(c.Request.Context(), existing.ID); err == nil {
+				existing = current
+			}
+		}
+
+		// Ensure it has a dataEncryptionKey.
 		if len(existing.DataEncryptionKey) == 0 {
 			key, keyErr := h.ensureSessionDataEncryptionKey(c.Request.Context(), existing.ID)
 			if keyErr != nil {

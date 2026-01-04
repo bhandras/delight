@@ -8,6 +8,12 @@ type CreateSessionRequest struct {
 	TerminalID string `json:"terminalId"`
 	// Metadata is the encrypted metadata payload (base64-encoded).
 	Metadata string `json:"metadata"`
+	// AgentState is the plaintext agent state JSON payload.
+	//
+	// This is optional, but sending it during session creation lets the server
+	// update stale sessions (for example when the CLI restarts with a different
+	// agent) before any websocket-based state persistence occurs.
+	AgentState *string `json:"agentState,omitempty"`
 	// DataEncryptionKey is the session data key (base64-encoded 32 bytes).
 	//
 	// When present, clients may use this key to encrypt session payloads using

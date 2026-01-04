@@ -360,12 +360,31 @@ func (m *Manager) createSession() error {
 	}
 	encodedMeta := base64.StdEncoding.EncodeToString(metaJSON)
 
+	// Include an initial agentState in the session create request so the server
+	// can refresh stale sessions (for example after restarting the CLI with a
+	// different agent) even before websocket agent-state persistence kicks in.
+	initialAgentState := types.AgentState{
+		AgentType:         m.agent,
+		ControlledByUser:  true,
+		Requests:          make(map[string]types.AgentPendingRequest),
+		CompletedRequests: make(map[string]types.AgentCompletedRequest),
+	}
+	if m.cfg != nil {
+		initialAgentState.Model = strings.TrimSpace(m.cfg.Model)
+	}
+	agentStateJSON, err := json.Marshal(initialAgentState)
+	if err != nil {
+		return fmt.Errorf("failed to marshal agent state: %w", err)
+	}
+	agentStateString := string(agentStateJSON)
+
 	// Create session request (encode metadata as base64 string)
 	dataKeyB64 := base64.StdEncoding.EncodeToString(m.dataKey)
 	body, err := json.Marshal(wire.CreateSessionRequest{
 		Tag:               m.sessionTag,
 		TerminalID:        m.terminalID,
 		Metadata:          encodedMeta,
+		AgentState:        &agentStateString,
 		DataEncryptionKey: &dataKeyB64,
 	})
 	if err != nil {

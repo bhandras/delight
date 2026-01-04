@@ -291,7 +291,7 @@ private struct ToolbarIconButton: View {
             Image(systemName: systemImage)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(Theme.mutedText)
-                .padding(8)
+                .padding(10)
                 .background(Theme.cardBackground)
                 .clipShape(Circle())
                 .overlay(
@@ -450,7 +450,13 @@ private struct TerminalPropertiesSheet: View {
             ?? session.metadata?.host
             ?? terminalID
         let agent = terminalAgentLabel(for: session)
-        let platform = terminal?.metadata?.platform ?? "unknown"
+        let platformDisplay: String = {
+            let trimmed = terminal?.metadata?.platform?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let trimmed, !trimmed.isEmpty {
+                return trimmed
+            }
+            return "unknown"
+        }()
         let flavor = session.metadata?.flavor ?? "unknown"
         let flavorDisplay: String = {
             // Treat "Flavor" as the agent identifier instead of mixing static
@@ -458,7 +464,7 @@ private struct TerminalPropertiesSheet: View {
             if agent != "terminal" {
                 return agent
             }
-            return flavor == "unknown" ? platform : flavor
+            return flavor == "unknown" ? platformDisplay : flavor
         }()
         let online: Bool = {
             if let ui = session.uiState {
@@ -520,9 +526,9 @@ private struct TerminalPropertiesSheet: View {
                                 .foregroundColor(Theme.mutedText)
                         }
                         HStack {
-                            Text("Platform")
+                            Text("OS")
                             Spacer()
-                            Text(platform)
+                            Text(platformDisplay)
                                 .foregroundColor(Theme.mutedText)
                         }
                         HStack {
