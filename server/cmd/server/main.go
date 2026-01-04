@@ -1,7 +1,9 @@
 package main
 
 import (
-	"fmt"
+	"crypto/tls"
+	"flag"
+	"net/http"
 	"os"
 
 	"github.com/bhandras/delight/server/internal/api/handlers"
@@ -17,15 +19,66 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// runServer starts either an HTTP or HTTPS server depending on config.
+func runServer(router *gin.Engine, cfg *config.Config) error {
+	if cfg.TLS == nil {
+		return router.Run(cfg.Addr)
+	}
+
+	srv := &http.Server{
+		Addr:    cfg.Addr,
+		Handler: router,
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
+	}
+	return srv.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+}
+
 func main() {
+	addrFlag := flag.String("addr", "", "Listen address (default :3005 or $PORT)")
+	dbPathFlag := flag.String("db-path", "", "SQLite database path (default ./delight.db)")
+	masterSecretFlag := flag.String("master-secret", "", "Master secret for JWT signing (required)")
+	debugFlag := flag.Bool("debug", false, "Enable debug logging")
+	useTLSFlag := flag.Bool("tls", false, "Serve HTTPS using the provided TLS cert/key files")
+	tlsCertFlag := flag.String("tls-cert-file", "", "TLS certificate PEM file (required with --tls)")
+	tlsKeyFlag := flag.String("tls-key-file", "", "TLS private key PEM file (required with --tls)")
+	flag.Parse()
+
+	var overrides config.Overrides
+	if *addrFlag != "" {
+		overrides.Addr = addrFlag
+	}
+	if *dbPathFlag != "" {
+		overrides.DatabasePath = dbPathFlag
+	}
+	if *masterSecretFlag != "" {
+		overrides.MasterSecret = masterSecretFlag
+	}
+	if *debugFlag {
+		overrides.Debug = debugFlag
+	}
+	if *useTLSFlag {
+		if *tlsCertFlag == "" || *tlsKeyFlag == "" {
+			logger.Errorf("--tls requires --tls-cert-file and --tls-key-file")
+			os.Exit(1)
+		}
+		overrides.TLS = &config.TLSConfig{
+			CertFile: *tlsCertFlag,
+			KeyFile:  *tlsKeyFlag,
+		}
+	}
+
 	// Load configuration
-	cfg, err := config.Load()
+	cfg, err := config.Load(overrides)
 	if err != nil {
 		logger.Errorf("Failed to load config: %v", err)
 		os.Exit(1)
 	}
 
 	if cfg.Debug {
+		// Preserve existing DEBUG checks in handlers/middleware.
+		_ = os.Setenv("DEBUG", "true")
 		logger.SetLevel(logger.LevelDebug)
 	}
 
@@ -175,13 +228,15 @@ func main() {
 	router.Any("/v1/updates", socketIOServer.HandleSocketIO())
 	router.Any("/v1/updates/*any", socketIOServer.HandleSocketIO())
 
-	// Start HTTP server
-	addr := fmt.Sprintf(":%d", cfg.Port)
-	logger.Infof("Delight Server starting on http://localhost%s", addr)
+	scheme := "http"
+	if cfg.TLS != nil {
+		scheme = "https"
+	}
+	logger.Infof("Delight Server starting on %s://localhost%s", scheme, cfg.Addr)
 	logger.Infof("Database: %s", cfg.DatabasePath)
 	logger.Infof("JWT signing enabled")
 
-	if err := router.Run(addr); err != nil {
+	if err := runServer(router, cfg); err != nil {
 		logger.Errorf("Failed to start server: %v", err)
 		os.Exit(1)
 	}

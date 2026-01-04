@@ -52,6 +52,21 @@ go run ./cmd/server
 
 **Server will start on:** `http://localhost:3005`
 
+## HTTPS (Optional)
+
+By default the server runs over plain HTTP. You can enable HTTPS directly in
+the Go server by providing a certificate and key:
+
+```bash
+go run ./cmd/server \
+  --tls \
+  --tls-cert-file=./tls/cert.pem \
+  --tls-key-file=./tls/key.pem
+```
+
+When HTTPS is enabled, configure the iOS app server URL as:
+`https://your-server:3005`.
+
 ## Configuration
 
 Environment variables:
@@ -59,6 +74,16 @@ Environment variables:
 - `PORT` - HTTP server port (default: 3005)
 - `DELIGHT_MASTER_SECRET` - Master secret for token signing (required)
 - `DATABASE_PATH` - SQLite database path (default: ./delight.db)
+
+Command-line flags (override env defaults):
+
+- `--addr` - Listen address (default `:3005` or `$PORT`)
+- `--db-path` - SQLite database path
+- `--master-secret` - Master secret for JWT signing (required)
+- `--debug` - Enable debug logging
+- `--tls` - Enable HTTPS
+- `--tls-cert-file` - TLS certificate PEM file (required with `--tls`)
+- `--tls-key-file` - TLS private key PEM file (required with `--tls`)
 
 ## iOS App Setup
 

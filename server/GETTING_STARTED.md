@@ -113,6 +113,18 @@ WantedBy=multi-user.target
 | `DATABASE_PATH` | `./delight.db` | SQLite database path |
 | `DEBUG` | `false` | Enable debug logging |
 
+Flags (override env defaults):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--addr` | `:3005` | Listen address (or use `$PORT`) |
+| `--db-path` | `./delight.db` | SQLite database path |
+| `--master-secret` | *required* | Master secret for JWT signing |
+| `--debug` | `false` | Enable debug logging |
+| `--tls` | `false` | Serve HTTPS (TLS) |
+| `--tls-cert-file` | *(none)* | TLS certificate PEM file (required with `--tls`) |
+| `--tls-key-file` | *(none)* | TLS private key PEM file (required with `--tls`) |
+
 ### Troubleshooting
 
 **"missing DELIGHT_MASTER_SECRET"**:
