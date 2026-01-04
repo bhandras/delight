@@ -263,20 +263,25 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		A1B2C3D4E5F60718293A4B80 /* ShellScript */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "set -e\ncd \"${PROJECT_DIR}/..\"\n./cli/scripts/build_ios_sdk.sh\n";
-			showEnvVarsInLog = 0;
-		};
+			A1B2C3D4E5F60718293A4B80 /* ShellScript */ = {
+				isa = PBXShellScriptBuildPhase;
+				buildActionMask = 2147483647;
+				files = (
+				);
+				inputPaths = (
+					"$(SRCROOT)/../cli/scripts/build_ios_sdk.sh",
+					"$(SRCROOT)/../cli/go.mod",
+					"$(SRCROOT)/../cli/go.sum",
+					"$(SRCROOT)/../cli/sdk",
+				);
+				outputPaths = (
+					"$(DERIVED_FILE_DIR)/delight_sdk.stamp",
+				);
+				runOnlyForDeploymentPostprocessing = 0;
+				shellPath = /bin/sh;
+				shellScript = "set -e\ncd \"${PROJECT_DIR}/..\"\n./cli/scripts/build_ios_sdk.sh\n\n# Mark the script as having produced its declared output so Xcode can\n# skip re-running the phase when inputs/outputs are unchanged.\ntouch \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+				showEnvVarsInLog = 0;
+			};
 /* End PBXShellScriptBuildPhase section */
 
 		/* Begin PBXSourcesBuildPhase section */
