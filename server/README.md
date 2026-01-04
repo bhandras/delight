@@ -1,10 +1,15 @@
 # Delight Server (Go)
 
-Private, self-hosted backend for the Delight iOS app - a mobile client for Claude Code with end-to-end encryption.
+Private, self-hosted backend for the Delight iOS app. It stores metadata,
+coordinates pairing/auth, and fans out updates over WebSockets while keeping
+message payloads end-to-end encrypted.
+
+This server is experimental and intended primarily for personal use.
 
 ## Why This Exists
 
-The original Delight server is abandoned and closed-source hosted. This is a clean-room implementation in Go that:
+The original Delight server is abandoned and closed-source hosted. This is a
+clean-room implementation in Go that:
 
 - ✅ **100% Privacy** - You control the server, all data is end-to-end encrypted
 - ✅ **Single Binary** - No Node.js, no external dependencies, just Go + SQLite

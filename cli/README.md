@@ -1,15 +1,14 @@
 # Delight CLI (Go)
 
-Minimal CLI wrapper for agent sessions with mobile remote control.
+CLI for running agent sessions and syncing them to the Delight iOS app.
 
-## Features (Minimal MVP)
+This CLI is experimental and intended primarily for personal use.
 
-- ✅ Wrap Claude Code execution
-- ✅ End-to-end encryption
-- ✅ Real-time sync with delight-server-go
-- ✅ Works with Delight iOS app
-- ⏳ Daemon mode (coming soon)
-- ⏳ RPC system (coming soon)
+The CLI is responsible for:
+
+- Running an agent backend (Codex, Claude, etc) in a terminal directory
+- Pairing/auth with the server (for the mobile app to discover terminals)
+- Encrypting message payloads end-to-end before they reach the server
 
 ## Quick Start
 
@@ -27,21 +26,24 @@ make build
 ./delight run --server-url=http://localhost:3005
 
 # Run a session with an explicit model + log level
-./delight run --server-url=http://localhost:3005 --model=gpt-5.2-codex --log-level=debug
+./delight run \
+  --server-url=http://localhost:3005 \
+  --model=gpt-5.2-codex \
+  --log-level=debug
 ```
 
 ## How It Works
 
 ```
-Terminal
+Terminal directory
    ↓
-delight-cli-go wraps `claude`
+Delight CLI runs an agent backend
    ↓
-Encrypts messages
+Encrypts messages end-to-end
    ↓
-WebSocket → delight-server-go
+WebSocket → Delight server
    ↓
-Relays to Delight iOS app
+Relays updates to the Delight iOS app
 ```
 
 ## Commands
@@ -56,13 +58,6 @@ delight auth         # Authenticate with server
 delight version      # Show version
 ```
 
-## Architecture
-
-- **Single binary** - No dependencies
-- **Compatible encryption** - Works with TypeScript version
-- **Minimal surface** - Core features only (for now)
-- **Fast startup** - <10ms
-
 ## Development
 
 ```bash
@@ -72,6 +67,8 @@ make test     # Run tests
 make clean    # Clean build artifacts
 ```
 
-## License
+## Related Docs
 
-MIT
+- `README.md` - Repo overview
+- `server/README.md` - Server configuration and hosting
+- `ios/README.md` - iOS app build and simulator workflow
