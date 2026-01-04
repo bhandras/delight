@@ -1,0 +1,17 @@
+{
+	# Optional. Set via DELIGHT_EMAIL in your env file.
+	email {$DELIGHT_EMAIL}
+}
+
+{$DELIGHT_HOSTNAME} {
+	encode zstd gzip
+
+	# Proxy all traffic (including WebSocket upgrades) to the Go server.
+	reverse_proxy server:3005
+
+	log {
+		output file /data/access.log
+		format console
+	}
+}
+

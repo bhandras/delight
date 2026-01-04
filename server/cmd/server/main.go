@@ -3,8 +3,10 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/bhandras/delight/server/internal/api/handlers"
 	"github.com/bhandras/delight/server/internal/api/middleware"
@@ -18,6 +20,30 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
+
+// configureLogging wires Delight's logger (and Gin's default writers) to either
+// stderr or a log file (while keeping stderr output).
+func configureLogging(logFilePath string) error {
+	if logFilePath == "" {
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(logFilePath), 0o755); err != nil {
+		return err
+	}
+
+	f, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+
+	// Keep streaming logs to stderr for `docker logs`, but also persist them.
+	w := io.MultiWriter(os.Stderr, f)
+	logger.SetOutput(w)
+	gin.DefaultWriter = w
+	gin.DefaultErrorWriter = w
+	return nil
+}
 
 // runServer starts either an HTTP or HTTPS server depending on config.
 func runServer(router *gin.Engine, cfg *config.Config) error {
@@ -35,15 +61,22 @@ func runServer(router *gin.Engine, cfg *config.Config) error {
 	return srv.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
 }
 
+// main is the entry point for the Delight server binary.
 func main() {
 	addrFlag := flag.String("addr", "", "Listen address (default :3005 or $PORT)")
 	dbPathFlag := flag.String("db-path", "", "SQLite database path (default ./delight.db)")
 	masterSecretFlag := flag.String("master-secret", "", "Master secret for JWT signing (required)")
 	debugFlag := flag.Bool("debug", false, "Enable debug logging")
+	logFileFlag := flag.String("log-file", "", "Optional log file path (also logs to stderr)")
 	useTLSFlag := flag.Bool("tls", false, "Serve HTTPS using the provided TLS cert/key files")
 	tlsCertFlag := flag.String("tls-cert-file", "", "TLS certificate PEM file (required with --tls)")
 	tlsKeyFlag := flag.String("tls-key-file", "", "TLS private key PEM file (required with --tls)")
 	flag.Parse()
+
+	if err := configureLogging(*logFileFlag); err != nil {
+		logger.Errorf("Failed to configure logging: %v", err)
+		os.Exit(1)
+	}
 
 	var overrides config.Overrides
 	if *addrFlag != "" {

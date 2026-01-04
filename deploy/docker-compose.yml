@@ -1,0 +1,41 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    environment:
+      # Required for JWT signing.
+      - DELIGHT_MASTER_SECRET=${DELIGHT_MASTER_SECRET}
+    volumes:
+      - ${DELIGHT_DATA_DIR:-./deploy-data}/server:/data
+    command:
+      - /server
+      - --addr=:3005
+      - --db-path=/data/delight.db
+      - --log-file=/data/server.log
+    networks:
+      - delight
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    environment:
+      - DELIGHT_HOSTNAME=${DELIGHT_HOSTNAME}
+      - DELIGHT_EMAIL=${DELIGHT_EMAIL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${DELIGHT_DATA_DIR:-./deploy-data}/caddy/data:/data
+      - ${DELIGHT_DATA_DIR:-./deploy-data}/caddy/config:/config
+    depends_on:
+      - server
+    networks:
+      - delight
+
+networks:
+  delight:
+    driver: bridge
+

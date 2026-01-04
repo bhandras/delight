@@ -52,6 +52,31 @@ go run ./cmd/server
 
 **Server will start on:** `http://localhost:3005`
 
+## Public Hosting (HTTPS with Caddy)
+
+For public hosting, the easiest setup is to run the Go server behind Caddy.
+Caddy automatically provisions and renews Let's Encrypt certificates.
+
+Prereqs:
+
+- A DNS hostname pointing to your server (e.g. `api.example.com`)
+- TCP ports `80` and `443` reachable from the public internet
+
+Start:
+
+```bash
+./deploy/delight-server.sh init
+${EDITOR:-vi} ./deploy-data/.env
+./deploy/delight-server.sh up
+```
+
+Data on the host filesystem:
+
+- Server DB: `./deploy-data/server/delight.db`
+- Server logs: `./deploy-data/server/server.log`
+- Caddy access log: `./deploy-data/caddy/data/access.log`
+- Caddy TLS state/certs: `./deploy-data/caddy/`
+
 ## HTTPS (Optional)
 
 By default the server runs over plain HTTP. You can enable HTTPS directly in
@@ -81,6 +106,7 @@ Command-line flags (override env defaults):
 - `--db-path` - SQLite database path
 - `--master-secret` - Master secret for JWT signing (required)
 - `--debug` - Enable debug logging
+- `--log-file` - Optional log file path (also logs to stderr)
 - `--tls` - Enable HTTPS
 - `--tls-cert-file` - TLS certificate PEM file (required with `--tls`)
 - `--tls-key-file` - TLS private key PEM file (required with `--tls`)

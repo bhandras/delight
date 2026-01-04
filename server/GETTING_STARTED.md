@@ -139,7 +139,18 @@ Flags (override env defaults):
 - Make sure the server is accessible from your phone
 - Check firewall settings
 - Use your local IP address, not `localhost`
-- iOS requires HTTPS for production (use a reverse proxy like Caddy)
+- For public hosting, run behind HTTPS (Caddy is recommended)
+
+### Public Hosting (HTTPS with Caddy)
+
+Delight includes a Docker Compose setup for public hosting that provisions
+Let's Encrypt certificates automatically with Caddy.
+
+```bash
+./deploy/delight-server.sh init
+${EDITOR:-vi} ./deploy-data/.env
+./deploy/delight-server.sh up
+```
 
 ### Next Steps
 

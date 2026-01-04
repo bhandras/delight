@@ -4,3 +4,4 @@ cli/node_modules/
 ios/DelightApp.xcodeproj/project.xcworkspace/
 ios/DelightApp.xcodeproj/xcuserdata/
 .DS_Store
+deploy-data/
