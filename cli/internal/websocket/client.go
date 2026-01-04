@@ -199,20 +199,21 @@ func (c *Client) Connect() error {
 	// Set the path (like JS client does)
 	opts.SetPath("/v1/updates")
 
-	switch transport {
-	case TransportWebSocket:
-		if debug {
-			logger.Debugf("Socket.IO transports: polling + websocket")
-		}
-		// Prefer the standard Engine.IO flow: start with polling, then upgrade
-		// to websocket when possible. Some server/client implementations do not
-		// support websocket-only handshakes reliably.
-		opts.SetTransports(types.NewSet(socket.Polling, socket.WebSocket))
-	case TransportPolling:
-		if debug {
-			logger.Debugf("Socket.IO transports: polling only")
-		}
-		opts.SetTransports(types.NewSet(socket.Polling))
+		switch transport {
+		case TransportWebSocket:
+			if debug {
+				logger.Debugf("Socket.IO transports: websocket only")
+			}
+			// WebSocket-only avoids Engine.IO polling, which can trigger Alt-Svc
+			// (HTTP/3) upgrade attempts in the upstream library. That upgrade path
+			// is unreliable on some platforms (notably gomobile / iOS) and can lead
+			// to long hangs and timeouts even when the server is reachable.
+			opts.SetTransports(types.NewSet(socket.WebSocket))
+		case TransportPolling:
+			if debug {
+				logger.Debugf("Socket.IO transports: polling only")
+			}
+			opts.SetTransports(types.NewSet(socket.Polling))
 	default:
 		opts.SetTransports(types.NewSet(socket.WebSocket))
 	}
