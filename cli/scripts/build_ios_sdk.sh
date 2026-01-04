@@ -11,6 +11,31 @@ OUT_DIR="${ROOT_DIR}/build"
 
 mkdir -p "${OUT_DIR}"
 
+# Xcode run script phases execute with a very minimal PATH, so `go` may not be
+# discoverable even when it is installed (e.g. via Homebrew). Expand PATH with
+# common Go install locations before we proceed.
+if ! command -v go >/dev/null 2>&1; then
+  for candidate in \
+    "/opt/homebrew/bin" \
+    "/usr/local/bin" \
+    "/opt/homebrew/opt/go/libexec/bin" \
+    "$HOME/go/bin" \
+    "$HOME/.local/bin" \
+    "$HOME/bin"; do
+    if [ -x "${candidate}/go" ]; then
+      export PATH="${candidate}:${PATH}"
+      break
+    fi
+  done
+fi
+
+if ! command -v go >/dev/null 2>&1; then
+  echo "Error: go executable not found in PATH." >&2
+  echo "Install Go and/or ensure it is visible to Xcode build scripts." >&2
+  echo "Tried common locations like /opt/homebrew/bin and /usr/local/bin." >&2
+  exit 127
+fi
+
 export GOPATH="${GOPATH:-$HOME/go}"
 export PATH="${GOPATH}/bin:${PATH}"
 
