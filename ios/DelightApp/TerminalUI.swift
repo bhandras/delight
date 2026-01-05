@@ -345,9 +345,9 @@ private struct TerminalAgentConfigControls: View {
             if !isEnabled {
                 return "take control"
             }
-            if !isOnline {
-                return "offline"
-            }
+            // If the CLI goes offline, hide the activity chip entirely. Otherwise,
+            // stale "thinking" state can linger visually after disconnects.
+            if !isOnline { return nil }
             if session.agentState?.hasPendingRequests == true {
                 return "permission required"
             }
