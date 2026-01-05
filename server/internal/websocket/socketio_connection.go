@@ -66,13 +66,6 @@ func (s *SocketIOServer) handleConnection(client *socket.Socket, deps handlers.D
 
 	logger.Infof("Socket.IO client ready (user: %s, clientType: %s)", userID, handshakeAuth.ClientType)
 
-	// Mobile clients rely on `ui.event` ephemerals for tool/thinking transcript
-	// rows. When the app backgrounds it misses those ephemeral updates, so we
-	// replay a bounded backlog on reconnect.
-	if handshakeAuth.ClientType == "user-scoped" {
-		s.replayUIEventLog(context.Background(), userID, client)
-	}
-
 	if handshakeAuth.ClientType == "terminal-scoped" && handshakeAuth.TerminalID != "" {
 		result := handlers.ConnectTerminalScoped(
 			context.Background(),

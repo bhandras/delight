@@ -67,7 +67,6 @@ func (s *SocketIOServer) registerClientHandlers(client *socket.Socket, deps hand
 	client.On("ephemeral", func(data ...any) {
 		sd := s.getSocketData(socketID)
 		payload, _ := getFirstMap(data)
-		s.maybeStoreUIEventLogEntry(context.Background(), sd.UserID, payload)
 		result := handlers.EphemeralForward(
 			context.Background(),
 			deps,
