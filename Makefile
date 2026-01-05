@@ -60,3 +60,10 @@ ios-test: ios-sdk ios-sim-boot
 test:
 	(cd cli && go test $(GO_TEST_ARGS) $(CLI_TEST_PKGS))
 	(cd server && go test $(GO_TEST_ARGS) $(SERVER_TEST_PKGS))
+
+.PHONY: lint
+
+lint:
+	(cd shared && golangci-lint run ./...)
+	(cd cli && golangci-lint run ./...)
+	(cd server && golangci-lint run ./...)

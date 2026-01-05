@@ -1,0 +1,19 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - ineffassign
+  disable:
+    - errcheck
+    - unused
+
+issues:
+  # Keep CI output complete; treat all findings as actionable.
+  max-issues-per-linter: 0
+  max-same-issues: 0
