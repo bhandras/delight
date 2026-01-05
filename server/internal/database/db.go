@@ -5,14 +5,17 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"path/filepath"
+	"sort"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// schemaMigrationsFS embeds the SQL schema migrations so the server can run as
-// a single binary without needing access to the source tree at runtime.
+// schemaMigrationsFS embeds the SQL schema migrations so the server can run
+// as a single binary without needing access to the source tree at runtime.
 //
-//go:embed migrations/001_initial.sql
+//go:embed migrations/*.sql
 var schemaMigrationsFS embed.FS
 
 type DB struct {
@@ -40,52 +43,102 @@ func Open(dbPath string) (*DB, error) {
 	return &DB{db}, nil
 }
 
-// runMigrations applies the SQL schema
+// runMigrations applies the SQL schema migrations embedded in the binary.
 func runMigrations(db *sql.DB) error {
 	// Create migrations tracking table
 	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS schema_migrations (
-			version TEXT PRIMARY KEY,
-			applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)
-	`)
+			CREATE TABLE IF NOT EXISTS schema_migrations (
+				version TEXT PRIMARY KEY,
+				applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			)
+		`)
 	if err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
 	}
 
-	// Check if migration 001 has been applied
-	var count int
-	err = db.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE version = ?", "001_initial").Scan(&count)
+	migrations, err := listEmbeddedMigrations(schemaMigrationsFS)
 	if err != nil {
-		return fmt.Errorf("failed to check migration status: %w", err)
+		return err
 	}
 
-	// If already applied, skip
-	if count > 0 {
-		return nil
+	for _, migration := range migrations {
+		if err := applyMigration(db, migration); err != nil {
+			return err
+		}
 	}
-
-	// Read the migration file
-	migrationSQL, err := fs.ReadFile(schemaMigrationsFS, "migrations/001_initial.sql")
-	if err != nil {
-		return fmt.Errorf("failed to read migration file: %w", err)
-	}
-
-	// Execute the migration
-	if _, err := db.Exec(string(migrationSQL)); err != nil {
-		return fmt.Errorf("failed to execute migration: %w", err)
-	}
-
-	// Record that migration was applied
-	_, err = db.Exec("INSERT INTO schema_migrations (version) VALUES (?)", "001_initial")
-	if err != nil {
-		return fmt.Errorf("failed to record migration: %w", err)
-	}
-
 	return nil
 }
 
 // Close closes the database connection
 func (db *DB) Close() error {
 	return db.DB.Close()
+}
+
+// listEmbeddedMigrations enumerates embedded migration SQL files in the
+// migrations folder and returns them in stable order.
+func listEmbeddedMigrations(root fs.FS) ([]string, error) {
+	entries, err := fs.ReadDir(root, "migrations")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read migrations dir: %w", err)
+	}
+
+	var migrations []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".sql") {
+			continue
+		}
+		migrations = append(migrations, filepath.Join("migrations", name))
+	}
+	sort.Strings(migrations)
+	return migrations, nil
+}
+
+// applyMigration applies a single embedded SQL migration if it has not already
+// been recorded in schema_migrations.
+func applyMigration(db *sql.DB, migrationPath string) error {
+	version := strings.TrimSuffix(filepath.Base(migrationPath), filepath.Ext(migrationPath))
+	if version == "" {
+		return fmt.Errorf("invalid migration filename: %s", migrationPath)
+	}
+
+	var count int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM schema_migrations WHERE version = ?",
+		version,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("failed to check migration status (%s): %w", version, err)
+	}
+	if count > 0 {
+		return nil
+	}
+
+	migrationSQL, err := fs.ReadFile(schemaMigrationsFS, migrationPath)
+	if err != nil {
+		return fmt.Errorf("failed to read migration file (%s): %w", version, err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to start migration tx (%s): %w", version, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(string(migrationSQL)); err != nil {
+		return fmt.Errorf("failed to execute migration (%s): %w", version, err)
+	}
+	if _, err := tx.Exec(
+		"INSERT INTO schema_migrations (version) VALUES (?)",
+		version,
+	); err != nil {
+		return fmt.Errorf("failed to record migration (%s): %w", version, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit migration (%s): %w", version, err)
+	}
+	return nil
 }
