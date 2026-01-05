@@ -289,18 +289,22 @@ private struct ToolbarIconButton: View {
     let accessibilityLabel: String
     let action: () -> Void
 
+    private enum Layout {
+        static let buttonSize: CGFloat = 32
+        static let iconSize: CGFloat = 13
+        static let strokeOpacity: Double = 0.6
+        static let strokeWidth: CGFloat = 1
+    }
+
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: Layout.iconSize, weight: .semibold))
                 .foregroundColor(Theme.mutedText)
-                .padding(10)
+                .frame(width: Layout.buttonSize, height: Layout.buttonSize)
                 .background(Theme.cardBackground)
                 .clipShape(Circle())
-                .overlay(
-                    Circle()
-                        .stroke(Color(uiColor: .separator).opacity(0.6), lineWidth: 1)
-                )
+                .overlay(Circle().stroke(Color(uiColor: .separator).opacity(Layout.strokeOpacity), lineWidth: Layout.strokeWidth))
         }
         .accessibilityLabel(accessibilityLabel)
         .buttonStyle(.plain)
