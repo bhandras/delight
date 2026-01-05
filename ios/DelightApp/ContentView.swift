@@ -111,6 +111,16 @@ struct ContentView: View {
     }
 }
 
+/// DebugLogLayout collects constants for the in-app debug log viewer.
+private enum DebugLogLayout {
+    /// scrollToBottomDelaySeconds gives the ScrollView time to finish layout
+    /// before we scroll to the last element.
+    static let scrollToBottomDelaySeconds: TimeInterval = 0.05
+
+    /// scrollAnimationSeconds controls the double-tap scroll animation speed.
+    static let scrollAnimationSeconds: TimeInterval = 0.15
+}
+
 /// KeyboardDismissal provides a small SwiftUI helper for dismissing the iOS
 /// software keyboard when the user taps outside of a focused text input.
 ///
@@ -562,6 +572,19 @@ private struct DebugView: View {
                             .padding(8)
                             .background(Theme.codeBackground)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .contentShape(Rectangle())
+                            .highPriorityGesture(
+                                TapGesture(count: 2).onEnded {
+                                    // Give List/ScrollView a moment to settle any in-flight layout
+                                    // changes so the target ID definitely exists.
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + DebugLogLayout.scrollToBottomDelaySeconds) {
+                                        guard let last = lines.indices.last else { return }
+                                        withAnimation(.easeOut(duration: DebugLogLayout.scrollAnimationSeconds)) {
+                                            scrollProxy.scrollTo(last, anchor: .bottom)
+                                        }
+                                    }
+                                }
+                            )
                             .onAppear {
                                 DispatchQueue.main.async {
                                     if let last = lines.indices.last {

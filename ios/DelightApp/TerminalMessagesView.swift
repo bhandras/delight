@@ -12,6 +12,7 @@ struct TerminalMessagesView: UIViewRepresentable {
     let hasMoreHistory: Bool
     let isLoadingHistory: Bool
     let onLoadOlder: () -> Void
+    let onDoubleTap: () -> Void
 
     /// Optional external scroll request (e.g. scroll-to-bottom). The view consumes the request.
     let scrollRequest: ScrollRequest?
@@ -30,6 +31,18 @@ struct TerminalMessagesView: UIViewRepresentable {
         /// historyLoadTriggerOffset is how close to the top we start fetching
         /// older messages.
         static let historyLoadTriggerOffset: CGFloat = 4
+
+        /// estimatedRowHeight provides a baseline size hint for autosizing rows.
+        static let estimatedRowHeight: CGFloat = 120
+
+        /// nearBottomThreshold is the max distance (in points) from the bottom
+        /// that still counts as "near bottom" for auto-scroll behavior.
+        static let nearBottomThreshold: CGFloat = 80
+
+        /// scrollSecondPassDelaySeconds is a small delay used for a second
+        /// scroll-to-bottom attempt after hosted SwiftUI content settles row
+        /// heights (Markdown rendering, dynamic type).
+        static let scrollSecondPassDelaySeconds: TimeInterval = 0.08
     }
 
     func makeCoordinator() -> Coordinator {
@@ -43,7 +56,7 @@ struct TerminalMessagesView: UIViewRepresentable {
         tableView.showsVerticalScrollIndicator = true
         tableView.keyboardDismissMode = .interactive
         tableView.allowsSelection = false
-        tableView.estimatedRowHeight = 120
+        tableView.estimatedRowHeight = Layout.estimatedRowHeight
         tableView.rowHeight = UITableView.automaticDimension
         tableView.contentInset = UIEdgeInsets(
             top: Layout.transcriptTopBottomInset,
@@ -58,6 +71,12 @@ struct TerminalMessagesView: UIViewRepresentable {
         let refresh = UIRefreshControl()
         refresh.addTarget(context.coordinator, action: #selector(Coordinator.onRefreshControl), for: .valueChanged)
         tableView.refreshControl = refresh
+
+        let doubleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.onDoubleTap))
+        doubleTap.numberOfTapsRequired = 2
+        doubleTap.cancelsTouchesInView = false
+        doubleTap.delegate = context.coordinator
+        tableView.addGestureRecognizer(doubleTap)
 
         return tableView
     }
@@ -82,11 +101,41 @@ struct TerminalMessagesView: UIViewRepresentable {
         let newLastID = messages.last?.id
 
         let fontSizeChanged = Int(context.coordinator.lastFontSize) != Int(fontSize)
-        let messageCountChanged = context.coordinator.lastMessageCount != messages.count
+        let oldCount = context.coordinator.lastMessageCount
+        let newCount = messages.count
+        let messageCountChanged = oldCount != newCount
         let messageEdgeChanged = (previousFirstID != newFirstID) || (previousLastID != newLastID)
         let shouldReload = fontSizeChanged || messageCountChanged || messageEdgeChanged
 
-        if shouldReload {
+        // Fast path: append-only updates are common during streaming agent output.
+        // Avoid `reloadData()` (which can be O(n) and cause long UI stalls for
+        // large transcripts) when we can safely insert the new rows.
+        if !fontSizeChanged,
+           oldCount > 0,
+           newCount > oldCount,
+           previousFirstID == newFirstID,
+           let previousLastID,
+           oldCount - 1 < messages.count,
+           messages[oldCount - 1].id == previousLastID {
+            let newIndexPaths = (oldCount..<newCount).map { IndexPath(row: $0, section: 0) }
+            uiView.performBatchUpdates({
+                uiView.insertRows(at: newIndexPaths, with: .none)
+            }, completion: nil)
+            uiView.layoutIfNeeded()
+
+            // If the user was near the bottom, keep them pinned as new content arrives.
+            if context.coordinator.wasNearBottomBeforeUpdate {
+                context.coordinator.scheduleScrollToBottom(uiView, animated: true)
+            }
+
+            context.coordinator.lastFirstMessageID = newFirstID
+            context.coordinator.lastLastMessageID = newLastID
+            context.coordinator.lastMessageCount = newCount
+            context.coordinator.lastFontSize = fontSize
+            for idx in oldCount..<newCount {
+                context.coordinator.lastIndexByID[messages[idx].id] = idx
+            }
+        } else if shouldReload {
             // Detect whether we're prepending older messages by checking if the previous first
             // message still exists but moved down (index increased).
             let oldContentHeight = uiView.contentSize.height
@@ -119,13 +168,13 @@ struct TerminalMessagesView: UIViewRepresentable {
             } else if !context.coordinator.didInitialScrollToBottom,
                       !messages.isEmpty {
                 // First non-empty render: scroll to bottom.
-                context.coordinator.scrollToBottom(uiView, animated: false)
+                context.coordinator.scheduleScrollToBottom(uiView, animated: false)
                 context.coordinator.didInitialScrollToBottom = true
             } else if let previousLastID,
                       previousLastID != newLastID,
                       context.coordinator.wasNearBottomBeforeUpdate {
                 // New messages appended while the user is (roughly) at the bottom -> keep pinned.
-                context.coordinator.scrollToBottom(uiView, animated: true)
+                context.coordinator.scheduleScrollToBottom(uiView, animated: true)
             }
 
             context.coordinator.lastFirstMessageID = newFirstID
@@ -146,9 +195,13 @@ struct TerminalMessagesView: UIViewRepresentable {
 
         // Consume external scroll requests.
         if let request = scrollRequest {
+            if context.coordinator.lastHandledScrollRequestID == request.id {
+                return
+            }
+            context.coordinator.lastHandledScrollRequestID = request.id
             switch request.target {
             case .bottom:
-                context.coordinator.scrollToBottom(uiView, animated: true)
+                context.coordinator.scheduleScrollToBottom(uiView, animated: true)
             case .message(let id, _):
                 context.coordinator.scrollToMessageID(uiView, id: id)
             }
@@ -160,7 +213,7 @@ struct TerminalMessagesView: UIViewRepresentable {
 
     // MARK: - Coordinator
 
-    final class Coordinator: NSObject, UITableViewDataSource, UITableViewDelegate, UIScrollViewDelegate {
+    final class Coordinator: NSObject, UITableViewDataSource, UITableViewDelegate, UIScrollViewDelegate, UIGestureRecognizerDelegate {
         var parent: TerminalMessagesView
 
         var didInitialScrollToBottom: Bool = false
@@ -169,12 +222,23 @@ struct TerminalMessagesView: UIViewRepresentable {
         var lastIndexByID: [String: Int] = [:]
         var lastMessageCount: Int = 0
         var lastFontSize: CGFloat = 0
+        var lastHandledScrollRequestID: UUID?
+        private var pendingScrollWorkItem: DispatchWorkItem?
+        private var pendingSecondScrollWorkItem: DispatchWorkItem?
 
         // Set during scroll events; used by updateUIView to decide whether to auto-scroll.
         var wasNearBottomBeforeUpdate: Bool = true
 
         init(parent: TerminalMessagesView) {
             self.parent = parent
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            true
+        }
+
+        @objc func onDoubleTap() {
+            parent.onDoubleTap()
         }
 
         func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
@@ -242,11 +306,52 @@ struct TerminalMessagesView: UIViewRepresentable {
             parent.onLoadOlder()
         }
 
-        func scrollToBottom(_ tableView: UITableView, animated: Bool) {
+        func scheduleScrollToBottom(_ tableView: UITableView, animated: Bool) {
+            pendingScrollWorkItem?.cancel()
+            pendingSecondScrollWorkItem?.cancel()
+
+            let first = DispatchWorkItem { [weak self, weak tableView] in
+                guard let self, let tableView else { return }
+                self.scrollToBottomNow(tableView, animated: animated)
+            }
+            pendingScrollWorkItem = first
+            DispatchQueue.main.async(execute: first)
+
+            // A second pass catches late row-height changes from hosted SwiftUI
+            // content (Markdown, dynamic type) without building up an unbounded
+            // queue when messages stream in quickly.
+            let second = DispatchWorkItem { [weak self, weak tableView] in
+                guard let self, let tableView else { return }
+                self.scrollToBottomNow(tableView, animated: animated)
+            }
+            pendingSecondScrollWorkItem = second
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + Layout.scrollSecondPassDelaySeconds,
+                execute: second
+            )
+        }
+
+        func scrollToBottomNow(_ tableView: UITableView, animated: Bool) {
             let count = parent.messages.count
             guard count > 0 else { return }
             let indexPath = IndexPath(row: count - 1, section: 0)
+            // When the transcript is large, or when hosted SwiftUI content is still
+            // settling row heights, a single `scrollToRow` can land slightly above
+            // the true bottom. Scroll after layout, then also clamp to the absolute
+            // bottom offset as a fallback.
+            tableView.layoutIfNeeded()
+            guard tableView.numberOfRows(inSection: 0) > indexPath.row else { return }
             tableView.scrollToRow(at: indexPath, at: .bottom, animated: animated)
+
+            let visibleHeight = tableView.bounds.height
+                - tableView.adjustedContentInset.top
+                - tableView.adjustedContentInset.bottom
+            if visibleHeight <= 0 { return }
+            let bottomY = max(
+                -tableView.adjustedContentInset.top,
+                tableView.contentSize.height - visibleHeight
+            )
+            tableView.setContentOffset(CGPoint(x: 0, y: bottomY), animated: animated)
         }
 
         func scrollToMessageID(_ tableView: UITableView, id: String) {
@@ -255,7 +360,7 @@ struct TerminalMessagesView: UIViewRepresentable {
             tableView.scrollToRow(at: indexPath, at: .top, animated: true)
         }
 
-        private func isNearBottom(_ scrollView: UIScrollView, threshold: CGFloat = 80) -> Bool {
+        private func isNearBottom(_ scrollView: UIScrollView, threshold: CGFloat = Layout.nearBottomThreshold) -> Bool {
             let visibleHeight = scrollView.bounds.height - scrollView.adjustedContentInset.top - scrollView.adjustedContentInset.bottom
             if visibleHeight <= 0 { return true }
             let y = scrollView.contentOffset.y + scrollView.adjustedContentInset.top

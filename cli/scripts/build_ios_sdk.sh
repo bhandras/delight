@@ -8,6 +8,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${ROOT_DIR}/build"
+OUT_PATH="${OUT_DIR}/DelightSDK.xcframework"
 
 mkdir -p "${OUT_DIR}"
 
@@ -65,7 +66,12 @@ export GOWORK=off
   #     -Werror,-Wdeclaration-after-statement
   #   in runtime/cgo sources, causing `make ios-run` to fail and retry. Keep the
   #   build tag surface stable by always building without `lldb`.
-  gomobile bind -tags gomobile -target=ios -o "${OUT_DIR}/DelightSDK.xcframework" ./sdk
+  #
+  # `gomobile bind` fails if the output already exists, and Xcode builds can
+  # re-run this script frequently. Remove the previous XCFramework to keep
+  # builds deterministic.
+  rm -rf "${OUT_PATH}"
+  gomobile bind -tags gomobile -target=ios -o "${OUT_PATH}" ./sdk
 )
 
-echo "Built ${OUT_DIR}/DelightSDK.xcframework"
+echo "Built ${OUT_PATH}"

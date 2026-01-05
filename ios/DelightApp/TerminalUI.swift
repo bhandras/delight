@@ -71,7 +71,8 @@ private struct TerminalsHeader: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             Text("Terminals")
-                .font(.system(size: 42, weight: .bold, design: .default))
+                .font(.largeTitle)
+                .fontWeight(.bold)
                 .foregroundColor(Theme.messageText)
             Spacer()
             if isLoggedIn {
@@ -202,6 +203,14 @@ struct TerminalDetailView: View {
                     hasMoreHistory: model.hasMoreHistory,
                     isLoadingHistory: model.isLoadingHistory,
                     onLoadOlder: { model.fetchOlderMessages() },
+                    onDoubleTap: {
+                        // Double-tap: refresh and jump to the newest message.
+                        // Trigger a local scroll immediately (even if offline), then
+                        // refresh from the server which will request another scroll-to-bottom
+                        // once the latest page lands.
+                        model.scrollRequest = ScrollRequest(target: .bottom)
+                        model.fetchMessages()
+                    },
                     scrollRequest: model.scrollRequest,
                     onConsumeScrollRequest: { model.scrollRequest = nil },
                     fontSize: CGFloat(model.terminalFontSize)
@@ -211,15 +220,6 @@ struct TerminalDetailView: View {
                 // This avoids stale layout when toggling appearance settings.
                 .id("transcript-\(currentSession.id)-\(Int(model.terminalFontSize))")
                 .contentShape(Rectangle())
-                .highPriorityGesture(
-                    TapGesture(count: 2).onEnded {
-                        model.fetchMessages()
-                        model.scrollRequest = ScrollRequest(target: .bottom)
-                    }
-                )
-                .onTapGesture {
-                    model.scrollRequest = ScrollRequest(target: .bottom)
-                }
                 TerminalAgentConfigControls(model: model, session: currentSession, isEnabled: isPhoneControlled)
                     .background(Theme.cardBackground)
                 MessageComposer(model: model, isEnabled: isComposerEnabled, placeholder: placeholder)
@@ -558,32 +558,13 @@ private struct TerminalPropertiesSheet: View {
 
                     if terminalID != "unknown" {
                         Section {
-                            Button(role: .destructive) {
+                            SheetActionButton(
+                                title: model.isDeletingTerminal ? "Deleting…" : "Delete Terminal",
+                                systemImage: model.isDeletingTerminal ? "hourglass" : "trash",
+                                tint: Theme.warning
+                            ) {
                                 showDeleteConfirm = true
-                            } label: {
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .fill(Theme.warning.opacity(0.16))
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .stroke(Theme.warning.opacity(0.5), lineWidth: 1)
-
-                                    if model.isDeletingTerminal {
-                                        ProgressView()
-                                            .tint(Theme.warning)
-                                    } else {
-                                        HStack(spacing: 10) {
-                                            Image(systemName: "trash")
-                                                .font(.system(size: 16, weight: .semibold))
-                                            Text("Delete Terminal")
-                                                .font(Theme.body)
-                                        }
-                                        .foregroundColor(Theme.warning)
-                                    }
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 10)
                             }
-                            .buttonStyle(.plain)
                             .listRowBackground(Color.clear)
                             .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                             .disabled(model.isDeletingTerminal)
@@ -618,6 +599,37 @@ private struct TerminalPropertiesSheet: View {
                 Text("This will remove the terminal and its sessions from the server.")
             }
         }
+    }
+}
+
+private struct SheetActionButton: View {
+    let title: String
+    let systemImage: String
+    let tint: Color
+    let action: () -> Void
+
+    private enum Layout {
+        static let fontSize: CGFloat = 15
+        static let paddingVertical: CGFloat = 14
+        static let borderOpacity: Double = 0.6
+        static let borderWidth: CGFloat = 1
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: Layout.fontSize, weight: .semibold))
+                .foregroundColor(tint)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, Layout.paddingVertical)
+                .background(Color(uiColor: .secondarySystemBackground))
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(Color(uiColor: .separator).opacity(Layout.borderOpacity), lineWidth: Layout.borderWidth)
+                )
+        }
+        .buttonStyle(.plain)
     }
 }
 

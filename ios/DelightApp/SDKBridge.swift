@@ -348,6 +348,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private var logLines: [String] = []
     private var needsSessionRefresh: Bool = false
     private var oldestLoadedSeq: Int64?
+    /// messagesFetchGeneration is bumped whenever the transcript is reset to the latest
+    /// page (or when switching sessions). Async history fetches capture the generation
+    /// and drop their results if it no longer matches, avoiding stale prepends that can
+    /// fight "jump to bottom" actions.
+    private var messagesFetchGeneration: Int = 0
     private var scheduledSessionRefresh: DispatchWorkItem?
     private var lastSessionRefreshAt: Date = .distantPast
 
@@ -1098,9 +1103,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     func selectSession(_ id: String) {
         sessionID = id
         selectedMetadata = sessions.first(where: { $0.id == id })?.metadata
+        messagesFetchGeneration += 1
         messages = []
         hasMoreHistory = false
         oldestLoadedSeq = nil
+        isLoadingHistory = false
         fetchLatestMessages(reset: true)
     }
 
@@ -1112,6 +1119,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         guard !sessionID.isEmpty else {
             log("Session ID required")
             return
+        }
+        if reset {
+            // Cancel any in-flight history loads; a reset means "jump back to latest".
+            messagesFetchGeneration += 1
+            isLoadingHistory = false
         }
         do {
             let responseBuf: SdkBuffer? = try sdkCallSync {
@@ -1136,11 +1148,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         guard let cursor = oldestLoadedSeq, cursor > 0 else { return }
 
         isLoadingHistory = true
+        let generation = messagesFetchGeneration
+        let requestedSessionID = sessionID
 
         sdkCallAsync {
             do {
                 let responseBuf = try self.sdkCallSync {
-                    try self.client.getSessionMessagesPageBuffer(self.sessionID, limit: 50, beforeSeq: cursor)
+                    try self.client.getSessionMessagesPageBuffer(requestedSessionID, limit: 50, beforeSeq: cursor)
                 }
                 guard let json = self.stringFromBuffer(responseBuf) else {
                     self.log("Get older messages error: unable to decode response")
@@ -1150,6 +1164,16 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     return
                 }
                 DispatchQueue.main.async {
+                    guard self.sessionID == requestedSessionID else {
+                        self.isLoadingHistory = false
+                        return
+                    }
+                    guard self.messagesFetchGeneration == generation else {
+                        // A transcript reset happened while this history page was in flight.
+                        // Drop the stale result to avoid scroll position glitches.
+                        self.isLoadingHistory = false
+                        return
+                    }
                     self.applyMessagesResponse(json, reset: false, scrollToBottom: false)
                     self.isLoadingHistory = false
                 }
