@@ -254,6 +254,14 @@ private enum LogLimits {
     static let maxLines = 100
 }
 
+/// LogTiming defines debounce windows for UI-exposed debug logs.
+private enum LogTiming {
+    /// publishDebounceSeconds limits how often we publish `@Published` log
+    /// updates. Publishing on every SDK update can invalidate the entire SwiftUI
+    /// tree and cause the UI to appear frozen while an agent streams output.
+    static let publishDebounceSeconds: TimeInterval = 0.15
+}
+
 final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var serverURL: String = "http://localhost:3005" {
         didSet { persistSettings() }
@@ -346,6 +354,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private var thinkingOverrides: [String: Bool] = [:]
     private var uiEventsByKey: [String: UIEventPayload] = [:]
     private var logLines: [String] = []
+    private var pendingPublishedLogLine: String = ""
+    private var pendingLogPublishWork: DispatchWorkItem?
     private var needsSessionRefresh: Bool = false
     private var oldestLoadedSeq: Int64?
     /// messagesFetchGeneration is bumped whenever the transcript is reset to the latest
@@ -510,7 +520,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
         if !masterKey.isEmpty && (!token.isEmpty || (!publicKey.isEmpty && !privateKey.isEmpty)) {
             connect()
-            listSessions()
         }
     }
 
@@ -598,9 +607,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 // Ensure the Go SDK uses the latest server URL. The SDK client is
                 // created once at startup, so without calling setServerURL here we
                 // could accidentally authenticate against a stale/default URL.
-                _ = try self.sdkCallSync {
-                    self.client.setServerURL(self.serverURL)
-                }
+                self.client.setServerURL(self.serverURL)
                 let tokenBuf = try self.sdkCallSync {
                     try self.client.auth(withKeyPairBuffer: self.publicKey, privateKeyB64: self.privateKey)
                 }
@@ -889,18 +896,25 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func authWithKeypair() {
-        do {
-            let tokenBuf = try sdkCallSync {
-                try client.auth(withKeyPairBuffer: publicKey, privateKeyB64: privateKey)
+        let serverURLSnapshot = serverURL
+        let publicKeySnapshot = publicKey
+        let privateKeySnapshot = privateKey
+
+        sdkCallAsync {
+            do {
+                self.client.setServerURL(serverURLSnapshot)
+                let tokenBuf = try self.client.auth(withKeyPairBuffer: publicKeySnapshot, privateKeyB64: privateKeySnapshot)
+                guard let tokenValue = self.stringFromBuffer(tokenBuf) else {
+                    self.log("Auth error: unable to decode token")
+                    return
+                }
+                DispatchQueue.main.async {
+                    self.token = tokenValue
+                }
+                self.log("Auth ok")
+            } catch {
+                self.log("Auth error: \(error)")
             }
-            guard let tokenValue = stringFromBuffer(tokenBuf) else {
-                log("Auth error: unable to decode token")
-                return
-            }
-            token = tokenValue
-            log("Auth ok")
-        } catch {
-            log("Auth error: \(error)")
         }
     }
 
@@ -973,53 +987,64 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func connect() {
-        do {
-            if masterKey.isEmpty {
-                log("Master key missing; generating a new one.")
-                generateKeys()
-            }
-            guard !masterKey.isEmpty else {
-                log("Connect error: master key is empty")
-                return
-            }
-            // Ensure auth uses the server URL currently shown in the UI.
-            sdkCallSync {
-                client.setServerURL(serverURL)
-            }
-            if token.isEmpty {
-                if publicKey.isEmpty || privateKey.isEmpty {
-                    log("Connect error: token missing and keypair not generated")
-                    return
-                }
-                log("Token missing; attempting auth with keypair.")
-                do {
-                    let tokenBuf = try sdkCallSync {
-                        try client.auth(withKeyPairBuffer: publicKey, privateKeyB64: privateKey)
-                    }
-                    guard let tokenValue = stringFromBuffer(tokenBuf) else {
-                        log("Auth error: unable to decode token")
+        if masterKey.isEmpty {
+            log("Master key missing; generating a new one.")
+            generateKeys()
+        }
+        guard !masterKey.isEmpty else {
+            log("Connect error: master key is empty")
+            return
+        }
+
+        // Snapshot UI-owned values so we can connect on the SDK queue without
+        // blocking the main thread.
+        let serverURLSnapshot = serverURL
+        let tokenSnapshot = token
+        let masterKeySnapshot = masterKey
+        let publicKeySnapshot = publicKey
+        let privateKeySnapshot = privateKey
+        let shouldRefreshSessions = sessions.isEmpty || needsSessionRefresh
+
+        sdkCallAsync {
+            do {
+                self.client.setServerURL(serverURLSnapshot)
+
+                var effectiveToken = tokenSnapshot
+                if effectiveToken.isEmpty {
+                    if publicKeySnapshot.isEmpty || privateKeySnapshot.isEmpty {
+                        self.log("Connect error: token missing and keypair not generated")
                         return
                     }
-                    token = tokenValue
-                } catch {
-                    log("Auth error: \(error)")
-                    return
+                    self.log("Token missing; attempting auth with keypair.")
+                    let tokenBuf = try self.client.auth(withKeyPairBuffer: publicKeySnapshot, privateKeyB64: privateKeySnapshot)
+                    guard let tokenValue = self.stringFromBuffer(tokenBuf) else {
+                        self.log("Auth error: unable to decode token")
+                        return
+                    }
+                    effectiveToken = tokenValue
+                    DispatchQueue.main.async {
+                        self.token = tokenValue
+                    }
+                    self.log("Auth ok")
                 }
-                log("Auth ok")
+
+                self.client.setToken(effectiveToken)
+                try self.client.setMasterKeyBase64(masterKeySnapshot)
+                // The listener is already installed at init, but re-setting it
+                // is safe and helps when reconnecting after crashes.
+                self.client.setListener(self)
+                try self.client.connect()
+
+                DispatchQueue.main.async {
+                    self.status = "connected"
+                    if shouldRefreshSessions {
+                        self.needsSessionRefresh = false
+                        self.listSessions()
+                    }
+                }
+            } catch {
+                self.log("Connect error: \(error)")
             }
-            try sdkCallSync {
-                client.setToken(token)
-                try client.setMasterKeyBase64(masterKey)
-                client.setListener(self)
-                try client.connect()
-            }
-            status = "connected"
-            if sessions.isEmpty || needsSessionRefresh {
-                listSessions()
-                needsSessionRefresh = false
-            }
-        } catch {
-            log("Connect error: \(error)")
         }
     }
 
@@ -1035,33 +1060,60 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     var permissionQueueCount: Int { permissionQueue.count }
 
     func listSessions() {
-        do {
-            let responseBuf = try sdkCallSync {
-                try client.listSessionsBuffer()
+        let serverURLSnapshot = serverURL
+        let tokenSnapshot = token
+        let masterKeySnapshot = masterKey
+
+        sdkCallAsync {
+            do {
+                self.client.setServerURL(serverURLSnapshot)
+                self.client.setToken(tokenSnapshot)
+                try self.client.setMasterKeyBase64(masterKeySnapshot)
+
+                let sessionsBuf = try self.client.listSessionsBuffer()
+                guard let sessionsJSON = self.stringFromBuffer(sessionsBuf) else {
+                    self.log("List sessions error: unable to decode response")
+                    return
+                }
+                self.parseSessions(sessionsJSON)
+
+                // Fetch terminals in the same SDK task so the UI updates are
+                // consistent and we avoid bouncing between queues.
+                do {
+                    let terminalsBuf = try self.client.listTerminalsBuffer()
+                    if let terminalsJSON = self.stringFromBuffer(terminalsBuf), !terminalsJSON.isEmpty {
+                        self.parseTerminals(terminalsJSON)
+                    }
+                } catch {
+                    self.log("List terminals error: \(error)")
+                }
+
+                self.log("Sessions loaded")
+            } catch {
+                self.log("List sessions error: \(error)")
             }
-            guard let json = stringFromBuffer(responseBuf) else {
-                log("List sessions error: unable to decode response")
-                return
-            }
-            parseSessions(json)
-            listTerminals()
-            log("Sessions loaded")
-        } catch {
-            log("List sessions error: \(error)")
         }
     }
 
     func listTerminals() {
-        do {
-            let responseBuf = try sdkCallSync {
-                try client.listTerminalsBuffer()
+        let serverURLSnapshot = serverURL
+        let tokenSnapshot = token
+        let masterKeySnapshot = masterKey
+
+        sdkCallAsync {
+            do {
+                self.client.setServerURL(serverURLSnapshot)
+                self.client.setToken(tokenSnapshot)
+                try self.client.setMasterKeyBase64(masterKeySnapshot)
+
+                let responseBuf = try self.client.listTerminalsBuffer()
+                if let json = self.stringFromBuffer(responseBuf), !json.isEmpty {
+                    self.parseTerminals(json)
+                    self.log("Terminals loaded")
+                }
+            } catch {
+                self.log("List terminals error: \(error)")
             }
-            if let json = stringFromBuffer(responseBuf), !json.isEmpty {
-                parseTerminals(json)
-                log("Terminals loaded")
-            }
-        } catch {
-            log("List terminals error: \(error)")
         }
     }
 
@@ -1088,7 +1140,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     self.terminals.removeAll(where: { $0.id == terminalID })
                     self.sessions.removeAll(where: { $0.terminalID == terminalID })
                     self.listSessions()
-                    self.listTerminals()
                     onSuccess?()
                 }
             } catch {
@@ -1116,28 +1167,52 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     func fetchLatestMessages(reset: Bool) {
-        guard !sessionID.isEmpty else {
-            log("Session ID required")
-            return
-        }
-        if reset {
-            // Cancel any in-flight history loads; a reset means "jump back to latest".
-            messagesFetchGeneration += 1
-            isLoadingHistory = false
-        }
-        do {
-            let responseBuf: SdkBuffer? = try sdkCallSync {
-                // Prefer cursor-based pagination if available.
-                try client.getSessionMessagesPageBuffer(sessionID, limit: 50, beforeSeq: 0)
-            }
-            guard let json = stringFromBuffer(responseBuf) else {
-                log("Get messages error: unable to decode response")
+        // Serialize state reads/writes on the main queue since this is called
+        // from multiple contexts (button taps, update callbacks, debounced
+        // refresh).
+        DispatchQueue.main.async {
+            guard !self.sessionID.isEmpty else {
+                self.log("Session ID required")
                 return
             }
-            log("getSessionMessages raw: \(json)")
-            applyMessagesResponse(json, reset: reset, scrollToBottom: true)
-        } catch {
-            log("Get messages error: \(error)")
+
+            if reset {
+                // Cancel any in-flight history loads; a reset means "jump back to latest".
+                self.messagesFetchGeneration += 1
+                self.isLoadingHistory = false
+            }
+
+            let requestedSessionID = self.sessionID
+            let generation = self.messagesFetchGeneration
+            let serverURLSnapshot = self.serverURL
+            let tokenSnapshot = self.token
+            let masterKeySnapshot = self.masterKey
+
+            self.sdkCallAsync {
+                do {
+                    self.client.setServerURL(serverURLSnapshot)
+                    self.client.setToken(tokenSnapshot)
+                    try self.client.setMasterKeyBase64(masterKeySnapshot)
+
+                    // Prefer cursor-based pagination if available.
+                    let responseBuf = try self.client.getSessionMessagesPageBuffer(
+                        requestedSessionID,
+                        limit: 50,
+                        beforeSeq: 0
+                    )
+                    guard let json = self.stringFromBuffer(responseBuf) else {
+                        self.log("Get messages error: unable to decode response")
+                        return
+                    }
+                    DispatchQueue.main.async {
+                        guard self.sessionID == requestedSessionID else { return }
+                        guard self.messagesFetchGeneration == generation else { return }
+                        self.applyMessagesResponse(json, reset: reset, scrollToBottom: true)
+                    }
+                } catch {
+                    self.log("Get messages error: \(error)")
+                }
+            }
         }
     }
 
@@ -1819,47 +1894,73 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     private func logSwiftOnly(_ message: String) {
         DispatchQueue.main.async {
-            self.lastLogLine = message
+            self.pendingPublishedLogLine = message
             self.logLines.append(message)
             if self.logLines.count > LogLimits.maxLines {
                 self.logLines = Array(self.logLines.suffix(LogLimits.maxLines))
             }
-            self.logs = self.logLines.joined(separator: "\n")
+            self.scheduleLogPublish()
         }
     }
 
+    /// scheduleLogPublish debounces publishing `logs`/`lastLogLine` so frequent
+    /// updates (streaming tokens, tool progress) don't continuously invalidate
+    /// the entire SwiftUI view tree.
+    private func scheduleLogPublish() {
+        if pendingLogPublishWork != nil {
+            return
+        }
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.lastLogLine = self.pendingPublishedLogLine
+            self.logs = self.logLines.joined(separator: "\n")
+            self.pendingLogPublishWork = nil
+        }
+        pendingLogPublishWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + LogTiming.publishDebounceSeconds, execute: work)
+    }
+
     func clearLogs() {
+        pendingLogPublishWork?.cancel()
+        pendingLogPublishWork = nil
+        pendingPublishedLogLine = ""
         logs = ""
         lastLogLine = ""
         logLines = []
     }
 
     func startLogServer() {
-        do {
-            let urlBuf = try sdkCallSync {
-                try client.startLogServerBuffer()
+        sdkCallAsync {
+            do {
+                let urlBuf = try self.client.startLogServerBuffer()
+                let url = self.stringFromBuffer(urlBuf) ?? ""
+                DispatchQueue.main.async {
+                    self.logServerURL = url
+                    self.logServerRunning = !url.isEmpty
+                }
+                if !url.isEmpty {
+                    self.log("Log server running at \(url)")
+                }
+            } catch {
+                self.log("Start log server error: \(error)")
             }
-            logServerURL = stringFromBuffer(urlBuf) ?? ""
-            logServerRunning = !logServerURL.isEmpty
-            if logServerRunning {
-                log("Log server running at \(logServerURL)")
-            }
-        } catch {
-            log("Start log server error: \(error)")
         }
     }
 
     func stopLogServer() {
-        do {
-            _ = try sdkCallSync {
-                try client.stopLogServer()
+        sdkCallAsync {
+            do {
+                try self.client.stopLogServer()
+            } catch {
+                self.log("Stop log server error: \(error)")
             }
-        } catch {
-            log("Stop log server error: \(error)")
+            DispatchQueue.main.async {
+                self.logServerURL = ""
+                self.logServerRunning = false
+            }
+            self.log("Log server stopped")
         }
-        logServerURL = ""
-        logServerRunning = false
-        log("Log server stopped")
     }
 
     var crashLogPath: String {
@@ -1872,12 +1973,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             return
         }
         let logDir = dir.appendingPathComponent("delight-logs", isDirectory: true).path
-        do {
-            _ = try sdkCallSync {
-                try client.setLogDirectory(logDir)
+        sdkCallAsync {
+            do {
+                try self.client.setLogDirectory(logDir)
+            } catch {
+                self.log("Set log directory error: \(error)")
             }
-        } catch {
-            log("Set log directory error: \(error)")
         }
     }
 
