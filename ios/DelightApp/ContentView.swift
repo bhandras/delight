@@ -1,5 +1,9 @@
 import SwiftUI
 
+#if canImport(UIKit)
+import UIKit
+#endif
+
 struct ContentView: View {
     @StateObject private var model = HarnessViewModel()
     @State private var showScanner = false
@@ -104,6 +108,39 @@ struct ContentView: View {
                 }
             }
         }
+    }
+}
+
+/// KeyboardDismissal provides a small SwiftUI helper for dismissing the iOS
+/// software keyboard when the user taps outside of a focused text input.
+///
+/// SwiftUI does not expose a cross-screen, view-agnostic way to resign first
+/// responder. We use a best-effort UIKit action so we can apply consistent
+/// "tap to dismiss" behavior across all views that contain text inputs.
+private enum KeyboardDismissal {
+    static func dismiss() {
+        #if canImport(UIKit)
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        #endif
+    }
+}
+
+/// KeyboardDismissOnTapModifier dismisses the keyboard using a simultaneous tap
+/// gesture so existing button taps still work.
+private struct KeyboardDismissOnTapModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content.simultaneousGesture(
+            TapGesture().onEnded {
+                KeyboardDismissal.dismiss()
+            }
+        )
+    }
+}
+
+extension View {
+    /// dismissKeyboardOnTap installs a tap gesture that resigns first responder.
+    func dismissKeyboardOnTap() -> some View {
+        modifier(KeyboardDismissOnTapModifier())
     }
 }
 
@@ -424,10 +461,10 @@ private struct ResetKeysView: View {
     @State private var statusText: String = ""
 
     var body: some View {
-        ZStack {
-            Theme.background.ignoresSafeArea()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+	        ZStack {
+	            Theme.background.ignoresSafeArea()
+	            ScrollView {
+	                VStack(alignment: .leading, spacing: 16) {
                     FeatureListCard {
                         VStack(alignment: .leading, spacing: 14) {
                             Text("Reset Encryption Keys")
@@ -664,12 +701,13 @@ private struct AccountDetailView: View {
                             }
                         }
                     }
-                }
-                .padding()
-            }
-        }
-        .navigationTitle("Account")
-        .toolbar {
+	                }
+	                .padding()
+	            }
+	            .dismissKeyboardOnTap()
+	        }
+	        .navigationTitle("Account")
+	        .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
                 Button("Done") {

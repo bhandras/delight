@@ -28,9 +28,9 @@ struct CrashReportSheet: View {
     let onDismiss: () -> Void
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Theme.background.ignoresSafeArea()
+	        NavigationStack {
+	            ZStack {
+	                Theme.background.ignoresSafeArea()
                 VStack(alignment: .leading, spacing: 16) {
                     Text("The app appears to have crashed during the previous run.")
                         .font(Theme.body)
@@ -377,11 +377,12 @@ struct PermissionPromptSheet: View {
                         Spacer()
                     }
                 }
-                .padding(16)
-            }
-            .navigationTitle("Permission")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
+	                .padding(16)
+	            }
+	            .dismissKeyboardOnTap()
+	            .navigationTitle("Permission")
+	            .navigationBarTitleDisplayMode(.inline)
+	            .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Close") {
                         // Conservative default: deny on explicit dismissal.

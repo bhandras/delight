@@ -65,6 +65,7 @@ struct TerminalsView: View {
                     }
                     .padding()
                 }
+                .dismissKeyboardOnTap()
             }
             .navigationTitle("Terminals")
             .toolbar {
@@ -111,6 +112,7 @@ private struct PairTerminalSheet: View {
                     }
                     .padding()
                 }
+                .dismissKeyboardOnTap()
             }
             .navigationTitle("Pair Terminal")
             .navigationBarTitleDisplayMode(.inline)
@@ -233,6 +235,7 @@ struct TerminalDetailView: View {
                     .background(Theme.cardBackground)
             }
         }
+        .dismissKeyboardOnTap()
         .navigationTitle(session.title ?? "Terminal")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
