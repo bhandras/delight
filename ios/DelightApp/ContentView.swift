@@ -120,11 +120,12 @@ private enum DebugLogLayout {
     /// scrollAnimationSeconds controls the double-tap scroll animation speed.
     static let scrollAnimationSeconds: TimeInterval = 0.15
 
-    /// logPanelPadding reduces internal padding so logs use screen space well.
-    static let logPanelPadding: CGFloat = 4
+    /// logPanelPadding keeps logs close to the edges while still leaving a
+    /// small amount of breathing room.
+    static let logPanelPadding: CGFloat = 6
 
     /// logListRowInset reduces outer List insets for the log panel.
-    static let logListRowInset: CGFloat = 6
+    static let logListRowInset: CGFloat = 2
 }
 
 /// KeyboardDismissal provides a small SwiftUI helper for dismissing the iOS
@@ -430,6 +431,30 @@ struct GhostButtonStyle: ButtonStyle {
     }
 }
 
+/// PressableRowButtonStyle adds a subtle pressed-state highlight suitable for
+/// list-row actions (e.g. Debug Logs actions).
+struct PressableRowButtonStyle: ButtonStyle {
+    private enum Layout {
+        static let cornerRadius: CGFloat = 12
+        static let highlightOpacity: Double = 0.7
+        static let highlightAnimationSeconds: TimeInterval = 0.12
+        static let horizontalPadding: CGFloat = 4
+        static let verticalPadding: CGFloat = 2
+    }
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, Layout.horizontalPadding)
+            .padding(.vertical, Layout.verticalPadding)
+            .background(
+                RoundedRectangle(cornerRadius: Layout.cornerRadius, style: .continuous)
+                    .fill(Color(uiColor: .tertiarySystemFill))
+                    .opacity(configuration.isPressed ? Layout.highlightOpacity : 0)
+            )
+            .animation(.easeOut(duration: Layout.highlightAnimationSeconds), value: configuration.isPressed)
+    }
+}
+
 struct FeatureListCard<Content: View>: View {
     @ViewBuilder let content: Content
 
@@ -559,10 +584,9 @@ private struct DebugView: View {
                                 .font(.system(.footnote, design: .monospaced))
                                 .foregroundColor(Theme.messageText)
                                 .textSelection(.enabled)
-                            ActionButton(title: "Copy Log Server URL", systemImage: "doc.on.doc") {
+                            DebugActionRow(title: "Copy Log Server URL", systemImage: "doc.on.doc") {
                                 UIPasteboard.general.string = model.logServerURL
                             }
-                            .listRowBackground(Color.clear)
                         }
                     }
                     Section("Recent Logs") {
@@ -644,7 +668,7 @@ private struct DebugActionRow: View {
             .contentShape(Rectangle())
             .padding(.vertical, 6)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableRowButtonStyle())
     }
 }
 
