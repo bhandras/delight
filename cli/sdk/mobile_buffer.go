@@ -53,8 +53,8 @@ func (buf *Buffer) CopyTo(dstPtr int64, dstLen int) (int, error) {
 	if n > dstLen {
 		n = dstLen
 	}
-	dst := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(dstPtr))), n)
+	// dstPtr is an address into Swift/C-managed memory, not a Go pointer.
+	dst := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(dstPtr))), n) //nolint:govet
 	copy(dst, buf.b[:n])
 	return n, nil
 }
-

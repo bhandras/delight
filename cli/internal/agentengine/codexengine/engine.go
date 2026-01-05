@@ -541,9 +541,7 @@ func (h localStopHandle) stop(ctx context.Context) error {
 	if h.cancel != nil {
 		h.cancel()
 	}
-	if h.tailer != nil {
-		// Tailer exits on ctx cancellation.
-	}
+	// Tailer exits on ctx cancellation.
 	if h.restoreForeground != nil {
 		h.restoreForeground()
 	}

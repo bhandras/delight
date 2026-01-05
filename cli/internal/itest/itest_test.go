@@ -1156,8 +1156,6 @@ func connectUserSocket(t *testing.T, serverURL, token string) *socket.Socket {
 			}
 		}
 	}
-
-	return sock
 }
 
 func connectSessionSocket(t *testing.T, serverURL, token, sessionID string) *socket.Socket {
@@ -1210,8 +1208,6 @@ func connectSessionSocket(t *testing.T, serverURL, token, sessionID string) *soc
 			}
 		}
 	}
-
-	return sock
 }
 
 func connectTerminalSocket(t *testing.T, serverURL, token, terminalID string) *socket.Socket {
@@ -1264,8 +1260,6 @@ func connectTerminalSocket(t *testing.T, serverURL, token, terminalID string) *s
 			}
 		}
 	}
-
-	return sock
 }
 
 func mustConnectSocket(t *testing.T, serverURL string, opts *socket.Options) *socket.Socket {

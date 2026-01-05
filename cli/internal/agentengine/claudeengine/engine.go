@@ -927,9 +927,10 @@ func renderToolMarkdown(name string, input any, output any, status agentengine.U
 	}
 
 	prefix := "🔧"
-	if status == agentengine.UIEventStatusOK {
+	switch status {
+	case agentengine.UIEventStatusOK:
 		prefix = "✅"
-	} else if status == agentengine.UIEventStatusError {
+	case agentengine.UIEventStatusError:
 		prefix = "❌"
 	}
 	brief = prefix + " " + normalized

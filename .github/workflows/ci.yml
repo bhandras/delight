@@ -48,3 +48,38 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go test -short -cover ./...
+
+  go-lint:
+    name: Go lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache: true
+          cache-dependency-path: |
+            cli/go.sum
+            server/go.sum
+            shared/go.sum
+
+      - name: Lint (shared)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.7.2
+          working-directory: shared
+
+      - name: Lint (cli)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.7.2
+          working-directory: cli
+
+      - name: Lint (server)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.7.2
+          working-directory: server

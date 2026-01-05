@@ -48,10 +48,7 @@ func RPCCall(auth AuthContext, locator RPCMethodLocator, req protocolwire.RPCCal
 
 	forward := RPCForward{
 		targetSocketID: targetSocketID,
-		request: protocolwire.RPCRequestPayload{
-			Method: req.Method,
-			Params: req.Params,
-		},
+		request:        protocolwire.RPCRequestPayload(req),
 		timeout: 30 * time.Second,
 	}
 	return &forward, nil

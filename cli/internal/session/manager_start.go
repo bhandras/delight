@@ -626,7 +626,6 @@ func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 		return
 	}
 	_ = m.sessionActor.Enqueue(sessionactor.InboundUserMessage(messageContent, meta, localID, time.Now().UnixMilli()))
-	return
 }
 
 // handleUpdate handles structured "update" events (new-message, etc.)

@@ -17,7 +17,7 @@ func (s *SocketIOServer) handleConnection(client *socket.Socket, deps handlers.D
 	handshake := client.Handshake()
 
 	authMap := handshake.Auth
-	if authMap == nil || len(authMap) == 0 {
+	if len(authMap) == 0 {
 		logger.Warnf("Socket.IO missing auth data (socket %s)", socketID)
 		client.Emit("error", map[string]string{"message": "Missing authentication data"})
 		client.Disconnect(true)
