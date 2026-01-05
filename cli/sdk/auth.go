@@ -12,10 +12,6 @@ import (
 )
 
 const (
-	// authChallengeText is the fixed challenge string used for keypair auth.
-	// The server verifies the signature for this challenge.
-	authChallengeText = "delight-auth-challenge"
-
 	// masterKeyBytes is the expected raw master key length.
 	masterKeyBytes = 32
 )
@@ -58,6 +54,33 @@ func GenerateEd25519KeyPairBuffers() (*KeyPairBuffers, error) {
 	return newKeyPairBuffers(pub, priv), nil
 }
 
+// AuthWithMasterKeyBase64Buffer authenticates using a deterministic Ed25519
+// keypair derived from the provided 32-byte master key (base64).
+//
+// This allows the mobile app and CLI to obtain a JWT without persisting a
+// separate signing key: the master key is the only secret.
+func (c *Client) AuthWithMasterKeyBase64Buffer(masterKeyB64 string) (*Buffer, error) {
+	token, err := c.authWithMasterKeyDispatch(masterKeyB64)
+	if err != nil {
+		return nil, err
+	}
+	return newBufferFromString(token), nil
+}
+
+// authWithMasterKeyDispatch runs master-key auth on the SDK dispatch queue.
+func (c *Client) authWithMasterKeyDispatch(masterKeyB64 string) (string, error) {
+	value, err := c.dispatch.call(func() (interface{}, error) {
+		return c.authWithMasterKey(masterKeyB64)
+	})
+	if err != nil {
+		return "", err
+	}
+	if value == nil {
+		return "", nil
+	}
+	return value.(string), nil
+}
+
 // AuthWithKeyPairBuffer authenticates via Ed25519 keypair and returns the token
 // in a gomobile-safe Buffer.
 func (c *Client) AuthWithKeyPairBuffer(publicKeyB64, privateKeyB64 string) (*Buffer, error) {
@@ -82,6 +105,98 @@ func (c *Client) authWithKeyPairDispatch(publicKeyB64, privateKeyB64 string) (st
 	return value.(string), nil
 }
 
+type authChallengeResponse struct {
+	ChallengeID string `json:"challengeId"`
+	Challenge   string `json:"challenge"`
+}
+
+// getAuthChallenge fetches a server-issued challenge for /v1/auth.
+func (c *Client) getAuthChallenge(publicKeyB64 string) (string, []byte, error) {
+	reqBody := map[string]string{
+		"publicKey": publicKeyB64,
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", nil, fmt.Errorf("marshal auth challenge request: %w", err)
+	}
+
+	respBody, err := c.doRequest("POST", "/v1/auth/challenge", body)
+	if err != nil {
+		return "", nil, err
+	}
+
+	var resp authChallengeResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return "", nil, fmt.Errorf("parse auth challenge response: %w", err)
+	}
+	if resp.ChallengeID == "" || resp.Challenge == "" {
+		return "", nil, fmt.Errorf("invalid auth challenge response")
+	}
+	challengeBytes, err := base64.StdEncoding.DecodeString(resp.Challenge)
+	if err != nil {
+		return "", nil, fmt.Errorf("decode auth challenge: %w", err)
+	}
+	return resp.ChallengeID, challengeBytes, nil
+}
+
+// authWithMasterKey authenticates with the server using an Ed25519 signature
+// derived from the provided master key.
+func (c *Client) authWithMasterKey(masterKeyB64 string) (string, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("AuthWithMasterKey", r)
+		}
+	}()
+
+	masterKey, err := base64.StdEncoding.DecodeString(masterKeyB64)
+	if err != nil {
+		return "", fmt.Errorf("decode master key: %w", err)
+	}
+	if len(masterKey) != masterKeyBytes {
+		return "", fmt.Errorf("master key must be %d bytes", masterKeyBytes)
+	}
+
+	pub, priv, err := crypto.DeriveEd25519KeyPair(masterKey)
+	if err != nil {
+		return "", err
+	}
+	publicKeyB64 := base64.StdEncoding.EncodeToString(pub)
+
+	challengeID, challengeBytes, err := c.getAuthChallenge(publicKeyB64)
+	if err != nil {
+		return "", err
+	}
+	signature := ed25519.Sign(priv, challengeBytes)
+
+	reqBody := map[string]string{
+		"publicKey":   publicKeyB64,
+		"challengeId": challengeID,
+		"signature":   base64.StdEncoding.EncodeToString(signature),
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal auth request: %w", err)
+	}
+
+	respBody, err := c.doRequest("POST", "/v1/auth", body)
+	if err != nil {
+		return "", err
+	}
+
+	var resp struct {
+		Success bool   `json:"success"`
+		Token   string `json:"token"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return "", fmt.Errorf("parse auth response: %w", err)
+	}
+	if !resp.Success || resp.Token == "" {
+		return "", fmt.Errorf("auth failed")
+	}
+	c.setToken(resp.Token)
+	return resp.Token, nil
+}
+
 // authWithKeyPair authenticates with the server using an Ed25519 signature.
 func (c *Client) authWithKeyPair(publicKeyB64, privateKeyB64 string) (string, error) {
 	defer func() {
@@ -98,13 +213,16 @@ func (c *Client) authWithKeyPair(publicKeyB64, privateKeyB64 string) (string, er
 		return "", fmt.Errorf("invalid private key length")
 	}
 
-	challenge := []byte(authChallengeText)
-	signature := ed25519.Sign(ed25519.PrivateKey(priv), challenge)
+	challengeID, challengeBytes, err := c.getAuthChallenge(publicKeyB64)
+	if err != nil {
+		return "", err
+	}
+	signature := ed25519.Sign(ed25519.PrivateKey(priv), challengeBytes)
 
 	reqBody := map[string]string{
-		"publicKey": publicKeyB64,
-		"challenge": base64.StdEncoding.EncodeToString(challenge),
-		"signature": base64.StdEncoding.EncodeToString(signature),
+		"publicKey":   publicKeyB64,
+		"challengeId": challengeID,
+		"signature":   base64.StdEncoding.EncodeToString(signature),
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {

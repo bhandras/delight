@@ -33,33 +33,42 @@ type UpdateEvent struct {
 }
 
 type EphemeralEvent struct {
-	Type      string `json:"type"`
-	ID        string `json:"id"`
-	Active    bool   `json:"active"`
-	ActiveAt  int64  `json:"activeAt"`
-	Thinking  *bool  `json:"thinking,omitempty"`
+	Type     string `json:"type"`
+	ID       string `json:"id"`
+	Active   bool   `json:"active"`
+	ActiveAt int64  `json:"activeAt"`
+	Thinking *bool  `json:"thinking,omitempty"`
 }
 
 // Connection types for WebSocket
 type ConnectionType string
 
 const (
-	ConnectionTypeUserScoped    ConnectionType = "user-scoped"
-	ConnectionTypeSessionScoped ConnectionType = "session-scoped"
+	ConnectionTypeUserScoped     ConnectionType = "user-scoped"
+	ConnectionTypeSessionScoped  ConnectionType = "session-scoped"
 	ConnectionTypeTerminalScoped ConnectionType = "terminal-scoped"
 )
 
 // Auth types
 
 type AuthRequest struct {
-	PublicKey string `json:"publicKey" binding:"required"`
-	Challenge string `json:"challenge" binding:"required"`
-	Signature string `json:"signature" binding:"required"`
+	PublicKey   string `json:"publicKey" binding:"required"`
+	ChallengeID string `json:"challengeId" binding:"required"`
+	Signature   string `json:"signature" binding:"required"`
 }
 
 type AuthResponse struct {
 	Success bool   `json:"success"`
 	Token   string `json:"token"`
+}
+
+type AuthChallengeRequest struct {
+	PublicKey string `json:"publicKey" binding:"required"`
+}
+
+type AuthChallengeResponse struct {
+	ChallengeID string `json:"challengeId"`
+	Challenge   string `json:"challenge"`
 }
 
 type TerminalAuthRequestBody struct {
@@ -68,7 +77,6 @@ type TerminalAuthRequestBody struct {
 
 type TerminalAuthStatusResponse struct {
 	Status   string  `json:"status"` // "pending" or "authorized"
-	Token    *string `json:"token,omitempty"`
 	Response *string `json:"response,omitempty"`
 }
 

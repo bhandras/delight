@@ -518,7 +518,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             showCrashReport = true
             resetAfterCrash()
         }
-        if !masterKey.isEmpty && (!token.isEmpty || (!publicKey.isEmpty && !privateKey.isEmpty)) {
+        if !masterKey.isEmpty {
             connect()
         }
     }
@@ -558,23 +558,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             log("Generate master key error: unable to decode master key")
             return
         }
-        guard let keypair = SdkGenerateEd25519KeyPairBuffers(&error) else {
-            log("Generate keypair error: \(error?.localizedDescription ?? "unknown error")")
-            return
-        }
-        if let error {
-            log("Generate keypair error: \(error)")
-            return
-        }
-        guard let pub = stringFromBuffer(keypair.publicKey()),
-              let priv = stringFromBuffer(keypair.privateKey()) else {
-            log("Generate keypair error: unable to decode keypair")
-            return
-        }
         masterKey = master
-        publicKey = pub
-        privateKey = priv
-        log("Generated master + ed25519 keypair")
+        publicKey = ""
+        privateKey = ""
+        log("Generated master key")
     }
 
     func resetKeys() {
@@ -597,7 +584,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     func createAccount() {
         guard !isCreatingAccount else { return }
 
-        if publicKey.isEmpty || privateKey.isEmpty || masterKey.isEmpty {
+        if masterKey.isEmpty {
             generateKeys()
         }
 
@@ -609,7 +596,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 // could accidentally authenticate against a stale/default URL.
                 self.client.setServerURL(self.serverURL)
                 let tokenBuf = try self.sdkCallSync {
-                    try self.client.auth(withKeyPairBuffer: self.publicKey, privateKeyB64: self.privateKey)
+                    try self.client.auth(withMasterKeyBase64Buffer: self.masterKey)
                 }
                 guard let tokenValue = self.stringFromBuffer(tokenBuf) else {
                     DispatchQueue.main.async {
@@ -897,13 +884,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     func authWithKeypair() {
         let serverURLSnapshot = serverURL
-        let publicKeySnapshot = publicKey
-        let privateKeySnapshot = privateKey
+        let masterKeySnapshot = masterKey
 
         sdkCallAsync {
             do {
                 self.client.setServerURL(serverURLSnapshot)
-                let tokenBuf = try self.client.auth(withKeyPairBuffer: publicKeySnapshot, privateKeyB64: privateKeySnapshot)
+                let tokenBuf = try self.client.auth(withMasterKeyBase64Buffer: masterKeySnapshot)
                 guard let tokenValue = self.stringFromBuffer(tokenBuf) else {
                     self.log("Auth error: unable to decode token")
                     return
@@ -1001,8 +987,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let serverURLSnapshot = serverURL
         let tokenSnapshot = token
         let masterKeySnapshot = masterKey
-        let publicKeySnapshot = publicKey
-        let privateKeySnapshot = privateKey
         let shouldRefreshSessions = sessions.isEmpty || needsSessionRefresh
 
         sdkCallAsync {
@@ -1011,12 +995,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
                 var effectiveToken = tokenSnapshot
                 if effectiveToken.isEmpty {
-                    if publicKeySnapshot.isEmpty || privateKeySnapshot.isEmpty {
-                        self.log("Connect error: token missing and keypair not generated")
-                        return
-                    }
-                    self.log("Token missing; attempting auth with keypair.")
-                    let tokenBuf = try self.client.auth(withKeyPairBuffer: publicKeySnapshot, privateKeyB64: privateKeySnapshot)
+                    self.log("Token missing; attempting auth with master key.")
+                    let tokenBuf = try self.client.auth(withMasterKeyBase64Buffer: masterKeySnapshot)
                     guard let tokenValue = self.stringFromBuffer(tokenBuf) else {
                         self.log("Auth error: unable to decode token")
                         return

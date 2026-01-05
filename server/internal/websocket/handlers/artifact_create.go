@@ -10,6 +10,13 @@ import (
 	protocolwire "github.com/bhandras/delight/shared/wire"
 )
 
+const (
+	// maxWrappedDataKeyBytes caps the size of a wrapped dataEncryptionKey the
+	// server will accept. The server treats these keys as opaque bytes and
+	// never decrypts them.
+	maxWrappedDataKeyBytes = 4096
+)
+
 // ArtifactCreate creates a new artifact (or returns an existing one) and emits a
 // user-scoped update event on success.
 func ArtifactCreate(ctx context.Context, deps Deps, auth AuthContext, req protocolwire.ArtifactCreateRequest) EventResult {
@@ -54,6 +61,9 @@ func ArtifactCreate(ctx context.Context, deps Deps, auth AuthContext, req protoc
 	dataKeyBytes, err := base64.StdEncoding.DecodeString(req.DataEncryptionKey)
 	if err != nil {
 		return NewEventResult(protocolwire.ArtifactAck{Result: "error", Message: "Invalid dataEncryptionKey encoding"}, nil)
+	}
+	if len(dataKeyBytes) == 0 || len(dataKeyBytes) > maxWrappedDataKeyBytes {
+		return NewEventResult(protocolwire.ArtifactAck{Result: "error", Message: "Invalid dataEncryptionKey size"}, nil)
 	}
 
 	if err := deps.Artifacts().CreateArtifact(ctx, models.CreateArtifactParams{

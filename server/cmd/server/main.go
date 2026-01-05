@@ -158,13 +158,23 @@ func main() {
 	// Create Gin router
 	router := gin.Default()
 
+	allowCredentials := true
+	for _, origin := range cfg.AllowedOrigins {
+		if origin == "*" {
+			// Browsers forbid wildcard origins with credentials. Also, allowing
+			// credentials for every origin is unsafe.
+			allowCredentials = false
+			break
+		}
+	}
+
 	// CORS middleware
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     cfg.AllowedOrigins,
 		AllowMethods:     []string{"GET", "POST", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"*"},
+		AllowHeaders:     []string{"Authorization", "Content-Type"},
 		ExposeHeaders:    []string{"Content-Length"},
-		AllowCredentials: true,
+		AllowCredentials: allowCredentials,
 	}))
 
 	// Logging middleware
@@ -187,6 +197,7 @@ func main() {
 	// Public routes (no auth required)
 	v1 := router.Group("/v1")
 	{
+		v1.POST("/auth/challenge", authHandler.PostAuthChallenge)
 		v1.POST("/auth", authHandler.PostAuth)
 		v1.POST("/auth/request", authHandler.PostAuthRequest)
 		v1.GET("/auth/request/status", authHandler.GetAuthRequestStatus)

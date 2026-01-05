@@ -125,8 +125,12 @@ func (h *TerminalHandler) CreateTerminal(c *gin.Context) {
 	var dataEncryptionKey []byte
 	if req.DataEncryptionKey != nil && *req.DataEncryptionKey != "" {
 		decoded, err := base64.StdEncoding.DecodeString(*req.DataEncryptionKey)
-		if err != nil || len(decoded) != 32 {
-			c.JSON(http.StatusBadRequest, types.ErrorResponse{Error: "invalid dataEncryptionKey (must be 32 bytes base64)"})
+		if err != nil {
+			c.JSON(http.StatusBadRequest, types.ErrorResponse{Error: "invalid dataEncryptionKey encoding"})
+			return
+		}
+		if len(decoded) == 0 || len(decoded) > maxWrappedDataKeyBytes {
+			c.JSON(http.StatusBadRequest, types.ErrorResponse{Error: "invalid dataEncryptionKey size"})
 			return
 		}
 		dataEncryptionKey = decoded
@@ -336,4 +340,3 @@ func (h *TerminalHandler) toTerminalResponse(terminal models.Terminal) TerminalR
 		UpdatedAt:          terminal.UpdatedAt.UnixMilli(),
 	}
 }
-

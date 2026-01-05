@@ -57,6 +57,14 @@ type Artifact struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
+type AuthChallenge struct {
+	ID        string    `json:"id"`
+	PublicKey string    `json:"public_key"`
+	Challenge []byte    `json:"challenge"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type Session struct {
 	ID                string         `json:"id"`
 	Tag               string         `json:"tag"`

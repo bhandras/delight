@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -102,9 +103,14 @@ func AuthCommand(cfg *config.Config) error {
 	}
 
 	// Poll for response using GET /v1/auth/request/status
-	token, secret, err := pollForTerminalAuth(cfg, publicKeyB64, privateKey)
+	secret, err := pollForTerminalAuth(cfg, publicKeyB64, privateKey)
 	if err != nil {
 		return fmt.Errorf("authentication failed: %w", err)
+	}
+
+	token, err := authTokenFromMasterSecret(cfg, secret)
+	if err != nil {
+		return fmt.Errorf("failed to authenticate after pairing: %w", err)
 	}
 
 	printAuthLine("✓ Authentication successful!")
@@ -144,7 +150,7 @@ func printQRCode(data string) {
 
 // pollForTerminalAuth polls the server for terminal auth approval
 // Uses GET /v1/auth/request/status?publicKey=<base64> as expected by mobile app
-func pollForTerminalAuth(cfg *config.Config, publicKeyB64 string, privateKey *[32]byte) (string, []byte, error) {
+func pollForTerminalAuth(cfg *config.Config, publicKeyB64 string, privateKey *[32]byte) ([]byte, error) {
 	// URL encode the public key for query parameter (handles + and / in base64)
 	baseURL := fmt.Sprintf("%s/v1/auth/request/status", cfg.ServerURL)
 	pollURL := fmt.Sprintf("%s?publicKey=%s", baseURL, url.QueryEscape(publicKeyB64))
@@ -158,7 +164,7 @@ func pollForTerminalAuth(cfg *config.Config, publicKeyB64 string, privateKey *[3
 	for {
 		select {
 		case <-timeout:
-			return "", nil, fmt.Errorf("authentication timeout (5 minutes)")
+			return nil, fmt.Errorf("authentication timeout (5 minutes)")
 
 		case <-ticker.C:
 			req, err := http.NewRequest("GET", pollURL, nil)
@@ -195,7 +201,6 @@ func pollForTerminalAuth(cfg *config.Config, publicKeyB64 string, privateKey *[3
 
 			var result struct {
 				Status   string  `json:"status"`   // "pending" or "authorized"
-				Token    *string `json:"token"`    // JWT token when authorized
 				Response *string `json:"response"` // Encrypted secret when authorized
 			}
 			if err := json.Unmarshal(respBody, &result); err != nil {
@@ -207,8 +212,8 @@ func pollForTerminalAuth(cfg *config.Config, publicKeyB64 string, privateKey *[3
 
 			// Check if approved
 			if result.Status == "authorized" {
-				if result.Token == nil || result.Response == nil {
-					return "", nil, fmt.Errorf("missing token or response in authorized status")
+				if result.Response == nil {
+					return nil, fmt.Errorf("missing response in authorized status")
 				}
 
 				if cfg.Debug {
@@ -218,29 +223,140 @@ func pollForTerminalAuth(cfg *config.Config, publicKeyB64 string, privateKey *[3
 				// Decrypt the secret
 				encryptedSecret, err := base64.StdEncoding.DecodeString(*result.Response)
 				if err != nil {
-					return "", nil, fmt.Errorf("failed to decode encrypted secret: %w", err)
+					return nil, fmt.Errorf("failed to decode encrypted secret: %w", err)
 				}
 
 				// Decrypt the response - handles both V1 and V2 formats
 				secret, isV2, err := crypto.DecryptAuthResponse(encryptedSecret, privateKey)
 				if err != nil {
-					return "", nil, fmt.Errorf("failed to decrypt secret: %w", err)
+					return nil, fmt.Errorf("failed to decrypt secret: %w", err)
 				}
 
 				if cfg.Debug {
 					logger.Debugf("Decrypted secret: isV2=%v, len=%d", isV2, len(secret))
 				}
 
-				return *result.Token, secret, nil
+				return secret, nil
 			}
 		}
 	}
 }
 
+type authChallengeResponse struct {
+	ChallengeID string `json:"challengeId"`
+	Challenge   string `json:"challenge"`
+}
+
+// authTokenFromMasterSecret derives a deterministic Ed25519 identity from the
+// provided master secret and authenticates with the server to obtain a JWT.
+func authTokenFromMasterSecret(cfg *config.Config, masterSecret []byte) (string, error) {
+	pub, priv, err := crypto.DeriveEd25519KeyPair(masterSecret)
+	if err != nil {
+		return "", err
+	}
+	publicKeyB64 := base64.StdEncoding.EncodeToString(pub)
+
+	challengeID, challengeBytes, err := requestAuthChallenge(cfg, publicKeyB64)
+	if err != nil {
+		return "", err
+	}
+
+	signature := ed25519.Sign(priv, challengeBytes)
+	reqBody := map[string]string{
+		"publicKey":   publicKeyB64,
+		"challengeId": challengeID,
+		"signature":   base64.StdEncoding.EncodeToString(signature),
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal auth request: %w", err)
+	}
+
+	authURL := fmt.Sprintf("%s/v1/auth", cfg.ServerURL)
+	req, err := http.NewRequest("POST", authURL, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("failed to create auth request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send auth request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read auth response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("auth failed: %s - %s", resp.Status, string(respBody))
+	}
+
+	var result struct {
+		Success bool   `json:"success"`
+		Token   string `json:"token"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("failed to parse auth response: %w", err)
+	}
+	if !result.Success || result.Token == "" {
+		return "", fmt.Errorf("auth failed")
+	}
+	return result.Token, nil
+}
+
+// requestAuthChallenge requests a server-issued challenge for /v1/auth.
+func requestAuthChallenge(cfg *config.Config, publicKeyB64 string) (string, []byte, error) {
+	reqBody := map[string]string{
+		"publicKey": publicKeyB64,
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to marshal challenge request: %w", err)
+	}
+
+	challengeURL := fmt.Sprintf("%s/v1/auth/challenge", cfg.ServerURL)
+	req, err := http.NewRequest("POST", challengeURL, bytes.NewReader(body))
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create challenge request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to send challenge request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to read challenge response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", nil, fmt.Errorf("challenge request failed: %s - %s", resp.Status, string(respBody))
+	}
+
+	var result authChallengeResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", nil, fmt.Errorf("failed to parse challenge response: %w", err)
+	}
+	if result.ChallengeID == "" || result.Challenge == "" {
+		return "", nil, fmt.Errorf("invalid challenge response")
+	}
+	challengeBytes, err := base64.StdEncoding.DecodeString(result.Challenge)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to decode challenge: %w", err)
+	}
+	return result.ChallengeID, challengeBytes, nil
+}
+
 // saveCredentials saves the account secret and access token
 func saveCredentials(cfg *config.Config, secret []byte, token string) error {
 	// Ensure Delight home directory exists
-	if err := os.MkdirAll(cfg.DelightHome, 0755); err != nil {
+	if err := os.MkdirAll(cfg.DelightHome, 0700); err != nil {
 		return fmt.Errorf("failed to create delight home directory: %w", err)
 	}
 

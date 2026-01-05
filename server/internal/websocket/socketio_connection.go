@@ -15,9 +15,6 @@ func (s *SocketIOServer) handleConnection(client *socket.Socket, deps handlers.D
 	logger.Infof("Socket.IO connection attempt (socket ID: %s)", socketID)
 
 	handshake := client.Handshake()
-	logger.Tracef("Socket.IO handshake headers: %+v", handshake.Headers)
-	logger.Tracef("Socket.IO handshake query: %+v", handshake.Query)
-	logger.Tracef("Socket.IO handshake auth: %+v", handshake.Auth)
 
 	authMap := handshake.Auth
 	if authMap == nil || len(authMap) == 0 {
@@ -34,6 +31,15 @@ func (s *SocketIOServer) handleConnection(client *socket.Socket, deps handlers.D
 		client.Disconnect(true)
 		return
 	}
+
+	// Do not log the full handshake auth payload; it contains a bearer token.
+	logger.Tracef(
+		"Socket.IO handshake: clientType=%s sessionId=%s terminalId=%s socketId=%s",
+		authPayload.ClientType,
+		authPayload.SessionID,
+		authPayload.TerminalID,
+		socketID,
+	)
 
 	handshakeAuth, err := handlers.ValidateSocketAuthPayload(authPayload)
 	if err != nil {

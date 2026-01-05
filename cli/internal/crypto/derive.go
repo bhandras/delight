@@ -2,9 +2,12 @@ package crypto
 
 import (
 	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
 	"fmt"
+
+	"crypto/ed25519"
 
 	"golang.org/x/crypto/curve25519"
 )
@@ -57,6 +60,10 @@ func DeriveContentKeyPair(master []byte) (*[32]byte, *[32]byte, error) {
 
 	var priv [32]byte
 	copy(priv[:], seed)
+	// Clamp per X25519 / NaCl box expectations.
+	priv[0] &= 248
+	priv[31] &= 127
+	priv[31] |= 64
 
 	pubBytes, err := curve25519.X25519(priv[:], curve25519.Basepoint)
 	if err != nil {
@@ -66,6 +73,39 @@ func DeriveContentKeyPair(master []byte) (*[32]byte, *[32]byte, error) {
 	copy(pub[:], pubBytes)
 
 	return &pub, &priv, nil
+}
+
+// DeriveEd25519KeyPair derives a deterministic Ed25519 keypair from the
+// 32-byte master secret. This lets multiple devices authenticate as the same
+// account without sharing an extra signing key.
+func DeriveEd25519KeyPair(master []byte) (ed25519.PublicKey, ed25519.PrivateKey, error) {
+	if len(master) != 32 {
+		return nil, nil, fmt.Errorf("master secret must be 32 bytes, got %d", len(master))
+	}
+	seed := sha256.Sum256(master)
+	privateKey := ed25519.NewKeyFromSeed(seed[:])
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	return publicKey, privateKey, nil
+}
+
+// EncryptDataEncryptionKey wraps a raw 32-byte session/terminal key so it can
+// be stored on (and transported by) an untrusted server.
+//
+// Format: base64([0x00][nacl-box ciphertext...])
+func EncryptDataEncryptionKey(dataKey []byte, master []byte) (string, error) {
+	if len(dataKey) != 32 {
+		return "", fmt.Errorf("data key must be 32 bytes, got %d", len(dataKey))
+	}
+	pub, _, err := DeriveContentKeyPair(master)
+	if err != nil {
+		return "", err
+	}
+	encrypted, err := EncryptBox(dataKey, pub)
+	if err != nil {
+		return "", fmt.Errorf("failed to encrypt data key: %w", err)
+	}
+	out := append([]byte{0x00}, encrypted...)
+	return base64.StdEncoding.EncodeToString(out), nil
 }
 
 // DecryptDataEncryptionKey decrypts the session/terminal dataEncryptionKey

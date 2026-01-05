@@ -9,6 +9,14 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+const (
+	// tokenTTL controls how long access tokens remain valid.
+	//
+	// Short-lived tokens reduce the impact of accidental leakage in logs or over
+	// insecure transports.
+	tokenTTL = 24 * time.Hour
+)
+
 // TokenClaims represents the JWT token payload
 type TokenClaims struct {
 	Extras map[string]interface{} `json:"extras,omitempty"`
@@ -36,12 +44,14 @@ func NewJWTManager(masterSecret string) (*JWTManager, error) {
 
 // CreateToken creates a new JWT token for a user
 func (m *JWTManager) CreateToken(userID string, extras map[string]interface{}) (string, error) {
+	now := time.Now()
 	claims := TokenClaims{
 		Extras: extras,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			NotBefore: jwt.NewNumericDate(time.Now()),
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(tokenTTL)),
 			Issuer:    "delight-server",
 		},
 	}

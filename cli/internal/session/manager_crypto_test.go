@@ -9,14 +9,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSetSessionDataEncryptionKey_Raw32Bytes(t *testing.T) {
+func TestSetSessionDataEncryptionKey_WrappedKey(t *testing.T) {
 	expected := make([]byte, dataEncryptionKeyBytes)
 	for i := range expected {
 		expected[i] = byte(i)
 	}
-	encoded := base64.StdEncoding.EncodeToString(expected)
+	masterSecret := make([]byte, dataEncryptionKeyBytes)
+	for i := range masterSecret {
+		masterSecret[i] = byte(100 + i)
+	}
+	encoded, err := crypto.EncryptDataEncryptionKey(expected, masterSecret)
+	require.NoError(t, err)
 
-	m := &Manager{}
+	m := &Manager{masterSecret: masterSecret}
 	require.NoError(t, m.setSessionDataEncryptionKey(encoded))
 	require.Equal(t, expected, m.dataKey)
 }

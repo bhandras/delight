@@ -14,10 +14,11 @@ type CreateSessionRequest struct {
 	// update stale sessions (for example when the CLI restarts with a different
 	// agent) before any websocket-based state persistence occurs.
 	AgentState *string `json:"agentState,omitempty"`
-	// DataEncryptionKey is the session data key (base64-encoded 32 bytes).
+	// DataEncryptionKey is a wrapped per-session data key (base64-encoded
+	// opaque bytes).
 	//
-	// When present, clients may use this key to encrypt session payloads using
-	// AES-256-GCM.
+	// Clients unwrap this key locally using the account master secret, then use
+	// the resulting 32-byte key for AES-256-GCM encryption of session payloads.
 	DataEncryptionKey *string `json:"dataEncryptionKey,omitempty"`
 }
 
@@ -32,7 +33,8 @@ type CreateSessionResponse struct {
 type CreateSessionResponseSession struct {
 	// ID is the server-assigned session id.
 	ID string `json:"id"`
-	// DataEncryptionKey is the session data key (base64-encoded 32 bytes) when present.
+	// DataEncryptionKey is the wrapped per-session data key (base64-encoded
+	// opaque bytes) when present.
 	DataEncryptionKey *string `json:"dataEncryptionKey,omitempty"`
 }
 

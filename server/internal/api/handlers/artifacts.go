@@ -166,6 +166,10 @@ func (h *ArtifactHandler) CreateArtifact(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, types.ErrorResponse{Error: "invalid dataEncryptionKey encoding"})
 		return
 	}
+	if len(dataKey) == 0 || len(dataKey) > maxWrappedDataKeyBytes {
+		c.JSON(http.StatusBadRequest, types.ErrorResponse{Error: "invalid dataEncryptionKey size"})
+		return
+	}
 
 	if err := h.queries.CreateArtifact(c.Request.Context(), models.CreateArtifactParams{
 		ID:                req.ID,

@@ -379,7 +379,10 @@ func (m *Manager) createSession() error {
 	agentStateString := string(agentStateJSON)
 
 	// Create session request (encode metadata as base64 string)
-	dataKeyB64 := base64.StdEncoding.EncodeToString(m.dataKey)
+	dataKeyB64, err := crypto.EncryptDataEncryptionKey(m.dataKey, m.masterSecret)
+	if err != nil {
+		return fmt.Errorf("failed to wrap dataEncryptionKey: %w", err)
+	}
 	body, err := json.Marshal(wire.CreateSessionRequest{
 		Tag:               m.sessionTag,
 		TerminalID:        m.terminalID,
@@ -438,19 +441,19 @@ func (m *Manager) createSession() error {
 
 // setSessionDataEncryptionKey loads the session's dataEncryptionKey.
 //
-// The server stores and returns `dataEncryptionKey` as raw 32-byte base64.
+// The server stores and returns `dataEncryptionKey` as a wrapped key that must
+// be decrypted locally using the account master secret.
 func (m *Manager) setSessionDataEncryptionKey(encoded string) error {
 	if encoded == "" {
 		return nil
 	}
 
-	raw, err := base64.StdEncoding.DecodeString(encoded)
+	raw, err := crypto.DecryptDataEncryptionKey(encoded, m.masterSecret)
 	if err != nil {
-		return fmt.Errorf("decode base64: %w", err)
+		return err
 	}
-
 	if len(raw) != dataEncryptionKeyBytes {
-		return fmt.Errorf("invalid dataEncryptionKey length: %d", len(raw))
+		return fmt.Errorf("invalid decrypted dataEncryptionKey length: %d", len(raw))
 	}
 	m.dataKey = raw
 	if m.debug {

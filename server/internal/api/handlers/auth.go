@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/bhandras/delight/server/internal/crypto"
 	"github.com/bhandras/delight/server/internal/models"
@@ -26,6 +28,56 @@ func NewAuthHandler(db *sql.DB, jwtManager *crypto.JWTManager) *AuthHandler {
 	}
 }
 
+const (
+	// authChallengeBytes is the random byte length of server-issued auth
+	// challenges.
+	authChallengeBytes = 32
+	// authChallengeTTL is how long a challenge remains valid for.
+	authChallengeTTL = 5 * time.Minute
+)
+
+// PostAuthChallenge returns a server-issued challenge for /v1/auth.
+// POST /v1/auth/challenge
+func (h *AuthHandler) PostAuthChallenge(c *gin.Context) {
+	var req types.AuthChallengeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, types.ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	publicKeyHex, err := crypto.PublicKeyToHex(req.PublicKey)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, types.ErrorResponse{Error: "invalid public key"})
+		return
+	}
+
+	// Best-effort pruning.
+	_ = h.queries.DeleteExpiredAuthChallenges(c.Request.Context())
+
+	challengeID := types.NewCUID()
+	challenge := make([]byte, authChallengeBytes)
+	if _, err := crypto.RandBytes(challenge); err != nil {
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to generate challenge"})
+		return
+	}
+	expiresAt := time.Now().Add(authChallengeTTL)
+
+	if err := h.queries.CreateAuthChallenge(c.Request.Context(), models.CreateAuthChallengeParams{
+		ID:        challengeID,
+		PublicKey: publicKeyHex,
+		Challenge: challenge,
+		ExpiresAt: expiresAt,
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to create challenge"})
+		return
+	}
+
+	c.JSON(http.StatusOK, types.AuthChallengeResponse{
+		ChallengeID: challengeID,
+		Challenge:   base64.StdEncoding.EncodeToString(challenge),
+	})
+}
+
 // PostAuth handles challenge-response authentication
 // POST /v1/auth
 func (h *AuthHandler) PostAuth(c *gin.Context) {
@@ -35,19 +87,41 @@ func (h *AuthHandler) PostAuth(c *gin.Context) {
 		return
 	}
 
-	// Verify signature
-	valid, err := crypto.VerifyAuthChallenge(req.PublicKey, req.Challenge, req.Signature)
-	if err != nil || !valid {
-		c.JSON(http.StatusUnauthorized, types.ErrorResponse{Error: "invalid signature"})
-		return
-	}
-
 	// Convert public key to hex for storage
 	publicKeyHex, err := crypto.PublicKeyToHex(req.PublicKey)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, types.ErrorResponse{Error: "invalid public key"})
 		return
 	}
+
+	challenge, err := h.queries.GetAuthChallenge(c.Request.Context(), models.GetAuthChallengeParams{
+		ID:        req.ChallengeID,
+		PublicKey: publicKeyHex,
+	})
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusUnauthorized, types.ErrorResponse{Error: "invalid challenge"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "database error"})
+		return
+	}
+
+	if time.Now().After(challenge.ExpiresAt) {
+		_ = h.queries.DeleteAuthChallenge(c.Request.Context(), req.ChallengeID)
+		c.JSON(http.StatusUnauthorized, types.ErrorResponse{Error: "expired challenge"})
+		return
+	}
+
+	// Verify signature over server-issued challenge bytes.
+	valid, err := crypto.VerifyAuthSignature(req.PublicKey, challenge.Challenge, req.Signature)
+	if err != nil || !valid {
+		c.JSON(http.StatusUnauthorized, types.ErrorResponse{Error: "invalid signature"})
+		return
+	}
+
+	// One-time use: delete challenge after success.
+	_ = h.queries.DeleteAuthChallenge(c.Request.Context(), req.ChallengeID)
 
 	// Find or create account
 	account, err := h.queries.GetAccountByPublicKey(c.Request.Context(), publicKeyHex)
@@ -149,17 +223,9 @@ func (h *AuthHandler) GetAuthRequestStatus(c *gin.Context) {
 	if err == nil {
 		// Found in terminal_auth_requests
 		if authReq.Response.Valid && authReq.ResponseAccountID.Valid {
-			// Generate token for the account
-			token, err := h.jwtManager.CreateToken(authReq.ResponseAccountID.String, nil)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to create token"})
-				return
-			}
-
 			response := authReq.Response.String
 			c.JSON(http.StatusOK, types.TerminalAuthStatusResponse{
 				Status:   "authorized",
-				Token:    &token,
 				Response: &response,
 			})
 		} else {
@@ -185,17 +251,9 @@ func (h *AuthHandler) GetAuthRequestStatus(c *gin.Context) {
 
 	// Found in account_auth_requests
 	if accountReq.Response.Valid && accountReq.ResponseAccountID.Valid {
-		// Generate token for the account
-		token, err := h.jwtManager.CreateToken(accountReq.ResponseAccountID.String, nil)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to create token"})
-			return
-		}
-
 		response := accountReq.Response.String
 		c.JSON(http.StatusOK, types.TerminalAuthStatusResponse{
 			Status:   "authorized",
-			Token:    &token,
 			Response: &response,
 		})
 	} else {

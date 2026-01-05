@@ -98,7 +98,9 @@ func TestListSessionsDecryptsMetadata(t *testing.T) {
 	encodedMeta, err := json.Marshal(metadata)
 	require.NoError(t, err)
 	encoded := base64.StdEncoding.EncodeToString(encodedMeta)
-	dataKey := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	rawDataKey := make([]byte, 32)
+	dataKey, err := crypto.EncryptDataEncryptionKey(rawDataKey, secret)
+	require.NoError(t, err)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/sessions" {

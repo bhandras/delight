@@ -1,14 +1,10 @@
 package main
 
 import (
-	"bytes"
-	"encoding/base64"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,14 +14,9 @@ import (
 
 	"github.com/bhandras/delight/cli/internal/cli"
 	"github.com/bhandras/delight/cli/internal/config"
-	"github.com/bhandras/delight/cli/internal/crypto"
 	"github.com/bhandras/delight/cli/internal/session"
 	"github.com/bhandras/delight/cli/internal/version"
 	"github.com/bhandras/delight/shared/logger"
-)
-
-const (
-	authChallenge = "delight-auth-challenge"
 )
 
 const (
@@ -37,20 +28,6 @@ const (
 	// shutdown is in progress.
 	signalChannelDepth = 2
 )
-
-// AuthRequest is the request payload for the Delight auth endpoint.
-type AuthRequest struct {
-	PublicKey string `json:"publicKey"`
-	Challenge string `json:"challenge"`
-	Signature string `json:"signature"`
-}
-
-// AuthResponse is the response payload from the Delight auth endpoint.
-type AuthResponse struct {
-	Success bool   `json:"success"`
-	Token   string `json:"token"`
-	Error   string `json:"error,omitempty"`
-}
 
 func main() {
 	if err := run(); err != nil {
@@ -228,68 +205,6 @@ func parseFlags(cfg *config.Config, args []string) error {
 	cfg.Debug = level <= logger.LevelDebug
 
 	return nil
-}
-
-func getOrCreateAccessToken(cfg *config.Config, publicKey, privateKey []byte) (string, error) {
-	// Try to load existing token
-	if data, err := os.ReadFile(cfg.AccessKey); err == nil {
-		token := string(data)
-		if token != "" {
-			// TODO: Validate token isn't expired
-			return token, nil
-		}
-	}
-
-	// Authenticate with server
-	signature, err := crypto.Sign(privateKey, []byte(authChallenge))
-	if err != nil {
-		return "", fmt.Errorf("failed to sign challenge: %w", err)
-	}
-
-	authReq := AuthRequest{
-		PublicKey: base64.StdEncoding.EncodeToString(publicKey),
-		Challenge: base64.StdEncoding.EncodeToString([]byte(authChallenge)),
-		Signature: base64.StdEncoding.EncodeToString(signature),
-	}
-
-	body, err := json.Marshal(authReq)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal auth request: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/v1/auth", cfg.ServerURL)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to send auth request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("auth failed: %s - %s", resp.Status, string(respBody))
-	}
-
-	var authResp AuthResponse
-	if err := json.Unmarshal(respBody, &authResp); err != nil {
-		return "", fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	if !authResp.Success {
-		return "", fmt.Errorf("auth failed: %s", authResp.Error)
-	}
-
-	return authResp.Token, nil
 }
 
 func printUsage() {

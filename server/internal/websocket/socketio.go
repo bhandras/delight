@@ -38,7 +38,7 @@ func NewSocketIOServer(db *sql.DB, jwtManager *crypto.JWTManager) *SocketIOServe
 	// Configure CORS
 	opts.SetCors(&sockettypes.Cors{
 		Origin:      "*",
-		Credentials: true,
+		Credentials: false,
 	})
 
 	// Set ping timeout and interval to match TypeScript server
@@ -333,8 +333,8 @@ func (s *SocketIOServer) HandleSocketIO() gin.HandlerFunc {
 		// Add CORS headers to match TypeScript server
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "false")
 
 		// Handle preflight
 		if c.Request.Method == "OPTIONS" {

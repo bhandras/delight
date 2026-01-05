@@ -1,13 +1,17 @@
 package crypto
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
 )
 
-// VerifyAuthChallenge verifies an Ed25519 signature for authentication
-// Used in the challenge-response authentication flow
+// VerifyAuthChallenge verifies an Ed25519 signature for authentication where
+// the challenge is provided as base64.
+//
+// NOTE: Prefer server-issued challenges (bytes) via VerifyAuthSignature for
+// replay protection.
 func VerifyAuthChallenge(publicKeyB64, challengeB64, signatureB64 string) (bool, error) {
 	// Decode base64 inputs
 	publicKey, err := base64.StdEncoding.DecodeString(publicKeyB64)
@@ -32,6 +36,30 @@ func VerifyAuthChallenge(publicKeyB64, challengeB64, signatureB64 string) (bool,
 
 	valid := ed25519.Verify(ed25519.PublicKey(publicKey), challenge, signature)
 	return valid, nil
+}
+
+// VerifyAuthSignature verifies an Ed25519 signature for a server-issued
+// challenge.
+func VerifyAuthSignature(publicKeyB64 string, challenge []byte, signatureB64 string) (bool, error) {
+	publicKey, err := base64.StdEncoding.DecodeString(publicKeyB64)
+	if err != nil {
+		return false, fmt.Errorf("failed to decode public key: %w", err)
+	}
+	if len(publicKey) != ed25519.PublicKeySize {
+		return false, fmt.Errorf("invalid public key size")
+	}
+
+	signature, err := base64.StdEncoding.DecodeString(signatureB64)
+	if err != nil {
+		return false, fmt.Errorf("failed to decode signature: %w", err)
+	}
+
+	// Guard against empty challenges (should never happen).
+	if len(bytes.TrimSpace(challenge)) == 0 {
+		return false, fmt.Errorf("invalid challenge")
+	}
+
+	return ed25519.Verify(ed25519.PublicKey(publicKey), challenge, signature), nil
 }
 
 // PublicKeyToHex converts a base64 public key to hex for database storage

@@ -27,6 +27,12 @@ func (c *Client) AuthWithKeyPair(publicKeyB64, privateKeyB64 string) (string, er
 	return c.authWithKeyPairDispatch(publicKeyB64, privateKeyB64)
 }
 
+// AuthWithMasterKeyBase64 performs challenge-response auth using a
+// deterministic Ed25519 key derived from the master key.
+func (c *Client) AuthWithMasterKeyBase64(masterKeyB64 string) (string, error) {
+	return c.authWithMasterKeyDispatch(masterKeyB64)
+}
+
 // ListSessions fetches sessions and caches data keys. Returns JSON response.
 func (c *Client) ListSessions() (string, error) {
 	return c.listSessionsDispatch()

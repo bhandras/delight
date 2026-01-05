@@ -75,7 +75,8 @@ func TestFakeAgentRoundTrip(t *testing.T) {
 	if err := os.MkdirAll(delightHome, 0700); err != nil {
 		t.Fatalf("mkdir delight home: %v", err)
 	}
-	if _, err := storage.GetOrCreateSecretKey(filepath.Join(delightHome, "master.key")); err != nil {
+	masterSecret, err := storage.GetOrCreateSecretKey(filepath.Join(delightHome, "master.key"))
+	if err != nil {
 		t.Fatalf("create master.key: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(delightHome, "access.key"), []byte(token), 0600); err != nil {
@@ -103,7 +104,7 @@ func TestFakeAgentRoundTrip(t *testing.T) {
 	defer stopProcess(t, cliCmd)
 
 	sessionID := waitForSession(t, serverURL, token, 10*time.Second)
-	dataKey := waitForSessionDataEncryptionKey(t, serverURL, token, sessionID, 10*time.Second)
+	dataKey := waitForSessionDataEncryptionKey(t, serverURL, token, sessionID, masterSecret, 10*time.Second)
 
 	sock := connectUserSocket(t, serverURL, token)
 	defer sock.Close()
@@ -216,7 +217,14 @@ func TestArtifactSocketFlow(t *testing.T) {
 	if _, err := rand.Read(dataKey); err != nil {
 		t.Fatalf("rand data key: %v", err)
 	}
-	dataKeyB64 := base64.StdEncoding.EncodeToString(dataKey)
+	masterSecret := make([]byte, 32)
+	if _, err := rand.Read(masterSecret); err != nil {
+		t.Fatalf("rand master secret: %v", err)
+	}
+	dataKeyB64, err := crypto.EncryptDataEncryptionKey(dataKey, masterSecret)
+	if err != nil {
+		t.Fatalf("wrap dataEncryptionKey: %v", err)
+	}
 	artifactID := fmt.Sprintf("artifact-%d", time.Now().UnixNano())
 
 	createResp := emitAck(t, sock, "artifact-create", map[string]interface{}{
@@ -298,7 +306,8 @@ func TestRPCRoundTrip(t *testing.T) {
 	if err := os.MkdirAll(delightHome, 0700); err != nil {
 		t.Fatalf("mkdir delight home: %v", err)
 	}
-	if _, err := storage.GetOrCreateSecretKey(filepath.Join(delightHome, "master.key")); err != nil {
+	masterSecret, err := storage.GetOrCreateSecretKey(filepath.Join(delightHome, "master.key"))
+	if err != nil {
 		t.Fatalf("create master.key: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(delightHome, "access.key"), []byte(token), 0600); err != nil {
@@ -648,7 +657,7 @@ func TestACPFlowWithAwait(t *testing.T) {
 	defer stopProcess(t, cliCmd)
 
 	sessionID := waitForSessionWithLogs(t, serverURL, token, 20*time.Second, &cliBuf, &serverBuf)
-	dataKey := waitForSessionDataEncryptionKey(t, serverURL, token, sessionID, 10*time.Second)
+	dataKey := waitForSessionDataEncryptionKey(t, serverURL, token, sessionID, masterSecret, 10*time.Second)
 
 	userSock := connectUserSocket(t, serverURL, token)
 	defer userSock.Close()
@@ -853,30 +862,67 @@ func authToken(t *testing.T, serverURL string) string {
 		t.Fatalf("generate key pair: %v", err)
 	}
 
-	challenge := []byte("delight-auth-challenge")
-	signature, err := crypto.Sign(privateKey, challenge)
+	publicKeyB64 := base64.StdEncoding.EncodeToString(publicKey)
+
+	challengeReqBody, err := json.Marshal(map[string]string{
+		"publicKey": publicKeyB64,
+	})
+	if err != nil {
+		t.Fatalf("marshal auth challenge request: %v", err)
+	}
+
+	req, err := http.NewRequest("POST", serverURL+"/v1/auth/challenge", bytes.NewReader(challengeReqBody))
+	if err != nil {
+		t.Fatalf("auth challenge request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("auth challenge call: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("auth challenge status: %s", resp.Status)
+	}
+
+	var challengeResp struct {
+		ChallengeID string `json:"challengeId"`
+		Challenge   string `json:"challenge"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&challengeResp); err != nil {
+		t.Fatalf("decode auth challenge response: %v", err)
+	}
+	if challengeResp.ChallengeID == "" || challengeResp.Challenge == "" {
+		t.Fatal("missing challenge fields")
+	}
+	challengeBytes, err := base64.StdEncoding.DecodeString(challengeResp.Challenge)
+	if err != nil {
+		t.Fatalf("decode challenge: %v", err)
+	}
+
+	signature, err := crypto.Sign(privateKey, challengeBytes)
 	if err != nil {
 		t.Fatalf("sign challenge: %v", err)
 	}
 
-	reqBody := map[string]string{
-		"publicKey": base64.StdEncoding.EncodeToString(publicKey),
-		"challenge": base64.StdEncoding.EncodeToString(challenge),
-		"signature": base64.StdEncoding.EncodeToString(signature),
-	}
-
-	body, err := json.Marshal(reqBody)
+	authReqBody, err := json.Marshal(map[string]string{
+		"publicKey":   publicKeyB64,
+		"challengeId": challengeResp.ChallengeID,
+		"signature":   base64.StdEncoding.EncodeToString(signature),
+	})
 	if err != nil {
 		t.Fatalf("marshal auth request: %v", err)
 	}
 
-	req, err := http.NewRequest("POST", serverURL+"/v1/auth", bytes.NewReader(body))
+	req, err = http.NewRequest("POST", serverURL+"/v1/auth", bytes.NewReader(authReqBody))
 	if err != nil {
 		t.Fatalf("auth request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatalf("auth call: %v", err)
 	}
@@ -1000,7 +1046,7 @@ func waitForSessionWithLogs(t *testing.T, serverURL, token string, timeout time.
 	return ""
 }
 
-func waitForSessionDataEncryptionKey(t *testing.T, serverURL, token, sessionID string, timeout time.Duration) []byte {
+func waitForSessionDataEncryptionKey(t *testing.T, serverURL, token, sessionID string, masterSecret []byte, timeout time.Duration) []byte {
 	t.Helper()
 
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -1045,9 +1091,9 @@ func waitForSessionDataEncryptionKey(t *testing.T, serverURL, token, sessionID s
 			if s.DataEncryptionKey == nil || *s.DataEncryptionKey == "" {
 				break
 			}
-			raw, err := base64.StdEncoding.DecodeString(*s.DataEncryptionKey)
+			raw, err := crypto.DecryptDataEncryptionKey(*s.DataEncryptionKey, masterSecret)
 			if err != nil {
-				t.Fatalf("decode dataEncryptionKey: %v", err)
+				t.Fatalf("decrypt dataEncryptionKey: %v", err)
 			}
 			if len(raw) != 32 {
 				t.Fatalf("invalid dataEncryptionKey length: %d", len(raw))

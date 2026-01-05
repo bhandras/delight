@@ -58,28 +58,41 @@ func TestAuthWithKeyPairRoundTrip(t *testing.T) {
 	publicKeyB64 := kp.PublicKey()
 	privateKeyB64 := kp.PrivateKey()
 
+	challengeID := "challenge-1"
+	challengeRaw := []byte("server-challenge")
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/v1/auth", r.URL.Path)
 		require.Equal(t, "POST", r.Method)
 
-		var payload map[string]string
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
-		require.Equal(t, publicKeyB64, payload["publicKey"])
+		switch r.URL.Path {
+		case "/v1/auth/challenge":
+			var payload map[string]string
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+			require.Equal(t, publicKeyB64, payload["publicKey"])
 
-		challengeRaw, err := base64.StdEncoding.DecodeString(payload["challenge"])
-		require.NoError(t, err)
-		require.Equal(t, []byte("delight-auth-challenge"), challengeRaw)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"challengeId": challengeID,
+				"challenge":   base64.StdEncoding.EncodeToString(challengeRaw),
+			})
+		case "/v1/auth":
+			var payload map[string]string
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+			require.Equal(t, publicKeyB64, payload["publicKey"])
+			require.Equal(t, challengeID, payload["challengeId"])
 
-		sigRaw, err := base64.StdEncoding.DecodeString(payload["signature"])
-		require.NoError(t, err)
-		pubRaw, err := base64.StdEncoding.DecodeString(publicKeyB64)
-		require.NoError(t, err)
-		require.True(t, ed25519.Verify(pubRaw, challengeRaw, sigRaw))
+			sigRaw, err := base64.StdEncoding.DecodeString(payload["signature"])
+			require.NoError(t, err)
+			pubRaw, err := base64.StdEncoding.DecodeString(publicKeyB64)
+			require.NoError(t, err)
+			require.True(t, ed25519.Verify(pubRaw, challengeRaw, sigRaw))
 
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": true,
-			"token":   "token-123",
-		})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"token":   "token-123",
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
 	}))
 	defer srv.Close()
 
@@ -91,6 +104,54 @@ func TestAuthWithKeyPairRoundTrip(t *testing.T) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	require.Equal(t, "token-123", client.token)
+}
+
+func TestAuthWithMasterKeyRoundTrip(t *testing.T) {
+	master := bytes.Repeat([]byte{0xCD}, 32)
+	masterB64 := base64.StdEncoding.EncodeToString(master)
+
+	pub, _, err := crypto.DeriveEd25519KeyPair(master)
+	require.NoError(t, err)
+	publicKeyB64 := base64.StdEncoding.EncodeToString(pub)
+
+	challengeID := "challenge-2"
+	challengeRaw := []byte("server-challenge-2")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "POST", r.Method)
+		switch r.URL.Path {
+		case "/v1/auth/challenge":
+			var payload map[string]string
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+			require.Equal(t, publicKeyB64, payload["publicKey"])
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"challengeId": challengeID,
+				"challenge":   base64.StdEncoding.EncodeToString(challengeRaw),
+			})
+		case "/v1/auth":
+			var payload map[string]string
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+			require.Equal(t, publicKeyB64, payload["publicKey"])
+			require.Equal(t, challengeID, payload["challengeId"])
+
+			sigRaw, err := base64.StdEncoding.DecodeString(payload["signature"])
+			require.NoError(t, err)
+			require.True(t, ed25519.Verify(pub, challengeRaw, sigRaw))
+
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"token":   "token-abc",
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	token, err := client.AuthWithMasterKeyBase64(masterB64)
+	require.NoError(t, err)
+	require.Equal(t, "token-abc", token)
 }
 
 func TestApproveTerminalAuthEncryptsMasterKey(t *testing.T) {

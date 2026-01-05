@@ -25,8 +25,9 @@ Delight uses standard primitives available across Go/Swift/Node:
 
 ### `dataEncryptionKey` (per-session key)
 
-- 32 bytes, per session, stored on the server and returned as base64 of raw key
-  bytes.
+- 32 bytes, per session.
+- Stored on the server only as a **wrapped key** (base64 of opaque bytes).
+- Clients unwrap it locally using the derived X25519 “content keypair”.
 - Used for AES‑256‑GCM encryption/decryption of **session payloads**.
 - The CLI/SDK must hydrate this key (via `GET /v1/sessions` and/or the
   `new-session` update) before decrypting session messages.
@@ -39,6 +40,13 @@ The terminal (CLI) authenticates via QR code:
 2. CLI sends the public key to the server.
 3. Mobile app encrypts a response to that public key and posts it to the server.
 4. CLI polls the server and decrypts the response with its private key.
+
+After pairing, clients obtain a JWT via a server-issued nonce challenge:
+
+1. Client derives a deterministic Ed25519 keypair from the `masterSecret`.
+2. Client requests a one-time challenge from `POST /v1/auth/challenge`.
+3. Client signs the returned challenge bytes and posts the signature to
+   `POST /v1/auth` to obtain a JWT.
 
 ## Wire formats
 
@@ -56,7 +64,7 @@ Notes:
 
 ### NaCl Box envelope (binary)
 
-Used for key exchange and QR-code responses:
+Used for key exchange, QR-code responses, and wrapping per-session keys:
 
 `[ephemeral public key (32)][nonce (24)][ciphertext+tag]`
 
