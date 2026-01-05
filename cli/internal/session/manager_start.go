@@ -13,6 +13,7 @@ import (
 	"time"
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
+	cliauth "github.com/bhandras/delight/cli/internal/cli"
 	"github.com/bhandras/delight/cli/internal/crypto"
 	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
 	"github.com/bhandras/delight/cli/internal/storage"
@@ -112,6 +113,13 @@ func (m *Manager) Start(workDir string) error {
 
 	// Connect WebSocket
 	m.wsClient = websocket.NewClient(m.cfg.ServerURL, m.token, m.sessionID, m.cfg.SocketIOTransport, m.debug)
+	m.wsClient.SetTokenRefresher(func() (string, error) {
+		// Refresh the on-disk token and return it so the websocket can reconnect
+		// with fresh auth.
+		//
+		// We use the in-memory masterSecret and avoid loading it from disk.
+		return cliauth.RefreshAccessToken(m.cfg, m.masterSecret)
+	})
 	// Re-wire the session actor runtime with the now-constructed websocket client.
 	// initSessionActor is idempotent and updates runtime adapters when actor exists.
 	m.initSessionActor()
@@ -170,6 +178,9 @@ func (m *Manager) Start(workDir string) error {
 	// Connect terminal-scoped WebSocket (best-effort)
 	if !m.disableTerminalSocket {
 		m.terminalClient = websocket.NewTerminalClient(m.cfg.ServerURL, m.token, m.terminalID, m.cfg.SocketIOTransport, m.debug)
+		m.terminalClient.SetTokenRefresher(func() (string, error) {
+			return cliauth.RefreshAccessToken(m.cfg, m.masterSecret)
+		})
 		m.terminalClient.OnConnect(func() {
 			if m.sessionActor != nil {
 				_ = m.sessionActor.Enqueue(sessionactor.TerminalConnected())

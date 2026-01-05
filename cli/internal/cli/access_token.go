@@ -80,6 +80,15 @@ func EnsureAccessToken(cfg *config.Config) (string, error) {
 		return "", fmt.Errorf("failed to load %s: %w", masterKeyPath, err)
 	}
 
+	return RefreshAccessToken(cfg, masterSecret)
+}
+
+// RefreshAccessToken refreshes the current access token using Option A:
+// re-auth via /v1/auth/challenge and /v1/auth using a deterministic identity
+// derived from the account master secret.
+//
+// The new token is persisted to `cfg.AccessKey`.
+func RefreshAccessToken(cfg *config.Config, masterSecret []byte) (string, error) {
 	newToken, err := authTokenFromMasterSecret(cfg, masterSecret)
 	if err != nil {
 		return "", err

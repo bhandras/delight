@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,6 +75,13 @@ type Client struct {
 
 	onConnect    []func()
 	onDisconnect []func(reason string)
+
+	// tokenRefresher is an optional callback that returns a fresh JWT. When set,
+	// connect_error events that look like auth failures will trigger a refresh
+	// and reconnect with the new token.
+	tokenRefresher func() (string, error)
+	refreshing     bool
+	lastRefreshAt  time.Time
 }
 
 const (
@@ -81,6 +89,10 @@ const (
 	TransportWebSocket = "websocket"
 	// TransportPolling forces Socket.IO to use HTTP long-polling only.
 	TransportPolling = "polling"
+
+	// tokenRefreshMinInterval bounds how frequently we attempt refreshing during
+	// reconnect loops.
+	tokenRefreshMinInterval = 30 * time.Second
 )
 
 // normalizeTransport returns a supported transport mode or the default.
@@ -143,6 +155,21 @@ func (c *Client) SetDebug(enabled bool) {
 	c.debug = enabled
 }
 
+// SetToken updates the JWT used in Socket.IO handshakes.
+func (c *Client) SetToken(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.token = token
+}
+
+// SetTokenRefresher sets a callback used to obtain a fresh token during
+// reconnect loops (for example when JWTs expire).
+func (c *Client) SetTokenRefresher(fn func() (string, error)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tokenRefresher = fn
+}
+
 // OnConnect registers a callback that runs when the Socket.IO client reports a
 // successful connection.
 func (c *Client) OnConnect(fn func()) {
@@ -199,21 +226,21 @@ func (c *Client) Connect() error {
 	// Set the path (like JS client does)
 	opts.SetPath("/v1/updates")
 
-		switch transport {
-		case TransportWebSocket:
-			if debug {
-				logger.Debugf("Socket.IO transports: websocket only")
-			}
-			// WebSocket-only avoids Engine.IO polling, which can trigger Alt-Svc
-			// (HTTP/3) upgrade attempts in the upstream library. That upgrade path
-			// is unreliable on some platforms (notably gomobile / iOS) and can lead
-			// to long hangs and timeouts even when the server is reachable.
-			opts.SetTransports(types.NewSet(socket.WebSocket))
-		case TransportPolling:
-			if debug {
-				logger.Debugf("Socket.IO transports: polling only")
-			}
-			opts.SetTransports(types.NewSet(socket.Polling))
+	switch transport {
+	case TransportWebSocket:
+		if debug {
+			logger.Debugf("Socket.IO transports: websocket only")
+		}
+		// WebSocket-only avoids Engine.IO polling, which can trigger Alt-Svc
+		// (HTTP/3) upgrade attempts in the upstream library. That upgrade path
+		// is unreliable on some platforms (notably gomobile / iOS) and can lead
+		// to long hangs and timeouts even when the server is reachable.
+		opts.SetTransports(types.NewSet(socket.WebSocket))
+	case TransportPolling:
+		if debug {
+			logger.Debugf("Socket.IO transports: polling only")
+		}
+		opts.SetTransports(types.NewSet(socket.Polling))
 	default:
 		opts.SetTransports(types.NewSet(socket.WebSocket))
 	}
@@ -293,6 +320,7 @@ func (c *Client) Connect() error {
 	// Set up error handler
 	sock.On(types.EventName("connect_error"), func(args ...any) {
 		c.logConnectError(args)
+		c.maybeRefreshToken(args)
 	})
 
 	// Set up event handlers for each event type.
@@ -358,6 +386,83 @@ func (c *Client) logConnectError(args []any) {
 	if shouldLog {
 		logger.Debugf("Socket.IO connection error: %s", msg)
 	}
+}
+
+func looksLikeAuthFailure(message string) bool {
+	msg := strings.ToLower(message)
+	switch {
+	case strings.Contains(msg, "invalid authentication token"):
+		return true
+	case strings.Contains(msg, "invalid token"):
+		return true
+	case strings.Contains(msg, "unauthorized"):
+		return true
+	case strings.Contains(msg, "401"):
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) maybeRefreshToken(args []any) {
+	now := time.Now()
+
+	c.mu.Lock()
+	refresher := c.tokenRefresher
+	debug := c.debug
+	refreshing := c.refreshing
+	lastAt := c.lastRefreshAt
+	c.mu.Unlock()
+
+	if refresher == nil || refreshing {
+		return
+	}
+
+	msg := ""
+	if len(args) > 0 && args[0] != nil {
+		msg = fmt.Sprint(args[0])
+	}
+	if msg == "" || !looksLikeAuthFailure(msg) {
+		return
+	}
+	if now.Sub(lastAt) < tokenRefreshMinInterval {
+		return
+	}
+
+	c.mu.Lock()
+	// Re-check under lock.
+	if c.refreshing || now.Sub(c.lastRefreshAt) < tokenRefreshMinInterval {
+		c.mu.Unlock()
+		return
+	}
+	c.refreshing = true
+	c.lastRefreshAt = now
+	c.mu.Unlock()
+
+	go func() {
+		newToken, err := refresher()
+		c.mu.Lock()
+		c.refreshing = false
+		if err != nil {
+			c.mu.Unlock()
+			if debug {
+				logger.Debugf("Socket.IO token refresh failed: %v", err)
+			}
+			return
+		}
+		if strings.TrimSpace(newToken) == "" {
+			c.mu.Unlock()
+			if debug {
+				logger.Debugf("Socket.IO token refresh returned empty token")
+			}
+			return
+		}
+		c.token = newToken
+		c.mu.Unlock()
+
+		// Best-effort: reconnect with the new token.
+		_ = c.Connect()
+	}()
 }
 
 // WaitForConnect waits for the socket to report connected or times out.
