@@ -132,7 +132,16 @@ struct TerminalMessagesView: UIViewRepresentable {
             context.coordinator.lastLastMessageID = newLastID
             context.coordinator.lastMessageCount = messages.count
             context.coordinator.lastFontSize = fontSize
-            context.coordinator.lastIndexByID = Dictionary(uniqueKeysWithValues: messages.enumerated().map { ($0.element.id, $0.offset) })
+            // Message IDs are expected to be unique, but during reconciling
+            // (optimistic sends, ui.event rows, pagination merges) we can
+            // temporarily observe duplicates. Avoid crashing by keeping the
+            // last observed index for each id.
+            var indexByID: [String: Int] = [:]
+            indexByID.reserveCapacity(messages.count)
+            for (idx, message) in messages.enumerated() {
+                indexByID[message.id] = idx
+            }
+            context.coordinator.lastIndexByID = indexByID
         }
 
         // Consume external scroll requests.
