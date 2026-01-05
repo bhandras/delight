@@ -151,6 +151,9 @@ private struct TerminalRow: View {
             Image(systemName: "chevron.right")
                 .foregroundColor(Theme.mutedText)
         }
+        // Make the whole row tappable, not just the visible pixels.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .padding(.vertical, 12)
     }
 }
@@ -660,6 +663,8 @@ private struct TerminalModelEffortSheet: View {
                                         Image(systemName: "checkmark")
                                     }
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                         }
@@ -682,6 +687,8 @@ private struct TerminalModelEffortSheet: View {
                                         Image(systemName: "checkmark")
                                     }
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                         }
@@ -750,6 +757,8 @@ private struct TerminalPermissionsSheet: View {
                                         Image(systemName: "checkmark")
                                     }
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                         }

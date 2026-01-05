@@ -462,6 +462,9 @@ private struct SettingMenuRow: View {
             Image(systemName: "chevron.right")
                 .foregroundColor(Theme.mutedText)
         }
+        // Make the whole row tappable, not just the visible text/icon pixels.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .padding(.vertical, 12)
     }
 }
@@ -620,8 +623,12 @@ private struct DebugActionRow: View {
                     .foregroundColor(Theme.messageText)
                 Spacer()
             }
+            // Make the whole row tappable, not just the label/icon pixels.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
             .padding(.vertical, 6)
         }
+        .buttonStyle(.plain)
     }
 }
 
@@ -906,6 +913,8 @@ private struct SettingValueRow: View {
             Image(systemName: "chevron.right")
                 .foregroundColor(Theme.mutedText)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .padding(.vertical, 12)
     }
 }
@@ -932,6 +941,8 @@ private struct SettingToggleRow: View {
                         .foregroundColor(Theme.mutedText)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
             .padding(.vertical, 12)
         }
         .tint(Theme.accent)
@@ -989,8 +1000,11 @@ private struct AppearanceModeOptionRow: View {
                         .foregroundColor(Theme.accent)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
             .padding(.vertical, 4)
         }
+        .buttonStyle(.plain)
     }
 }
 
