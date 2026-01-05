@@ -2376,7 +2376,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 uiEvents[key] = payload
                 let markdown = uiEventMarkdown(payload)
                 let blocks = splitMarkdownBlocks(markdown)
-                let item = MessageItem(
+                let uiItem = MessageItem(
                     id: "ui-\(payload.eventID)",
                     seq: seq,
                     localID: nil,
@@ -2385,21 +2385,15 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     blocks: blocks.isEmpty ? [.text(markdown)] : blocks,
                     createdAt: payload.atMs ?? createdAt
                 )
-                let primaryKey = messagePrimaryKey(
-                    id: item.id,
-                    localID: nil,
-                    uuid: nil,
-                    role: item.role,
-                    createdAt: item.createdAt,
-                    blocks: item.blocks
-                )
-                if let primaryKey, seenKeys.contains(primaryKey) {
-                    continue
+                // A single logical UI event is emitted multiple times (start/update/end)
+                // under the same eventId. When persisted as normal session messages we
+                // might see multiple rows with the same `ui-<eventId>` id in history.
+                // Keep the latest content but avoid inserting duplicate message ids.
+                if let existingIndex = messages.firstIndex(where: { $0.id == uiItem.id }) {
+                    messages[existingIndex] = uiItem
+                } else {
+                    messages.append(uiItem)
                 }
-                if let primaryKey {
-                    seenKeys.insert(primaryKey)
-                }
-                messages.append(item)
                 continue
             }
 
