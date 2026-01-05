@@ -75,8 +75,7 @@ func TestFakeAgentRoundTrip(t *testing.T) {
 	if err := os.MkdirAll(delightHome, 0700); err != nil {
 		t.Fatalf("mkdir delight home: %v", err)
 	}
-	masterSecret, err := storage.GetOrCreateSecretKey(filepath.Join(delightHome, "master.key"))
-	if err != nil {
+	if _, err := storage.GetOrCreateSecretKey(filepath.Join(delightHome, "master.key")); err != nil {
 		t.Fatalf("create master.key: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(delightHome, "access.key"), []byte(token), 0600); err != nil {
@@ -403,7 +402,8 @@ func TestTerminalRPCRoundTrip(t *testing.T) {
 	if err := os.MkdirAll(delightHome, 0700); err != nil {
 		t.Fatalf("mkdir delight home: %v", err)
 	}
-	if _, err := storage.GetOrCreateSecretKey(filepath.Join(delightHome, "master.key")); err != nil {
+	masterSecret, err := storage.GetOrCreateSecretKey(filepath.Join(delightHome, "master.key"))
+	if err != nil {
 		t.Fatalf("create master.key: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(delightHome, "access.key"), []byte(token), 0600); err != nil {

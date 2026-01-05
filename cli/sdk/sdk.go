@@ -42,7 +42,76 @@ const (
 	aesGCMVersionBytes = 1
 	aesGCMNonceBytes   = 12
 	aesGCMTagBytes     = 16
+
+	// tokenRefreshWindow is how soon before JWT expiry we proactively refresh.
+	tokenRefreshWindow = 10 * time.Minute
+
+	// tokenRefreshMinInterval bounds how frequently we attempt refreshing.
+	// This avoids stampedes when multiple calls see an expired token.
+	tokenRefreshMinInterval = 30 * time.Second
 )
+
+type httpError struct {
+	statusCode int
+	body       []byte
+}
+
+func (e *httpError) Error() string {
+	if len(e.body) == 0 {
+		return fmt.Sprintf("request failed: status=%d", e.statusCode)
+	}
+	return fmt.Sprintf("request failed: status=%d body=%s", e.statusCode, string(e.body))
+}
+
+// refreshTokenIfNeeded refreshes the JWT using the master secret.
+//
+// This implements "Option A" rotation: re-auth using /v1/auth/challenge and
+// /v1/auth. It does not require a refresh-token subsystem.
+//
+// Must be called from the SDK dispatch queue.
+func (c *Client) refreshTokenIfNeeded(force bool) error {
+	c.mu.Lock()
+	token := strings.TrimSpace(c.token)
+	master := append([]byte(nil), c.masterSecret...)
+	lastRefresh := c.lastTokenRefreshAt
+	c.mu.Unlock()
+
+	if token == "" {
+		return fmt.Errorf("token not set")
+	}
+	if len(master) == 0 {
+		// Without the master key we can't re-auth. Let the server reject if needed.
+		return nil
+	}
+
+	expiring, err := isTokenExpiringSoon(token, tokenRefreshWindow)
+	if err != nil {
+		return err
+	}
+	if !force && !expiring {
+		return nil
+	}
+	if !force && !lastRefresh.IsZero() && time.Since(lastRefresh) < tokenRefreshMinInterval {
+		return nil
+	}
+
+	// Re-auth using deterministic identity derived from the master secret.
+	masterB64 := base64.StdEncoding.EncodeToString(master)
+	newToken, err := c.authWithMasterKey(masterB64)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(newToken) == "" {
+		return fmt.Errorf("empty token returned from auth")
+	}
+
+	c.mu.Lock()
+	c.token = newToken
+	c.lastTokenRefreshAt = time.Now()
+	c.mu.Unlock()
+
+	return nil
+}
 
 // SetDebug enables debug logging for underlying sockets.
 func (c *Client) SetDebug(enabled bool) {
@@ -220,6 +289,10 @@ func (c *Client) connect() error {
 			logPanic("Connect", r)
 		}
 	}()
+
+	// Proactively refresh the token if it's expired/near expiry.
+	_ = c.refreshTokenIfNeeded(false)
+
 	c.mu.Lock()
 	token := c.token
 	debug := c.debug
@@ -235,14 +308,40 @@ func (c *Client) connect() error {
 
 	if err := socket.Connect(); err != nil {
 		c.emitError(fmt.Sprintf("connect failed: %v", err))
+		// If we might be failing due to an expired token, try one forced refresh.
+		if refreshErr := c.refreshTokenIfNeeded(true); refreshErr == nil {
+			c.mu.Lock()
+			token = c.token
+			c.mu.Unlock()
+			socket = websocket.NewUserClient(c.serverURL, token, websocket.TransportWebSocket, debug)
+			socket.On(websocket.EventUpdate, c.handleUpdateQueued)
+			socket.On(websocket.EventEphemeral, c.handleEphemeralQueued)
+			if err2 := socket.Connect(); err2 == nil && socket.WaitForConnect(userSocketConnectTimeout) {
+				goto connected
+			}
+		}
 		return err
 	}
 	if !socket.WaitForConnect(userSocketConnectTimeout) {
 		err := fmt.Errorf("connect timeout")
 		c.emitError(err.Error())
+		// If we might be failing due to an expired token, try one forced refresh.
+		if refreshErr := c.refreshTokenIfNeeded(true); refreshErr == nil {
+			_ = socket.Close()
+			c.mu.Lock()
+			token = c.token
+			c.mu.Unlock()
+			socket = websocket.NewUserClient(c.serverURL, token, websocket.TransportWebSocket, debug)
+			socket.On(websocket.EventUpdate, c.handleUpdateQueued)
+			socket.On(websocket.EventEphemeral, c.handleEphemeralQueued)
+			if err2 := socket.Connect(); err2 == nil && socket.WaitForConnect(userSocketConnectTimeout) {
+				goto connected
+			}
+		}
 		return err
 	}
 
+connected:
 	c.mu.Lock()
 	c.userSocket = socket
 	listener := c.listener
@@ -1167,8 +1266,13 @@ func (c *Client) doRequest(method, path string, body []byte) (resp []byte, err e
 			err = fmt.Errorf("panic: %v", r)
 		}
 	}()
+	// Best-effort proactive refresh for authenticated endpoints.
+	if !strings.HasPrefix(path, "/v1/auth") {
+		_ = c.refreshTokenIfNeeded(false)
+	}
+
 	c.mu.Lock()
-	token := c.token
+	token := strings.TrimSpace(c.token)
 	baseURL := c.serverURL
 	client := c.httpClient
 	c.mu.Unlock()
@@ -1177,35 +1281,58 @@ func (c *Client) doRequest(method, path string, body []byte) (resp []byte, err e
 		return nil, fmt.Errorf("server URL not set")
 	}
 
-	fullURL := fmt.Sprintf("%s%s", baseURL, path)
-	var reader io.Reader
-	if body != nil {
-		reader = bytes.NewReader(body)
+	doOnce := func(token string) (int, []byte, error) {
+		fullURL := fmt.Sprintf("%s%s", baseURL, path)
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(body)
+		}
+
+		req, err := http.NewRequest(method, fullURL, reader)
+		if err != nil {
+			return 0, nil, err
+		}
+		if token != "" {
+			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		httpResp, err := client.Do(req)
+		if err != nil {
+			return 0, nil, err
+		}
+		defer httpResp.Body.Close()
+
+		respBody, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return 0, nil, err
+		}
+		return httpResp.StatusCode, respBody, nil
 	}
 
-	req, err := http.NewRequest(method, fullURL, reader)
+	status, respBody, err := doOnce(token)
 	if err != nil {
 		return nil, err
 	}
-	if token != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+
+	// If auth failed, try a forced refresh once and retry.
+	if status == http.StatusUnauthorized && !strings.HasPrefix(path, "/v1/auth") {
+		if refreshErr := c.refreshTokenIfNeeded(true); refreshErr == nil {
+			c.mu.Lock()
+			token = strings.TrimSpace(c.token)
+			c.mu.Unlock()
+			status, respBody, err = doOnce(token)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
-	httpResp, err := client.Do(req)
-	if err != nil {
-		return nil, err
+	if status < httpSuccessMin || status >= httpSuccessMaxExclusive {
+		return nil, &httpError{statusCode: status, body: respBody}
 	}
-	defer httpResp.Body.Close()
 
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if httpResp.StatusCode < httpSuccessMin || httpResp.StatusCode >= httpSuccessMaxExclusive {
-		return nil, fmt.Errorf("request failed: %s", string(respBody))
-	}
 	return respBody, nil
 }

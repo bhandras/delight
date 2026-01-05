@@ -319,17 +319,12 @@ func runSession(cfg *config.Config) error {
 	}
 
 	// Load access token
-	tokenData, err := os.ReadFile(cfg.AccessKey)
+	token, err := cli.EnsureAccessToken(cfg)
 	if err != nil {
-		return fmt.Errorf(
-			"not authenticated (missing %s); run `delight auth` first",
-			cfg.AccessKey,
-		)
+		return fmt.Errorf("not authenticated: %w", err)
 	}
-	token := string(tokenData)
 
 	if cfg.Debug {
-		logger.Debugf("Access token: %s...", token[:20])
 		logger.Debugf("Config: ServerURL=%s, DelightHome=%s", cfg.ServerURL, cfg.DelightHome)
 	}
 

@@ -48,6 +48,7 @@ type Client struct {
 	dataKeys             map[string][]byte
 	sessionFSM           map[string]sessionFSMState
 	lastSessionHydrateAt int64
+	lastTokenRefreshAt   time.Time
 	listener             Listener
 	userSocket           *websocket.Client
 	httpClient           *http.Client
