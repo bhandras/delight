@@ -2,6 +2,7 @@ package actor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -96,6 +97,8 @@ func (r *Runtime) cancelTimer(eff effCancelTimer) {
 func (r *Runtime) emitEphemeral(eff effEmitEphemeral) {
 	r.mu.Lock()
 	emitter := r.socketEmitter
+	encryptFn := r.encryptFn
+	sessionID := r.sessionID
 	debug := r.debug
 	r.mu.Unlock()
 	if emitter == nil {
@@ -119,8 +122,55 @@ func (r *Runtime) emitEphemeral(eff effEmitEphemeral) {
 			logger.Debugf("session: emit ephemeral")
 		}
 	}
+
+	// Persist UI events as encrypted session messages so mobile clients can
+	// recover progress updates after reconnecting (e.g. after backgrounding).
+	if payload, ok := eff.Payload.(wire.EphemeralUIEventPayload); ok {
+		r.persistUIEventMessage(emitter, encryptFn, sessionID, payload, debug)
+	}
+
 	if err := emitter.EmitEphemeral(eff.Payload); err != nil && debug {
 		logger.Debugf("session: emit ephemeral failed: %v", err)
+	}
+}
+
+// persistUIEventMessage stores a `ui.event` ephemeral as an encrypted session
+// message. The server cannot encrypt on behalf of clients, so the CLI must
+// encrypt before persistence.
+func (r *Runtime) persistUIEventMessage(
+	emitter SocketEmitter,
+	encryptFn func([]byte) (string, error),
+	sessionID string,
+	payload wire.EphemeralUIEventPayload,
+	debug bool,
+) {
+	if emitter == nil || encryptFn == nil {
+		return
+	}
+	if payload.Type != "ui.event" || payload.SessionID == "" || payload.EventID == "" {
+		return
+	}
+
+	record := wire.NewUIEventRecord(payload)
+	plaintext, err := json.Marshal(record)
+	if err != nil {
+		return
+	}
+	ciphertext, err := encryptFn(plaintext)
+	if err != nil {
+		return
+	}
+	if sessionID == "" {
+		sessionID = payload.SessionID
+	}
+	if sessionID == "" {
+		return
+	}
+	if err := emitter.EmitMessage(wire.OutboundMessagePayload{
+		SID:     sessionID,
+		Message: ciphertext,
+	}); err != nil && debug {
+		logger.Debugf("session: persist ui.event message failed: %v", err)
 	}
 }
 
