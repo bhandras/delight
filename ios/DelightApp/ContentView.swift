@@ -119,6 +119,12 @@ private enum DebugLogLayout {
 
     /// scrollAnimationSeconds controls the double-tap scroll animation speed.
     static let scrollAnimationSeconds: TimeInterval = 0.15
+
+    /// logPanelPadding reduces internal padding so logs use screen space well.
+    static let logPanelPadding: CGFloat = 4
+
+    /// logListRowInset reduces outer List insets for the log panel.
+    static let logListRowInset: CGFloat = 6
 }
 
 /// KeyboardDismissal provides a small SwiftUI helper for dismissing the iOS
@@ -553,9 +559,10 @@ private struct DebugView: View {
                                 .font(.system(.footnote, design: .monospaced))
                                 .foregroundColor(Theme.messageText)
                                 .textSelection(.enabled)
-                            DebugActionRow(title: "Copy Log Server URL", systemImage: "doc.on.doc") {
+                            ActionButton(title: "Copy Log Server URL", systemImage: "doc.on.doc") {
                                 UIPasteboard.general.string = model.logServerURL
                             }
+                            .listRowBackground(Color.clear)
                         }
                     }
                     Section("Recent Logs") {
@@ -572,7 +579,7 @@ private struct DebugView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
                             .frame(height: logHeight)
-                            .padding(8)
+                            .padding(DebugLogLayout.logPanelPadding)
                             .background(Theme.codeBackground)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                             .contentShape(Rectangle())
@@ -596,6 +603,15 @@ private struct DebugView: View {
                                 }
                             }
                         }
+                        .listRowInsets(
+                            EdgeInsets(
+                                top: 0,
+                                leading: DebugLogLayout.logListRowInset,
+                                bottom: 0,
+                                trailing: DebugLogLayout.logListRowInset
+                            )
+                        )
+                        .listRowBackground(Color.clear)
                     }
                 }
                 .scrollContentBackground(.hidden)
