@@ -1,0 +1,3 @@
+# Keep all local planning notes out of git history.
+*
+!.gitignore
