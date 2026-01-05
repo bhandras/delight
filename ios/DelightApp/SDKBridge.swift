@@ -2087,6 +2087,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let messages: [MessageItem]
         let hasMore: Bool
         let nextBeforeSeq: Int64?
+        let uiEvents: [String: UIEventPayload]
     }
 
     private struct UIEventPayload {
@@ -2108,6 +2109,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     ) {
         let page = decodeMessagesPage(json)
         DispatchQueue.main.async {
+            if !page.uiEvents.isEmpty {
+                for (key, payload) in page.uiEvents {
+                    self.uiEventsByKey[key] = payload
+                }
+            }
             if reset {
                 self.messages = page.messages
             } else {
@@ -2298,7 +2304,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private func decodeMessagesPage(_ json: String) -> MessagesPage {
         guard let parsed = decodeJSONValue(json) else {
             log("Parse messages error: invalid JSON payload")
-            return MessagesPage(messages: [], hasMore: false, nextBeforeSeq: nil)
+            return MessagesPage(messages: [], hasMore: false, nextBeforeSeq: nil, uiEvents: [:])
         }
 
         let itemsArray: [JSONValue]
@@ -2333,6 +2339,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         var messages: [MessageItem] = []
         var seenKeys = Set<String>()
         var richFallbackKeys = Set<String>()
+        var uiEvents: [String: UIEventPayload] = [:]
 
         for item in itemsArray {
             guard let dict = item.object else { continue }
@@ -2363,6 +2370,39 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if isToolResultMessage(content) {
                 continue
             }
+
+            if let payload = extractDurableUIEventPayload(from: content) {
+                let key = uiEventKey(sessionID: payload.sessionID, eventID: payload.eventID)
+                uiEvents[key] = payload
+                let markdown = uiEventMarkdown(payload)
+                let blocks = splitMarkdownBlocks(markdown)
+                let item = MessageItem(
+                    id: "ui-\(payload.eventID)",
+                    seq: seq,
+                    localID: nil,
+                    uuid: nil,
+                    role: .event,
+                    blocks: blocks.isEmpty ? [.text(markdown)] : blocks,
+                    createdAt: payload.atMs ?? createdAt
+                )
+                let primaryKey = messagePrimaryKey(
+                    id: item.id,
+                    localID: nil,
+                    uuid: nil,
+                    role: item.role,
+                    createdAt: item.createdAt,
+                    blocks: item.blocks
+                )
+                if let primaryKey, seenKeys.contains(primaryKey) {
+                    continue
+                }
+                if let primaryKey {
+                    seenKeys.insert(primaryKey)
+                }
+                messages.append(item)
+                continue
+            }
+
             let role = extractRole(from: dict, content: content)
             let localID = extractLocalID(from: dict)
             let uuid = extractMessageUUID(from: content)
@@ -2406,7 +2446,38 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             nextBeforeSeq = messages.compactMap(\.seq).min()
         }
 
-        return MessagesPage(messages: messages, hasMore: hasMore, nextBeforeSeq: nextBeforeSeq)
+        return MessagesPage(messages: messages, hasMore: hasMore, nextBeforeSeq: nextBeforeSeq, uiEvents: uiEvents)
+    }
+
+    private enum DurableUIEventFields {
+        static let type = "type"
+        static let sessionID = "sessionId"
+        static let eventID = "eventId"
+        static let kind = "kind"
+        static let phase = "phase"
+        static let status = "status"
+        static let briefMarkdown = "briefMarkdown"
+        static let fullMarkdown = "fullMarkdown"
+        static let atMs = "atMs"
+    }
+
+    private func extractDurableUIEventPayload(from content: JSONValue?) -> UIEventPayload? {
+        guard let dict = content?.object else { return nil }
+        guard dict[DurableUIEventFields.type]?.string == "ui.event" else { return nil }
+
+        guard let sessionID = dict[DurableUIEventFields.sessionID]?.string, !sessionID.isEmpty else { return nil }
+        guard let eventID = dict[DurableUIEventFields.eventID]?.string, !eventID.isEmpty else { return nil }
+
+        return UIEventPayload(
+            sessionID: sessionID,
+            eventID: eventID,
+            kind: dict[DurableUIEventFields.kind]?.string ?? "",
+            phase: dict[DurableUIEventFields.phase]?.string ?? "",
+            status: dict[DurableUIEventFields.status]?.string ?? "",
+            briefMarkdown: dict[DurableUIEventFields.briefMarkdown]?.string ?? "",
+            fullMarkdown: dict[DurableUIEventFields.fullMarkdown]?.string ?? "",
+            atMs: dict[DurableUIEventFields.atMs]?.int64 ?? (dict[DurableUIEventFields.atMs]?.number).map { Int64($0) }
+        )
     }
 
     private func normalizeContent(_ content: JSONValue?) -> JSONValue? {
