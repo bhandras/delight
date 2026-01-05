@@ -13,6 +13,9 @@ struct TerminalsView: View {
                 Theme.background.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
+                        TerminalsHeader(isLoggedIn: isLoggedIn) {
+                            showPairTerminalSheet = true
+                        }
                         if !isLoggedIn {
                             LoggedOutTerminalEmptyState(model: model)
                         } else if model.sessions.isEmpty {
@@ -20,33 +23,10 @@ struct TerminalsView: View {
                                 PairTerminalForm(model: model, showScanner: $showScanner)
                             }
                         } else {
-                            HStack {
-                                Text("TERMINALS")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundColor(Theme.mutedText)
-                                Spacer()
-                                Button {
-                                    model.listSessions()
-                                } label: {
-                                    Label("Refresh", systemImage: "arrow.clockwise")
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 6)
-                                        .background(Theme.cardBackground)
-                                        .clipShape(Capsule())
-                                        .overlay(
-                                            Capsule()
-                                                .stroke(Color(uiColor: .separator).opacity(0.6), lineWidth: 1)
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                            }
-
-                            ForEach(terminalGroups(from: model.sessions), id: \.id) { group in
+                            ForEach(terminalGroups(from: model.sessions, terminals: model.terminals), id: \.id) { group in
                                 Text(group.name)
                                     .font(.system(size: 13, weight: .semibold))
                                     .foregroundColor(Theme.mutedText)
-                                    .padding(.horizontal, 4)
                                 FeatureListCard {
                                     ForEach(Array(group.sessions.enumerated()), id: \.element.id) { index, session in
                                         NavigationLink {
@@ -65,21 +45,13 @@ struct TerminalsView: View {
                     }
                     .padding()
                 }
+                .refreshable {
+                    model.listSessions()
+                }
                 .dismissKeyboardOnTap()
             }
-            .navigationTitle("Terminals")
-            .toolbar {
-                if isLoggedIn {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            showPairTerminalSheet = true
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                        .accessibilityLabel("Pair Terminal")
-                    }
-                }
-            }
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
         }
         .sheet(isPresented: $showPairTerminalSheet) {
             PairTerminalSheet(model: model, showScanner: $showScanner)
@@ -87,6 +59,31 @@ struct TerminalsView: View {
         .onAppear {
             if !model.token.isEmpty {
                 model.listSessions()
+            }
+        }
+    }
+}
+
+private struct TerminalsHeader: View {
+    let isLoggedIn: Bool
+    let onTapAddTerminal: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("Terminals")
+                .font(.system(size: 42, weight: .bold, design: .default))
+                .foregroundColor(Theme.messageText)
+            Spacer()
+            if isLoggedIn {
+                Button(action: onTapAddTerminal) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(Theme.accent)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Pair Terminal")
             }
         }
     }
@@ -141,17 +138,19 @@ private struct TerminalRow: View {
                 Text(agentLabel)
                     .font(.system(size: 16, weight: .semibold))
                     .lineLimit(1)
+                    .truncationMode(.tail)
                 Text(sessionDisplayPath(for: session) ?? session.subtitle ?? status.text)
                     .font(.system(size: 13))
                     .foregroundColor(Theme.mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
+            .layoutPriority(1)
             Spacer()
             Image(systemName: "chevron.right")
                 .foregroundColor(Theme.mutedText)
         }
-        .padding(12)
-        .background(Theme.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.vertical, 12)
     }
 }
 
@@ -221,14 +220,6 @@ struct TerminalDetailView: View {
                 .onTapGesture {
                     model.scrollRequest = ScrollRequest(target: .bottom)
                 }
-
-                ConnectionStatusRow(
-                    status: statusInfo(for: currentSession, thinkingOverride: model.isThinking(sessionID: currentSession.id)),
-                    activityText: model.isThinking(sessionID: currentSession.id) ? "thinking" : nil,
-                    activityChipFontSize: CGFloat(TerminalAppearance.chipFontSize(for: model.terminalFontSize)),
-                    labelFontSize: CGFloat(max(model.terminalFontSize * 0.75, 12))
-                )
-                .background(Theme.cardBackground)
                 TerminalAgentConfigControls(model: model, session: currentSession, isEnabled: isPhoneControlled)
                     .background(Theme.cardBackground)
                 MessageComposer(model: model, isEnabled: isComposerEnabled, placeholder: placeholder)
@@ -246,10 +237,15 @@ struct TerminalDetailView: View {
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
+                let online = isSessionOnline(currentSession)
                 VStack(spacing: 2) {
-                    Text(agentLabel)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundColor(Theme.messageText)
+                    HStack(spacing: 6) {
+                        StatusDot(color: online ? Theme.success : Theme.muted, isPulsing: false, size: 7)
+                            .accessibilityLabel(online ? "online" : "offline")
+                        Text(agentLabel)
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundColor(Theme.messageText)
+                    }
                     if let path = sessionDisplayPath(for: session) {
                         Text(path)
                             .font(.system(size: 12))
@@ -342,8 +338,29 @@ private struct TerminalAgentConfigControls: View {
     var body: some View {
         let settings = model.agentEngineSettings[session.id]
         let isOnline = (session.uiState?.connected ?? false) && ((session.uiState?.state ?? "") != "offline")
+        let vibe: String? = {
+            if !isEnabled {
+                return "take control"
+            }
+            if !isOnline {
+                return "offline"
+            }
+            if session.agentState?.hasPendingRequests == true {
+                return "permission required"
+            }
+            if model.isThinking(sessionID: session.id) {
+                return vibingMessage(for: session.id)
+            }
+            if isFetchingSettings {
+                return "loading…"
+            }
+            if pendingSheet != nil && settings == nil {
+                return "loading…"
+            }
+            return nil
+        }()
 
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 14) {
                 Button {
                     pendingSheet = .model
@@ -372,29 +389,15 @@ private struct TerminalAgentConfigControls: View {
                 .disabled(!isEnabled || !isOnline || isFetchingSettings)
 
                 Spacer()
+
+                if let vibe {
+                    ActivityChip(text: vibe, fontSize: 12)
+                }
             }
             .foregroundColor(Theme.mutedText)
-
-            if !isEnabled {
-                Text("Take Control to change agent settings.")
-                    .font(Theme.caption)
-                    .foregroundColor(Theme.mutedText)
-            } else if !isOnline {
-                Text("Agent settings are available once the CLI is online.")
-                    .font(Theme.caption)
-                    .foregroundColor(Theme.mutedText)
-            } else if isFetchingSettings {
-                Text("Fetching agent settings…")
-                    .font(Theme.caption)
-                    .foregroundColor(Theme.mutedText)
-            } else if pendingSheet != nil && settings == nil {
-                Text("Fetching agent settings…")
-                    .font(Theme.caption)
-                    .foregroundColor(Theme.mutedText)
-            }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
         .sheet(isPresented: $showModelSheet) {
             let fresh = model.agentEngineSettings[session.id]
             let caps = fresh?.capabilities
@@ -838,28 +841,6 @@ private struct ControlStatusBanner: View {
     }
 }
 
-private struct ConnectionStatusRow: View {
-    let status: SessionStatusInfo
-    let activityText: String?
-    let activityChipFontSize: CGFloat
-    let labelFontSize: CGFloat
-
-    var body: some View {
-        HStack(spacing: 8) {
-            StatusDot(color: status.dotColor, isPulsing: status.isPulsing, size: 7)
-            Text(status.text)
-                .font(.custom("AvenirNext-Medium", size: labelFontSize))
-                .foregroundColor(status.textColor)
-            Spacer()
-            if let activityText {
-                ActivityChip(text: activityText, fontSize: activityChipFontSize)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-    }
-}
-
 private struct StatusDot: View {
     let color: Color
     let isPulsing: Bool
@@ -929,6 +910,16 @@ private struct SessionStatusInfo {
     let isPulsing: Bool
 }
 
+private func isSessionOnline(_ session: SessionSummary) -> Bool {
+    if let ui = session.uiState {
+        if ui.state == "offline" || ui.state == "disconnected" {
+            return false
+        }
+        return ui.connected
+    }
+    return session.active
+}
+
 private func statusInfo(for session: SessionSummary, thinkingOverride: Bool? = nil) -> SessionStatusInfo {
     let thinking = thinkingOverride ?? session.thinking
     if !session.active {
@@ -989,26 +980,36 @@ private struct TerminalGroup: Identifiable {
     let sessions: [SessionSummary]
 }
 
-private func terminalGroups(from sessions: [SessionSummary]) -> [TerminalGroup] {
+private func terminalsListSortKey(for session: SessionSummary) -> (String, String, String) {
+    let path = sessionDisplayPath(for: session)?.lowercased() ?? ""
+    let agent = terminalAgentLabel(for: session).lowercased()
+    return (path, agent, session.id)
+}
+
+private func terminalGroups(from sessions: [SessionSummary], terminals: [TerminalInfo]) -> [TerminalGroup] {
+    let terminalsByID = Dictionary(uniqueKeysWithValues: terminals.map { ($0.id, $0) })
     let grouped = Dictionary(grouping: sessions) { session in
-        session.terminalID
-            ?? session.metadata?.terminalId
-            ?? session.subtitle
-            ?? "unknown"
+        let terminalID = session.terminalID ?? session.metadata?.terminalId ?? ""
+        let host = terminalsByID[terminalID]?.metadata?.host?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sessionHost = session.metadata?.host?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (host?.isEmpty == false ? host! : (sessionHost?.isEmpty == false ? sessionHost! : "unknown"))
     }
     return grouped
-        .map { key, value in
-            let representative = value[0]
-            let displayName = sessionDisplayPath(for: representative)
-                ?? representative.metadata?.host
-                ?? key
-            return TerminalGroup(
-                id: key,
-                name: displayName,
-                sessions: value.sorted(by: { ($0.title ?? $0.id) < ($1.title ?? $1.id) })
+        .map { host, value in
+            TerminalGroup(
+                id: host,
+                name: host,
+                sessions: value.sorted(by: { terminalsListSortKey(for: $0) < terminalsListSortKey(for: $1) })
             )
         }
-        .sorted(by: { $0.name < $1.name })
+        .sorted(by: { lhs, rhs in
+            let left = lhs.name.lowercased()
+            let right = rhs.name.lowercased()
+            if left == right {
+                return lhs.name < rhs.name
+            }
+            return left < right
+        })
 }
 
 private let vibingMessages = [
