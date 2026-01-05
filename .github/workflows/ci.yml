@@ -67,19 +67,19 @@ jobs:
             shared/go.sum
 
       - name: Lint (shared)
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: v2.7.2
           working-directory: shared
 
       - name: Lint (cli)
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: v2.7.2
           working-directory: cli
 
       - name: Lint (server)
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: v2.7.2
           working-directory: server
