@@ -80,8 +80,11 @@ type Client struct {
 	// connect_error events that look like auth failures will trigger a refresh
 	// and reconnect with the new token.
 	tokenRefresher func() (string, error)
-	refreshing     bool
-	lastRefreshAt  time.Time
+	// reconnectFn is used by the token refresh loop to re-establish connectivity.
+	// It defaults to (*Client).Connect but is injectable for tests.
+	reconnectFn   func() error
+	refreshing    bool
+	lastRefreshAt time.Time
 }
 
 const (
@@ -109,7 +112,7 @@ func normalizeTransport(mode string) string {
 
 // NewClient creates a new Socket.IO client
 func NewClient(serverURL, token, sessionID, transport string, debug bool) *Client {
-	return &Client{
+	c := &Client{
 		serverURL:  serverURL,
 		token:      token,
 		sessionID:  sessionID,
@@ -119,6 +122,8 @@ func NewClient(serverURL, token, sessionID, transport string, debug bool) *Clien
 		done:       make(chan struct{}),
 		debug:      debug,
 	}
+	c.reconnectFn = c.Connect
+	return c
 }
 
 // NewTerminalClient creates a terminal-scoped Socket.IO client.
@@ -461,7 +466,11 @@ func (c *Client) maybeRefreshToken(args []any) {
 		c.mu.Unlock()
 
 		// Best-effort: reconnect with the new token.
-		_ = c.Connect()
+		reconnect := c.reconnectFn
+		if reconnect == nil {
+			reconnect = c.Connect
+		}
+		_ = reconnect()
 	}()
 }
 
