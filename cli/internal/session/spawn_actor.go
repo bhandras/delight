@@ -106,17 +106,25 @@ type effShutdownChildren struct {
 	ReqID int64
 }
 
+// effCompleteSpawnReply completes a spawn actor reply channel after state has
+// been applied by the actor loop.
+type effCompleteSpawnReply struct {
+	framework.EffectBase
+	Reply  chan spawnResult
+	Result spawnResult
+}
+
 func reduceSpawnActor(state spawnActorState, input framework.Input) (spawnActorState, []framework.Effect) {
 	switch in := input.(type) {
 	case cmdSpawnChild:
 		if state.Stopping {
-			if in.Reply != nil {
-				select {
-				case in.Reply <- spawnResult{Err: fmt.Errorf("spawner shutting down")}:
-				default:
-				}
+			if in.Reply == nil {
+				return state, nil
 			}
-			return state, nil
+			return state, []framework.Effect{effCompleteSpawnReply{
+				Reply:  in.Reply,
+				Result: spawnResult{Err: fmt.Errorf("spawner shutting down")},
+			}}
 		}
 		if state.Pending == nil {
 			state.Pending = make(map[int64]chan spawnResult)
@@ -159,10 +167,10 @@ func reduceSpawnActor(state spawnActorState, input framework.Input) (spawnActorS
 		if ok {
 			delete(state.Pending, in.ReqID)
 			if reply != nil {
-				select {
-				case reply <- spawnResult{SessionID: in.SessionID}:
-				default:
-				}
+				return state, []framework.Effect{effCompleteSpawnReply{
+					Reply:  reply,
+					Result: spawnResult{SessionID: in.SessionID},
+				}}
 			}
 		}
 		return state, nil
@@ -172,10 +180,10 @@ func reduceSpawnActor(state spawnActorState, input framework.Input) (spawnActorS
 		if ok {
 			delete(state.Pending, in.ReqID)
 			if reply != nil {
-				select {
-				case reply <- spawnResult{Err: in.Err}:
-				default:
-				}
+				return state, []framework.Effect{effCompleteSpawnReply{
+					Reply:  reply,
+					Result: spawnResult{Err: in.Err},
+				}}
 			}
 		}
 		return state, nil
@@ -185,10 +193,10 @@ func reduceSpawnActor(state spawnActorState, input framework.Input) (spawnActorS
 		if ok {
 			delete(state.Pending, in.ReqID)
 			if reply != nil {
-				select {
-				case reply <- spawnResult{Err: in.Err}:
-				default:
-				}
+				return state, []framework.Effect{effCompleteSpawnReply{
+					Reply:  reply,
+					Result: spawnResult{Err: in.Err},
+				}}
 			}
 		}
 		return state, nil
@@ -219,6 +227,13 @@ func (r *spawnActorRuntime) HandleEffects(ctx context.Context, effects []framewo
 		default:
 		}
 		switch e := eff.(type) {
+		case effCompleteSpawnReply:
+			if e.Reply != nil {
+				select {
+				case e.Reply <- e.Result:
+				default:
+				}
+			}
 		case effStartChild:
 			r.handleStartChild(ctx, e)
 		case effStopChild:

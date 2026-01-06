@@ -23,22 +23,24 @@ func TestSpawnActor_SpawnCompletesReply(t *testing.T) {
 	}
 
 	next2, effects2 := reduceSpawnActor(next, evChildStarted{ReqID: 1, SessionID: "child"})
-	if len(effects2) != 0 {
-		t.Fatalf("effects=%d, want 0", len(effects2))
+	if len(effects2) != 1 {
+		t.Fatalf("effects=%d, want 1", len(effects2))
+	}
+	if done, ok := effects2[0].(effCompleteSpawnReply); !ok {
+		t.Fatalf("effect=%T, want effCompleteSpawnReply", effects2[0])
+	} else {
+		if done.Reply != reply {
+			t.Fatalf("reply channel mismatch")
+		}
+		if done.Result.Err != nil {
+			t.Fatalf("err=%v, want nil", done.Result.Err)
+		}
+		if done.Result.SessionID != "child" {
+			t.Fatalf("sessionID=%q, want child", done.Result.SessionID)
+		}
 	}
 	if len(next2.Pending) != 0 {
 		t.Fatalf("pending=%d, want 0", len(next2.Pending))
-	}
-	select {
-	case res := <-reply:
-		if res.Err != nil {
-			t.Fatalf("err=%v, want nil", res.Err)
-		}
-		if res.SessionID != "child" {
-			t.Fatalf("sessionID=%q, want child", res.SessionID)
-		}
-	default:
-		t.Fatalf("expected reply")
 	}
 }
 
@@ -61,18 +63,17 @@ func TestSpawnActor_ShutdownBlocksFurtherSpawns(t *testing.T) {
 
 	spawnReply := make(chan spawnResult, 1)
 	next2, effects2 := reduceSpawnActor(next, cmdSpawnChild{Directory: "/tmp", Agent: "claude", Reply: spawnReply})
-	if len(effects2) != 0 {
-		t.Fatalf("effects=%d, want 0", len(effects2))
+	if len(effects2) != 1 {
+		t.Fatalf("effects=%d, want 1", len(effects2))
+	}
+	if done, ok := effects2[0].(effCompleteSpawnReply); !ok {
+		t.Fatalf("effect=%T, want effCompleteSpawnReply", effects2[0])
+	} else if done.Reply != spawnReply {
+		t.Fatalf("reply channel mismatch")
+	} else if done.Result.Err == nil {
+		t.Fatalf("expected error")
 	}
 	if next2.NextReq != next.NextReq {
 		t.Fatalf("NextReq changed: %d -> %d", next.NextReq, next2.NextReq)
-	}
-	select {
-	case res := <-spawnReply:
-		if res.Err == nil {
-			t.Fatalf("expected error")
-		}
-	default:
-		t.Fatalf("expected reply")
 	}
 }
