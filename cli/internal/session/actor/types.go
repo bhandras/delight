@@ -716,6 +716,31 @@ type effCompleteReply struct {
 // isSessionEffect marks effCompleteReply as a session effect.
 func (effCompleteReply) isSessionEffect() {}
 
+// effCompletePermissionDecision completes a PermissionDecision reply channel.
+//
+// This is used by cmdPermissionAwait auto-approve/deny paths, ensuring the
+// decision is delivered after the actor state has been applied.
+type effCompletePermissionDecision struct {
+	actor.EffectBase
+	Reply    chan PermissionDecision
+	Decision PermissionDecision
+}
+
+// isSessionEffect marks effCompletePermissionDecision as a session effect.
+func (effCompletePermissionDecision) isSessionEffect() {}
+
+// effSignalAck signals an ack channel after the actor state has been applied.
+//
+// This is used by cmdPermissionAwait to guarantee the permission request is
+// durably registered in actor state before synchronous engines proceed.
+type effSignalAck struct {
+	actor.EffectBase
+	Ack chan struct{}
+}
+
+// isSessionEffect marks effSignalAck as a session effect.
+func (effSignalAck) isSessionEffect() {}
+
 // effStartDesktopTakebackWatcher starts the "press space twice" desktop watcher
 // while the session is in remote mode.
 type effStartDesktopTakebackWatcher struct {

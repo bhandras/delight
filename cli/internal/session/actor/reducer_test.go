@@ -296,11 +296,13 @@ func TestReducePermissionAwait_StoresPromiseAndEmitsEphemeral(t *testing.T) {
 	require.NotNil(t, next.PendingPermissionPromises)
 	require.NotNil(t, next.PendingPermissionPromises["r1"])
 
-	select {
-	case <-ack:
-	default:
-		require.Fail(t, "expected ack to be signaled")
+	foundAck := false
+	for _, eff := range effects {
+		if signaled, ok := eff.(effSignalAck); ok && signaled.Ack == ack {
+			foundAck = true
+		}
 	}
+	require.True(t, foundAck, "expected effSignalAck")
 
 	foundEphemeral := false
 	for _, eff := range effects {

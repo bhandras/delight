@@ -195,6 +195,20 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 				default:
 				}
 			}
+		case effCompletePermissionDecision:
+			if e.Reply != nil {
+				select {
+				case e.Reply <- e.Decision:
+				default:
+				}
+			}
+		case effSignalAck:
+			if e.Ack != nil {
+				select {
+				case e.Ack <- struct{}{}:
+				default:
+				}
+			}
 		case effEmitEphemeral:
 			r.emitEphemeral(e)
 		case effEmitMessage:

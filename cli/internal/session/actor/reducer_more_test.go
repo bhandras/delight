@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/bhandras/delight/cli/internal/actor"
+	"github.com/bhandras/delight/cli/pkg/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -129,6 +130,58 @@ func TestReduceEventInputs_NoOp(t *testing.T) {
 	require.Empty(t, effects)
 }
 
+// TestReducePermissionAwait_AutoApprove ensures yolo/safe-yolo modes bypass UI
+// prompts but still persist durable completion and signal synchronous callers
+// after state is applied.
+func TestReducePermissionAwait_AutoApprove(t *testing.T) {
+	t.Parallel()
+
+	decisionCh := make(chan PermissionDecision, 1)
+	ack := make(chan struct{}, 1)
+	state := State{
+		SessionID: "s1",
+		FSM:       StateRemoteRunning,
+		Mode:      ModeRemote,
+		AgentState: types.AgentState{
+			ControlledByUser:  false,
+			PermissionMode:    "yolo",
+			Requests:          map[string]types.AgentPendingRequest{},
+			CompletedRequests: map[string]types.AgentCompletedRequest{},
+		},
+	}
+	state = refreshAgentStateJSON(state)
+
+	next, effects := Reduce(state, cmdPermissionAwait{
+		RequestID: "r1",
+		ToolName:  "tool.test",
+		Input:     []byte(`{"x":1}`),
+		NowMs:     10,
+		Reply:     decisionCh,
+		Ack:       ack,
+	})
+
+	_, ok := next.AgentState.CompletedRequests["r1"]
+	require.True(t, ok)
+
+	foundDecision := false
+	foundAck := false
+	for _, eff := range effects {
+		switch e := eff.(type) {
+		case effCompletePermissionDecision:
+			if e.Reply == decisionCh {
+				require.True(t, e.Decision.Allow)
+				foundDecision = true
+			}
+		case effSignalAck:
+			if e.Ack == ack {
+				foundAck = true
+			}
+		}
+	}
+	require.True(t, foundDecision, "expected effCompletePermissionDecision")
+	require.True(t, foundAck, "expected effSignalAck")
+}
+
 // TestSessionEffect_InterfaceCoverage ensures effect structs satisfy the
 // session actor marker interface in a way that is exercised by tests.
 func TestSessionEffect_InterfaceCoverage(t *testing.T) {
@@ -151,6 +204,8 @@ func TestSessionEffect_InterfaceCoverage(t *testing.T) {
 		effStartTimer{},
 		effCancelTimer{},
 		effCompleteReply{},
+		effCompletePermissionDecision{},
+		effSignalAck{},
 		effStartDesktopTakebackWatcher{},
 		effStopDesktopTakebackWatcher{},
 	)

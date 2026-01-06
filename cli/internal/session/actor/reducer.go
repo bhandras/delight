@@ -830,6 +830,8 @@ func reducePermissionAwait(state State, cmd cmdPermissionAwait) (State, []actor.
 		return state, nil
 	}
 
+	var effects []actor.Effect
+
 	permissionMode := strings.TrimSpace(state.AgentState.PermissionMode)
 	switch permissionMode {
 	case "yolo", "safe-yolo":
@@ -845,20 +847,16 @@ func reducePermissionAwait(state State, cmd cmdPermissionAwait) (State, []actor.
 			ResolvedAt: cmd.NowMs,
 		}
 		state = refreshAgentStateJSON(state)
-		state, effects := persistAgentStateImmediately(state)
-
-		// Resolve the synchronous promise.
-		select {
-		case cmd.Reply <- PermissionDecision{Allow: true, Message: ""}:
-		default:
-		}
-		// Notify ack (registered) to unblock runtime loop.
+		state, effects = persistAgentStateImmediately(state)
 		if cmd.Ack != nil {
-			select {
-			case cmd.Ack <- struct{}{}:
-			default:
-			}
+			effects = append(effects, effSignalAck{Ack: cmd.Ack})
 		}
+
+		// Resolve the synchronous promise after state application.
+		effects = append(effects, effCompletePermissionDecision{
+			Reply:    cmd.Reply,
+			Decision: PermissionDecision{Allow: true, Message: ""},
+		})
 		return state, effects
 	case "read-only":
 		// Auto-deny: in read-only mode, no tools should run.
@@ -873,18 +871,15 @@ func reducePermissionAwait(state State, cmd cmdPermissionAwait) (State, []actor.
 			ResolvedAt: cmd.NowMs,
 		}
 		state = refreshAgentStateJSON(state)
-		state, effects := persistAgentStateImmediately(state)
-
-		select {
-		case cmd.Reply <- PermissionDecision{Allow: false, Message: "denied (read-only mode)"}:
-		default:
-		}
+		state, effects = persistAgentStateImmediately(state)
 		if cmd.Ack != nil {
-			select {
-			case cmd.Ack <- struct{}{}:
-			default:
-			}
+			effects = append(effects, effSignalAck{Ack: cmd.Ack})
 		}
+
+		effects = append(effects, effCompletePermissionDecision{
+			Reply:    cmd.Reply,
+			Decision: PermissionDecision{Allow: false, Message: "denied (read-only mode)"},
+		})
 		return state, effects
 	default:
 		// default: prompt user via phone UI
@@ -910,7 +905,7 @@ func reducePermissionAwait(state State, cmd cmdPermissionAwait) (State, []actor.
 	}
 	state.PendingPermissionPromises[cmd.RequestID] = cmd.Reply
 
-	var effects []actor.Effect
+	effects = effects[:0]
 	// Always emit the ephemeral, even if the durable request already exists.
 	//
 	// Rationale:
@@ -930,13 +925,10 @@ func reducePermissionAwait(state State, cmd cmdPermissionAwait) (State, []actor.
 		effects = append(effects, persistEffects...)
 	}
 
-	// Notify synchronous callers that the request is registered. This must be
-	// non-blocking to keep the reducer pure and fast.
+	// Notify synchronous callers that the request is registered (after state is
+	// applied), to avoid races where engines proceed before durable state exists.
 	if cmd.Ack != nil {
-		select {
-		case cmd.Ack <- struct{}{}:
-		default:
-		}
+		effects = append(effects, effSignalAck{Ack: cmd.Ack})
 	}
 	return state, effects
 }
