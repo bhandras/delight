@@ -29,6 +29,12 @@ const (
 	dataEncryptionKeyBytes = 32
 )
 
+// managerSleep is a test seam for time.Sleep calls used during shutdown.
+var managerSleep = time.Sleep
+
+// managerExit is a test seam for process termination.
+var managerExit = os.Exit
+
 // Start starts a new Delight session.
 func (m *Manager) Start(workDir string) error {
 	// Get current working directory if not specified
@@ -762,18 +768,18 @@ func (m *Manager) Close() error {
 func (m *Manager) scheduleShutdown() {
 	m.shutdownOnce.Do(func() {
 		go func() {
-			time.Sleep(200 * time.Millisecond)
+			managerSleep(200 * time.Millisecond)
 			if m.debug {
 				logger.Infof("Stop-daemon: shutting down")
 			}
 			go func() {
 				_ = m.Close()
 			}()
-			time.Sleep(200 * time.Millisecond)
+			managerSleep(200 * time.Millisecond)
 			if m.debug {
 				logger.Infof("Stop-daemon: exiting")
 			}
-			os.Exit(0)
+			managerExit(0)
 		}()
 	})
 }
@@ -781,10 +787,10 @@ func (m *Manager) scheduleShutdown() {
 // forceExitAfter terminates the process after the delay, regardless of cleanup.
 func (m *Manager) forceExitAfter(delay time.Duration) {
 	go func() {
-		time.Sleep(delay)
+		managerSleep(delay)
 		if m.debug {
 			logger.Warnf("Stop-daemon: forcing exit after %s", delay)
 		}
-		os.Exit(0)
+		managerExit(0)
 	}()
 }
