@@ -188,6 +188,13 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 			r.startTimer(ctx, e, emit)
 		case effCancelTimer:
 			r.cancelTimer(e)
+		case effCompleteReply:
+			if e.Reply != nil {
+				select {
+				case e.Reply <- e.Err:
+				default:
+				}
+			}
 		case effEmitEphemeral:
 			r.emitEphemeral(e)
 		case effEmitMessage:

@@ -360,13 +360,10 @@ func reduceSetAgentConfig(state State, cmd cmdSetAgentConfig) (State, []actor.Ef
 	// Remote-only: config changes must only happen when the phone controls the
 	// session. This prevents surprising local TUI behavior.
 	if state.Mode != ModeRemote || state.AgentState.ControlledByUser {
-		if cmd.Reply != nil {
-			select {
-			case cmd.Reply <- ErrNotRemote:
-			default:
-			}
+		if cmd.Reply == nil {
+			return state, nil
 		}
-		return state, nil
+		return state, []actor.Effect{effCompleteReply{Reply: cmd.Reply, Err: ErrNotRemote}}
 	}
 
 	changed := false
@@ -384,13 +381,10 @@ func reduceSetAgentConfig(state State, cmd cmdSetAgentConfig) (State, []actor.Ef
 	}
 
 	if !changed {
-		if cmd.Reply != nil {
-			select {
-			case cmd.Reply <- nil:
-			default:
-			}
+		if cmd.Reply == nil {
+			return state, nil
 		}
-		return state, nil
+		return state, []actor.Effect{effCompleteReply{Reply: cmd.Reply, Err: nil}}
 	}
 
 	state = refreshAgentStateJSON(state)
@@ -405,10 +399,7 @@ func reduceSetAgentConfig(state State, cmd cmdSetAgentConfig) (State, []actor.Ef
 	}
 
 	if cmd.Reply != nil {
-		select {
-		case cmd.Reply <- nil:
-		default:
-		}
+		effects = append(effects, effCompleteReply{Reply: cmd.Reply, Err: nil})
 	}
 	return state, effects
 }

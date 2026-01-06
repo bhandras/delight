@@ -701,6 +701,21 @@ type effCancelTimer struct {
 // isSessionEffect marks effCancelTimer as a session effect.
 func (effCancelTimer) isSessionEffect() {}
 
+// effCompleteReply completes a command reply channel after state has been
+// applied by the actor loop.
+//
+// Reducers should avoid writing to reply channels directly when the caller may
+// immediately read actor state after receiving the ack. Sending replies as
+// effects ensures the ack happens after the actor loop applies the next state.
+type effCompleteReply struct {
+	actor.EffectBase
+	Reply chan error
+	Err   error
+}
+
+// isSessionEffect marks effCompleteReply as a session effect.
+func (effCompleteReply) isSessionEffect() {}
+
 // effStartDesktopTakebackWatcher starts the "press space twice" desktop watcher
 // while the session is in remote mode.
 type effStartDesktopTakebackWatcher struct {
