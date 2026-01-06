@@ -310,11 +310,7 @@ func reduceWaitForAgentStatePersist(state State, cmd cmdWaitForAgentStatePersist
 		return state, nil
 	}
 	if state.AgentStateJSON == "" {
-		select {
-		case cmd.Reply <- nil:
-		default:
-		}
-		return state, nil
+		return state, []actor.Effect{effCompleteReply{Reply: cmd.Reply, Err: nil}}
 	}
 
 	state.PersistWaiters = append(state.PersistWaiters, cmd.Reply)
@@ -425,24 +421,20 @@ func reduceGetAgentEngineSettings(state State, cmd cmdGetAgentEngineSettings) (S
 func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 	// Idempotent behavior.
 	if cmd.Target == state.Mode && (state.FSM == StateLocalRunning || state.FSM == StateRemoteRunning) {
-		if cmd.Reply != nil {
-			select {
-			case cmd.Reply <- nil:
-			default:
-			}
+		if cmd.Reply == nil {
+			return state, nil
 		}
-		return state, nil
+		return state, []actor.Effect{effCompleteReply{Reply: cmd.Reply, Err: nil}}
 	}
 
 	state.RunnerGen++
 	gen := state.RunnerGen
-
-	// Only keep the latest pending switch reply (callers should serialize in higher layers).
-	state.PendingSwitchReply = cmd.Reply
 	state.PersistRetryRemaining = 1
 
 	switch cmd.Target {
 	case ModeRemote:
+		// Only keep the latest pending switch reply (callers should serialize in higher layers).
+		state.PendingSwitchReply = cmd.Reply
 		state.Mode = ModeRemote
 		state.FSM = StateRemoteStarting
 		state.Thinking = false
@@ -463,6 +455,8 @@ func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 		effects = append(effects, persistEffects...)
 		return state, effects
 	case ModeLocal:
+		// Only keep the latest pending switch reply (callers should serialize in higher layers).
+		state.PendingSwitchReply = cmd.Reply
 		state.Mode = ModeLocal
 		state.FSM = StateLocalStarting
 		state.Thinking = false
@@ -484,13 +478,10 @@ func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 		return state, effects
 	default:
 		// Unknown target; respond error if present.
-		if cmd.Reply != nil {
-			select {
-			case cmd.Reply <- ErrInvalidMode:
-			default:
-			}
+		if cmd.Reply == nil {
+			return state, nil
 		}
-		return state, nil
+		return state, []actor.Effect{effCompleteReply{Reply: cmd.Reply, Err: ErrInvalidMode}}
 	}
 }
 
@@ -507,15 +498,11 @@ func reduceRunnerReady(state State, ev evRunnerReady) (State, []actor.Effect) {
 		state.FSM = StateRemoteRunning
 		state.RemoteRunner = runnerHandle{gen: ev.Gen, running: true}
 	}
+	var effects []actor.Effect
 	if state.PendingSwitchReply != nil {
-		select {
-		case state.PendingSwitchReply <- nil:
-		default:
-		}
+		effects = append(effects, effCompleteReply{Reply: state.PendingSwitchReply, Err: nil})
 		state.PendingSwitchReply = nil
 	}
-
-	var effects []actor.Effect
 	if ev.Mode == ModeRemote {
 		effects = append(effects, effStartDesktopTakebackWatcher{})
 
@@ -549,6 +536,7 @@ func reduceRunnerExited(state State, ev evRunnerExited) (State, []actor.Effect) 
 	if ev.Gen != state.RunnerGen {
 		return state, nil
 	}
+	var effects []actor.Effect
 	switch ev.Mode {
 	case ModeLocal:
 		if state.LocalRunner.gen == ev.Gen {
@@ -563,19 +551,17 @@ func reduceRunnerExited(state State, ev evRunnerExited) (State, []actor.Effect) 
 	// If we were starting, fail the pending switch.
 	if state.FSM == StateLocalStarting || state.FSM == StateRemoteStarting {
 		if state.PendingSwitchReply != nil {
-			select {
-			case state.PendingSwitchReply <- ev.Err:
-			default:
-			}
+			effects = append(effects, effCompleteReply{Reply: state.PendingSwitchReply, Err: ev.Err})
 			state.PendingSwitchReply = nil
 		}
 		// Conservative: if remote failed to start while we have buffered inbound
 		// user messages, fall back to injecting them into the local runner.
 		if state.FSM == StateRemoteStarting && len(state.PendingRemoteSends) > 0 {
-			var effects []actor.Effect
+			outEffects := make([]actor.Effect, 0, len(state.PendingRemoteSends)+len(effects)+2)
+			outEffects = append(outEffects, effects...)
 			for _, pending := range state.PendingRemoteSends {
 				state.rememberRemoteInput(pending.text, pending.nowMs)
-				effects = append(effects, effLocalSendLine{Gen: state.RunnerGen, Text: pending.text})
+				outEffects = append(outEffects, effLocalSendLine{Gen: state.RunnerGen, Text: pending.text})
 			}
 			state.PendingRemoteSends = nil
 			state.FSM = StateLocalRunning
@@ -586,15 +572,15 @@ func reduceRunnerExited(state State, ev evRunnerExited) (State, []actor.Effect) 
 			state.AgentState.ControlledByUser = true
 			state = refreshAgentStateJSON(state)
 			state, persistEffects := schedulePersistDebounced(state)
-			effects = append(effects, persistEffects...)
-			return state, effects
+			outEffects = append(outEffects, persistEffects...)
+			return state, outEffects
 		}
 
 		// Otherwise: move to local running on failure (runtime will decide).
 		state.FSM = StateLocalRunning
 		state.Mode = ModeLocal
 		state.Thinking = false
-		return state, nil
+		return state, effects
 	}
 
 	// If we were running, transition to a safe state.
@@ -636,23 +622,18 @@ func reduceRunnerExited(state State, ev evRunnerExited) (State, []actor.Effect) 
 // reduceRemoteSend forwards a user message to the remote runner if allowed.
 func reduceRemoteSend(state State, cmd cmdRemoteSend) (State, []actor.Effect) {
 	if state.FSM != StateRemoteRunning {
-		if cmd.Reply != nil {
-			select {
-			case cmd.Reply <- ErrNotRemote:
-			default:
-			}
+		if cmd.Reply == nil {
+			return state, nil
 		}
-		return state, nil
+		return state, []actor.Effect{effCompleteReply{Reply: cmd.Reply, Err: ErrNotRemote}}
 	}
-	if cmd.Reply != nil {
-		select {
-		case cmd.Reply <- nil:
-		default:
-		}
-	}
-	return state, []actor.Effect{
+	effects := []actor.Effect{
 		effRemoteSend{Gen: state.RunnerGen, Text: cmd.Text, Meta: cmd.Meta, LocalID: cmd.LocalID},
 	}
+	if cmd.Reply != nil {
+		effects = append(effects, effCompleteReply{Reply: cmd.Reply, Err: nil})
+	}
+	return state, effects
 }
 
 // reduceEngineThinking applies engine "thinking" signals to the session state
@@ -725,21 +706,16 @@ func reduceEngineUIEvent(state State, ev evEngineUIEvent) (State, []actor.Effect
 // reduceAbortRemote requests aborting the current remote turn.
 func reduceAbortRemote(state State, cmd cmdAbortRemote) (State, []actor.Effect) {
 	if state.FSM != StateRemoteRunning {
-		if cmd.Reply != nil {
-			select {
-			case cmd.Reply <- ErrNotRemote:
-			default:
-			}
+		if cmd.Reply == nil {
+			return state, nil
 		}
-		return state, nil
+		return state, []actor.Effect{effCompleteReply{Reply: cmd.Reply, Err: ErrNotRemote}}
 	}
+	effects := []actor.Effect{effRemoteAbort{Gen: state.RunnerGen}}
 	if cmd.Reply != nil {
-		select {
-		case cmd.Reply <- nil:
-		default:
-		}
+		effects = append(effects, effCompleteReply{Reply: cmd.Reply, Err: nil})
 	}
-	return state, []actor.Effect{effRemoteAbort{Gen: state.RunnerGen}}
+	return state, effects
 }
 
 // reducePermissionRequested registers a new permission prompt and emits an ephemeral.
@@ -782,37 +758,22 @@ func reducePermissionRequested(state State, ev evPermissionRequested) (State, []
 // reducePermissionDecision resolves a pending permission request.
 func reducePermissionDecision(state State, cmd cmdPermissionDecision) (State, []actor.Effect) {
 	if cmd.RequestID == "" {
-		if cmd.Reply != nil {
-			select {
-			case cmd.Reply <- ErrUnknownPermissionRequest:
-			default:
-			}
+		if cmd.Reply == nil {
+			return state, nil
 		}
-		return state, nil
+		return state, []actor.Effect{effCompleteReply{Reply: cmd.Reply, Err: ErrUnknownPermissionRequest}}
 	}
 	if state.AgentState.Requests == nil {
-		if cmd.Reply != nil {
-			select {
-			case cmd.Reply <- ErrUnknownPermissionRequest:
-			default:
-			}
+		if cmd.Reply == nil {
+			return state, nil
 		}
-		return state, nil
+		return state, []actor.Effect{effCompleteReply{Reply: cmd.Reply, Err: ErrUnknownPermissionRequest}}
 	}
 	if _, ok := state.AgentState.Requests[cmd.RequestID]; !ok {
-		if cmd.Reply != nil {
-			select {
-			case cmd.Reply <- ErrUnknownPermissionRequest:
-			default:
-			}
+		if cmd.Reply == nil {
+			return state, nil
 		}
-		return state, nil
-	}
-	if cmd.Reply != nil {
-		select {
-		case cmd.Reply <- nil:
-		default:
-		}
+		return state, []actor.Effect{effCompleteReply{Reply: cmd.Reply, Err: ErrUnknownPermissionRequest}}
 	}
 
 	// Durable bookkeeping mirrors the legacy Manager path.
@@ -857,6 +818,9 @@ func reducePermissionDecision(state State, cmd cmdPermissionDecision) (State, []
 	// Engines (Codex/Claude remote) that need to block on approvals use
 	// PendingPermissionPromises. The engine itself is responsible for writing
 	// any upstream protocol response once the promise resolves.
+	if cmd.Reply != nil {
+		persistEffects = append(persistEffects, effCompleteReply{Reply: cmd.Reply, Err: nil})
+	}
 	return state, persistEffects
 }
 
@@ -985,16 +949,15 @@ func reduceAgentStatePersisted(state State, ev EvAgentStatePersisted) (State, []
 	state.PersistRetryRemaining = 0
 	state.PersistInFlight = false
 	if len(state.PersistWaiters) > 0 {
+		effects := make([]actor.Effect, 0, len(state.PersistWaiters))
 		for _, waiter := range state.PersistWaiters {
 			if waiter == nil {
 				continue
 			}
-			select {
-			case waiter <- nil:
-			default:
-			}
+			effects = append(effects, effCompleteReply{Reply: waiter, Err: nil})
 		}
 		state.PersistWaiters = nil
+		return state, effects
 	}
 	return state, nil
 }
@@ -1018,28 +981,29 @@ func reduceAgentStateVersionMismatch(state State, ev EvAgentStateVersionMismatch
 // reduceAgentStatePersistFailed records a persistence failure and clears retries.
 func reduceAgentStatePersistFailed(state State, ev EvAgentStatePersistFailed) (State, []actor.Effect) {
 	state.PersistInFlight = false
+	var effects []actor.Effect
 	if len(state.PersistWaiters) > 0 {
+		effects = make([]actor.Effect, 0, len(state.PersistWaiters))
 		for _, waiter := range state.PersistWaiters {
 			if waiter == nil {
 				continue
 			}
-			select {
-			case waiter <- ev.Err:
-			default:
-			}
+			effects = append(effects, effCompleteReply{Reply: waiter, Err: ev.Err})
 		}
 		state.PersistWaiters = nil
 	}
 	// If the websocket is disconnected, we rely on evWSConnected to trigger a
 	// best-effort re-persist. Avoid retry loops while offline.
 	if !state.WSConnected {
-		return state, nil
+		return state, effects
 	}
 
 	// Best-effort: re-arm a single debounced persist. This recovers from brief
 	// socket hiccups without requiring UI polling, but avoids tight loops by
 	// relying on debounce.
-	return schedulePersistDebounced(state)
+	state, persistEffects := schedulePersistDebounced(state)
+	effects = append(effects, persistEffects...)
+	return state, effects
 }
 
 // reduceTimerFired handles internal debounce timers.
@@ -1060,18 +1024,16 @@ func reduceTimerFired(state State, ev evTimerFired) (State, []actor.Effect) {
 // reduceShutdown transitions the actor to Closed and stops runners.
 func reduceShutdown(state State, cmd cmdShutdown) (State, []actor.Effect) {
 	state.FSM = StateClosing
-	if cmd.Reply != nil {
-		select {
-		case cmd.Reply <- nil:
-		default:
-		}
-	}
 	// Stop both runners; runtime will emit exit events.
-	return state, []actor.Effect{
+	effects := []actor.Effect{
 		effStopLocalRunner{Gen: state.RunnerGen},
 		effStopRemoteRunner{Gen: state.RunnerGen, Silent: true},
 		effStopDesktopTakebackWatcher{},
 	}
+	if cmd.Reply != nil {
+		effects = append(effects, effCompleteReply{Reply: cmd.Reply, Err: nil})
+	}
+	return state, effects
 }
 
 // refreshAgentStateJSON refreshes State.AgentStateJSON from State.AgentState.

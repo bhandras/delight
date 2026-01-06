@@ -26,6 +26,14 @@ type scenarioRuntime struct {
 func (r *scenarioRuntime) HandleEffects(ctx context.Context, effects []framework.Effect, emit func(framework.Input)) {
 	for _, eff := range effects {
 		switch e := eff.(type) {
+		case effCompleteReply:
+			if e.Reply == nil {
+				continue
+			}
+			select {
+			case e.Reply <- e.Err:
+			default:
+			}
 		case effStartRemoteRunner:
 			r.mu.Lock()
 			r.startedRemote = append(r.startedRemote, e.Gen)

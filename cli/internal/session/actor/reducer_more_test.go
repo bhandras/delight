@@ -70,16 +70,17 @@ func TestReduceWaitForAgentStatePersist_NotifiesWaiter(t *testing.T) {
 	require.Len(t, next.PersistWaiters, 1)
 	require.Len(t, effects, 2)
 
-	// Simulate a persist ack and ensure the waiter receives nil.
-	next2, _ := Reduce(next, EvAgentStatePersisted{NewVersion: 3})
+	// Simulate a persist ack and ensure the waiter would be completed.
+	next2, effects := Reduce(next, EvAgentStatePersisted{NewVersion: 3})
 	require.Equal(t, int64(3), next2.AgentStateVersion)
-
-	select {
-	case err := <-waiter:
-		require.NoError(t, err)
-	default:
-		require.Fail(t, "expected waiter to be notified")
+	found := false
+	for _, eff := range effects {
+		if done, ok := eff.(effCompleteReply); ok && done.Reply == waiter {
+			require.NoError(t, done.Err)
+			found = true
+		}
 	}
+	require.True(t, found, "expected effCompleteReply for waiter")
 }
 
 // TestReduceAgentStatePersistFailed_ArmsDebounceWhenOnline ensures that
@@ -149,6 +150,7 @@ func TestSessionEffect_InterfaceCoverage(t *testing.T) {
 		effEmitMessage{},
 		effStartTimer{},
 		effCancelTimer{},
+		effCompleteReply{},
 		effStartDesktopTakebackWatcher{},
 		effStopDesktopTakebackWatcher{},
 	)

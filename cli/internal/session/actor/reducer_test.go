@@ -42,15 +42,17 @@ func TestReduceRunnerReady_CompletesSwitchReply(t *testing.T) {
 	}
 
 	next, effects := Reduce(state, evRunnerReady{Gen: 7, Mode: ModeRemote})
-	_ = effects
+	require.NotEmpty(t, effects)
 
 	require.Equal(t, StateRemoteRunning, next.FSM)
-	select {
-	case err := <-reply:
-		require.NoError(t, err)
-	default:
-		require.Fail(t, "expected reply to be completed")
+	found := false
+	for _, eff := range effects {
+		if done, ok := eff.(effCompleteReply); ok && done.Reply == reply {
+			require.NoError(t, done.Err)
+			found = true
+		}
 	}
+	require.True(t, found, "expected effCompleteReply")
 }
 
 func TestReduceRemoteSend_GatedToRemoteRunning(t *testing.T) {
@@ -61,13 +63,15 @@ func TestReduceRemoteSend_GatedToRemoteRunning(t *testing.T) {
 
 	next, effects := Reduce(state, cmdRemoteSend{Text: "hi", Reply: reply})
 	require.Equal(t, StateLocalRunning, next.FSM)
-	require.Empty(t, effects)
-	select {
-	case err := <-reply:
-		require.Error(t, err)
-	default:
-		require.Fail(t, "expected reply")
+	require.NotEmpty(t, effects)
+	found := false
+	for _, eff := range effects {
+		if done, ok := eff.(effCompleteReply); ok && done.Reply == reply {
+			require.Error(t, done.Err)
+			found = true
+		}
 	}
+	require.True(t, found, "expected effCompleteReply")
 }
 
 func TestReduceAgentState_VersionMismatchRetriesOnce(t *testing.T) {
@@ -253,12 +257,14 @@ func TestReducePermissionDecision_RemovesDurableAndPersists(t *testing.T) {
 	_, ok = next.AgentState.CompletedRequests["r1"]
 	require.True(t, ok)
 	require.NotEmpty(t, effects, "expected persistence-related effects")
-	select {
-	case err := <-reply:
-		require.NoError(t, err)
-	default:
-		require.Fail(t, "expected reply to be completed")
+	found := false
+	for _, eff := range effects {
+		if done, ok := eff.(effCompleteReply); ok && done.Reply == reply {
+			require.NoError(t, done.Err)
+			found = true
+		}
 	}
+	require.True(t, found, "expected effCompleteReply")
 }
 
 func TestReducePermissionAwait_StoresPromiseAndEmitsEphemeral(t *testing.T) {
