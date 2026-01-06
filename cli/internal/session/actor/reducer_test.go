@@ -405,13 +405,15 @@ func TestReducePermissionDecision_CompletesAwaitPromiseWithoutRemoteEffect(t *te
 		NowMs:     200,
 	})
 
-	select {
-	case got := <-decisionCh:
-		require.True(t, got.Allow)
-		require.Equal(t, "approved", got.Message)
-	default:
-		require.Fail(t, "expected decision to be delivered to promise channel")
+	found := false
+	for _, eff := range effects {
+		if done, ok := eff.(effCompletePermissionDecision); ok && done.Reply == decisionCh {
+			require.True(t, done.Decision.Allow)
+			require.Equal(t, "approved", done.Decision.Message)
+			found = true
+		}
 	}
+	require.True(t, found, "expected effCompletePermissionDecision")
 
 	if next.PendingPermissionPromises != nil {
 		if _, ok := next.PendingPermissionPromises["r1"]; ok {

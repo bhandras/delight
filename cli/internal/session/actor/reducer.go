@@ -800,28 +800,30 @@ func reducePermissionDecision(state State, cmd cmdPermissionDecision) (State, []
 		ResolvedAt: cmd.NowMs,
 	}
 
+	var effects []actor.Effect
 	if state.PendingPermissionPromises != nil {
 		if ch, ok := state.PendingPermissionPromises[cmd.RequestID]; ok {
 			delete(state.PendingPermissionPromises, cmd.RequestID)
 			if ch != nil {
-				select {
-				case ch <- PermissionDecision{Allow: cmd.Allow, Message: cmd.Message}:
-				default:
-				}
+				effects = append(effects, effCompletePermissionDecision{
+					Reply:    ch,
+					Decision: PermissionDecision{Allow: cmd.Allow, Message: cmd.Message},
+				})
 			}
 		}
 	}
 
 	state = refreshAgentStateJSON(state)
 	state, persistEffects := schedulePersistDebounced(state)
+	effects = append(effects, persistEffects...)
 
 	// Engines (Codex/Claude remote) that need to block on approvals use
 	// PendingPermissionPromises. The engine itself is responsible for writing
 	// any upstream protocol response once the promise resolves.
 	if cmd.Reply != nil {
-		persistEffects = append(persistEffects, effCompleteReply{Reply: cmd.Reply, Err: nil})
+		effects = append(effects, effCompleteReply{Reply: cmd.Reply, Err: nil})
 	}
-	return state, persistEffects
+	return state, effects
 }
 
 // reducePermissionAwait registers a permission request and returns a decision via Reply.
