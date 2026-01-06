@@ -213,12 +213,54 @@ type spawnActorRuntime struct {
 	ownerID string
 
 	childrenMu sync.Mutex
-	children   map[string]*Manager
+	children   map[string]spawnedChild
 
 	emit func(framework.Input)
+
+	// startChild starts a child session manager. It is injected to keep
+	// spawn actor tests deterministic and free of network dependencies.
+	startChild spawnChildStarter
+}
+
+// spawnedChild is the minimal interface the spawn actor needs to manage child
+// sessions.
+type spawnedChild interface {
+	Close() error
+	Wait() error
+}
+
+// spawnChildStarter creates and starts a child session manager and returns the
+// assigned session id.
+type spawnChildStarter func(ctx context.Context, cfg *config.Config, token string, debug bool, directory string, agent string) (string, spawnedChild, error)
+
+// defaultSpawnChildStarter is the production implementation of spawnChildStarter.
+func defaultSpawnChildStarter(ctx context.Context, cfg *config.Config, token string, debug bool, directory string, agent string) (string, spawnedChild, error) {
+	if ctx.Err() != nil {
+		return "", nil, ctx.Err()
+	}
+	child, err := NewManager(cfg, token, debug)
+	if err != nil {
+		return "", nil, err
+	}
+	if agent == "acp" || agent == "claude" || agent == "codex" {
+		child.agent = agent
+	}
+	child.disableTerminalSocket = true
+
+	if err := child.Start(directory); err != nil {
+		return "", nil, err
+	}
+	if child.sessionID == "" {
+		_ = child.Close()
+		return "", nil, fmt.Errorf("session id not assigned")
+	}
+	return child.sessionID, child, nil
 }
 
 func (r *spawnActorRuntime) HandleEffects(ctx context.Context, effects []framework.Effect, emit func(framework.Input)) {
+	if r.startChild == nil {
+		r.startChild = defaultSpawnChildStarter
+	}
 	r.emit = emit
 	for _, eff := range effects {
 		select {
@@ -333,42 +375,28 @@ func (r *spawnActorRuntime) handleStartChild(ctx context.Context, eff effStartCh
 		r.emit(evChildStartFailed{ReqID: eff.ReqID, Err: fmt.Errorf("directory is required")})
 		return
 	}
-	child, err := NewManager(r.cfg, r.token, r.debug)
+	sessionID, child, err := r.startChild(ctx, r.cfg, r.token, r.debug, eff.Directory, eff.Agent)
 	if err != nil {
 		r.emit(evChildStartFailed{ReqID: eff.ReqID, Err: err})
-		return
-	}
-	if eff.Agent == "acp" || eff.Agent == "claude" || eff.Agent == "codex" {
-		child.agent = eff.Agent
-	}
-	child.disableTerminalSocket = true
-
-	if err := child.Start(eff.Directory); err != nil {
-		r.emit(evChildStartFailed{ReqID: eff.ReqID, Err: err})
-		return
-	}
-	if child.sessionID == "" {
-		_ = child.Close()
-		r.emit(evChildStartFailed{ReqID: eff.ReqID, Err: fmt.Errorf("session id not assigned")})
 		return
 	}
 
 	r.childrenMu.Lock()
 	if r.children == nil {
-		r.children = make(map[string]*Manager)
+		r.children = make(map[string]spawnedChild)
 	}
-	r.children[child.sessionID] = child
+	r.children[sessionID] = child
 	r.childrenMu.Unlock()
 
-	r.registerSpawnedSession(child.sessionID, eff.Directory)
-	r.emit(evChildStarted{ReqID: eff.ReqID, SessionID: child.sessionID, Directory: eff.Directory})
+	r.registerSpawnedSession(sessionID, eff.Directory)
+	r.emit(evChildStarted{ReqID: eff.ReqID, SessionID: sessionID, Directory: eff.Directory})
 
-	go func(sessionID string, mgr *Manager) {
-		_ = mgr.Wait()
+	go func(sessionID string, child spawnedChild) {
+		_ = child.Wait()
 		r.childrenMu.Lock()
 		delete(r.children, sessionID)
 		r.childrenMu.Unlock()
-	}(child.sessionID, child)
+	}(sessionID, child)
 }
 
 func (r *spawnActorRuntime) handleStopChild(ctx context.Context, eff effStopChild) {
@@ -420,40 +448,32 @@ func (r *spawnActorRuntime) handleRestore(ctx context.Context, eff effRestoreChi
 		if entry.SessionID == r.ownerID {
 			continue
 		}
-		// Always start a new manager; the session id can change, so we update
+		// Always start a new child; the session id can change, so we update
 		// the registry if it differs from the stored id.
-		child, err := NewManager(r.cfg, r.token, r.debug)
+		sessionID, child, err := r.startChild(ctx, r.cfg, r.token, r.debug, entry.Directory, "")
 		if err != nil {
-			continue
-		}
-		child.disableTerminalSocket = true
-		if err := child.Start(entry.Directory); err != nil {
-			continue
-		}
-		if child.sessionID == "" {
-			_ = child.Close()
 			continue
 		}
 
 		r.childrenMu.Lock()
 		if r.children == nil {
-			r.children = make(map[string]*Manager)
+			r.children = make(map[string]spawnedChild)
 		}
-		r.children[child.sessionID] = child
+		r.children[sessionID] = child
 		r.childrenMu.Unlock()
 
 		// If the session ID changed, rewrite the registry entry.
-		if child.sessionID != entry.SessionID {
+		if sessionID != entry.SessionID {
 			delete(owner, entry.SessionID)
-			owner[child.sessionID] = spawnEntry{SessionID: child.sessionID, Directory: entry.Directory}
+			owner[sessionID] = spawnEntry{SessionID: sessionID, Directory: entry.Directory}
 		}
 
-		go func(sessionID string, mgr *Manager) {
-			_ = mgr.Wait()
+		go func(sessionID string, child spawnedChild) {
+			_ = child.Wait()
 			r.childrenMu.Lock()
 			delete(r.children, sessionID)
 			r.childrenMu.Unlock()
-		}(child.sessionID, child)
+		}(sessionID, child)
 	}
 	// Best-effort persist (even if unchanged).
 	_ = r.saveRegistry(registry)
@@ -466,11 +486,11 @@ func (r *spawnActorRuntime) handleShutdown(ctx context.Context, eff effShutdownC
 		return
 	}
 	r.childrenMu.Lock()
-	children := make([]*Manager, 0, len(r.children))
+	children := make([]spawnedChild, 0, len(r.children))
 	for _, child := range r.children {
 		children = append(children, child)
 	}
-	r.children = make(map[string]*Manager)
+	r.children = make(map[string]spawnedChild)
 	r.childrenMu.Unlock()
 
 	for _, child := range children {
