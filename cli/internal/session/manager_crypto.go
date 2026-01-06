@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/bhandras/delight/cli/internal/claude"
 	"github.com/bhandras/delight/cli/internal/crypto"
 	"github.com/bhandras/delight/shared/logger"
 )
@@ -96,13 +95,4 @@ func (m *Manager) decryptTerminal(dataB64 string) ([]byte, error) {
 		return nil, err
 	}
 	return []byte(raw), nil
-}
-
-// encryptRemoteMessage encrypts a remote message for transmission
-func (m *Manager) encryptRemoteMessage(msg *claude.RemoteMessage) (string, error) {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return "", err
-	}
-	return m.encrypt(data)
 }

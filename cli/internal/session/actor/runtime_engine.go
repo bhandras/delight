@@ -8,8 +8,10 @@ import (
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/agentengine"
+	"github.com/bhandras/delight/cli/internal/agentengine/acpengine"
 	"github.com/bhandras/delight/cli/internal/agentengine/claudeengine"
 	"github.com/bhandras/delight/cli/internal/agentengine/codexengine"
+	"github.com/bhandras/delight/cli/internal/agentengine/fakeengine"
 	"github.com/bhandras/delight/cli/internal/termutil"
 	"github.com/bhandras/delight/shared/logger"
 )
@@ -43,6 +45,10 @@ func (r *Runtime) ensureEngine(ctx context.Context, emit func(framework.Input)) 
 		next = claudeengine.New(r.workDir, r, r.debug)
 	case agentengine.AgentCodex:
 		next = codexengine.New(r.workDir, r, r.debug)
+	case agentengine.AgentACP:
+		next = acpengine.New(r, r, r.debug)
+	case agentengine.AgentFake:
+		next = fakeengine.New()
 	default:
 		return nil
 	}

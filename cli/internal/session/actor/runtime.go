@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bhandras/delight/cli/internal/acp"
 	framework "github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/agentengine"
 	"github.com/bhandras/delight/cli/internal/termutil"
@@ -45,19 +44,9 @@ type Runtime struct {
 
 	engineSendMu sync.Mutex
 
-	acpURL          string
-	acpAgent        string
-	acpSessionID    string
-	acpClient       *acp.Client
-	acpRemoteGen    int64
-	acpRemoteActive bool
-	acpLocalGen     int64
-	acpLocalActive  bool
-
-	fakeRemoteGen    int64
-	fakeRemoteActive bool
-	fakeLocalGen     int64
-	fakeLocalActive  bool
+	acpURL       string
+	acpAgent     string
+	acpSessionID string
 
 	takebackCancel chan struct{}
 	takebackDone   chan struct{}
@@ -101,9 +90,14 @@ func (r *Runtime) WithACPConfig(url string, agent string, sessionID string) *Run
 	r.acpURL = url
 	r.acpAgent = agent
 	r.acpSessionID = sessionID
-	// Recreate client lazily on next use.
-	r.acpClient = nil
 	return r
+}
+
+// ACPConfig returns the current ACP runtime configuration.
+func (r *Runtime) ACPConfig() (baseURL string, agentName string, sessionID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.acpURL, r.acpAgent, r.acpSessionID
 }
 
 // WithSessionID configures the session id used for state persistence effects.
@@ -166,73 +160,18 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 
 		switch e := eff.(type) {
 		case effStartLocalRunner:
-			switch r.agent {
-			case agentengine.AgentClaude:
-				r.startEngineLocal(ctx, e, emit)
-			case agentengine.AgentCodex:
-				r.startEngineLocal(ctx, e, emit)
-			case agentengine.AgentACP:
-				r.startACPLocal(ctx, e, emit)
-			case agentengine.AgentFake:
-				r.startFakeLocal(ctx, e, emit)
-			default:
-				r.startEngineLocal(ctx, e, emit)
-			}
+			r.startEngineLocal(ctx, e, emit)
 		case effStopLocalRunner:
-			switch r.agent {
-			case agentengine.AgentClaude:
-				r.stopEngineLocal(e)
-			case agentengine.AgentCodex:
-				r.stopEngineLocal(e)
-			case agentengine.AgentACP:
-				r.stopACPLocal(e)
-			case agentengine.AgentFake:
-				r.stopFakeLocal(e)
-			default:
-				r.stopEngineLocal(e)
-			}
+			r.stopEngineLocal(e)
 		case effStartRemoteRunner:
-			switch r.agent {
-			case agentengine.AgentClaude:
-				r.startEngineRemote(ctx, e, emit)
-			case agentengine.AgentCodex:
-				r.startEngineRemote(ctx, e, emit)
-			case agentengine.AgentACP:
-				r.startACPRemote(ctx, e, emit)
-			case agentengine.AgentFake:
-				r.startFakeRemote(ctx, e, emit)
-			default:
-				r.startEngineRemote(ctx, e, emit)
-			}
+			r.startEngineRemote(ctx, e, emit)
 		case effStopRemoteRunner:
-			switch r.agent {
-			case agentengine.AgentClaude:
-				r.stopEngineRemote(e)
-			case agentengine.AgentCodex:
-				r.stopEngineRemote(e)
-			case agentengine.AgentACP:
-				r.stopACPRemote(e)
-			case agentengine.AgentFake:
-				r.stopFakeRemote(e)
-			default:
-				r.stopEngineRemote(e)
-			}
+			r.stopEngineRemote(e)
 		case effLocalSendLine:
 			// Local line injection is currently only supported for Claude.
 			r.engineLocalSendLine(e)
 		case effRemoteSend:
-			switch r.agent {
-			case agentengine.AgentClaude:
-				r.engineRemoteSend(ctx, e)
-			case agentengine.AgentCodex:
-				r.engineRemoteSend(ctx, e)
-			case agentengine.AgentACP:
-				r.acpRemoteSend(ctx, e, emit)
-			case agentengine.AgentFake:
-				r.fakeRemoteSend(ctx, e, emit)
-			default:
-				r.engineRemoteSend(ctx, e)
-			}
+			r.engineRemoteSend(ctx, e)
 		case effRemoteAbort:
 			r.engineRemoteAbort(ctx, e)
 		case effPersistAgentState:

@@ -1,21 +1,18 @@
 package session
 
 import (
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sync"
 	"time"
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
-	"github.com/bhandras/delight/cli/internal/claude"
 	"github.com/bhandras/delight/cli/internal/config"
 	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
 	"github.com/bhandras/delight/cli/internal/session/runtime"
 	"github.com/bhandras/delight/cli/internal/storage"
 	"github.com/bhandras/delight/cli/internal/websocket"
 	"github.com/bhandras/delight/cli/pkg/types"
-	"github.com/bhandras/delight/shared/logger"
 	"github.com/bhandras/delight/shared/wire"
 )
 
@@ -116,74 +113,9 @@ func (m *Manager) GetClaudeSessionID() string {
 	return m.sessionActor.State().ClaudeSessionID
 }
 
-// IsThinking returns whether Claude is currently thinking.
+// IsThinking returns whether an agent is currently thinking.
 func (m *Manager) IsThinking() bool {
 	return m.thinking
-}
-
-// handlePermissionRequest processes tool permission requests from Claude.
-func (m *Manager) handlePermissionRequest(requestID string, toolName string, input json.RawMessage) (*claude.PermissionResponse, error) {
-	if m.debug {
-		logger.Debugf("Permission request: %s tool=%s", requestID, toolName)
-	}
-
-	if m.sessionActor == nil {
-		return &claude.PermissionResponse{
-			Behavior: "deny",
-			Message:  "Session actor not initialized",
-		}, nil
-	}
-
-	decisionCh := make(chan sessionactor.PermissionDecision, 1)
-	nowMs := time.Now().UnixMilli()
-	if !m.sessionActor.Enqueue(sessionactor.AwaitPermission(requestID, toolName, input, nowMs, decisionCh)) {
-		return &claude.PermissionResponse{
-			Behavior: "deny",
-			Message:  "Failed to schedule permission request",
-		}, nil
-	}
-
-	// Wait for response (with timeout). This blocks only the caller goroutine,
-	// not the actor loop.
-	select {
-	case decision := <-decisionCh:
-		response := &claude.PermissionResponse{
-			Behavior: "deny",
-			Message:  decision.Message,
-		}
-		if decision.Allow {
-			response.Behavior = "allow"
-			// Claude Code SDK expects allow responses to include updatedInput (even
-			// when unmodified). Mirror legacy behavior by echoing the requested input.
-			response.UpdatedInput = append(json.RawMessage(nil), input...)
-		}
-		return response, nil
-	case <-time.After(5 * time.Minute):
-		// Best-effort: mark as denied and clear durable request state.
-		_ = m.sessionActor.Enqueue(sessionactor.SubmitPermissionDecision(
-			requestID,
-			false,
-			"Permission request timed out",
-			time.Now().UnixMilli(),
-			nil,
-		))
-		return &claude.PermissionResponse{
-			Behavior: "deny",
-			Message:  "Permission request timed out",
-		}, nil
-	case <-m.stopCh:
-		_ = m.sessionActor.Enqueue(sessionactor.SubmitPermissionDecision(
-			requestID,
-			false,
-			"Session closed",
-			time.Now().UnixMilli(),
-			nil,
-		))
-		return &claude.PermissionResponse{
-			Behavior: "deny",
-			Message:  "Session closed",
-		}, nil
-	}
 }
 
 // HandlePermissionResponse handles a permission response from the mobile app.
