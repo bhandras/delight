@@ -126,16 +126,9 @@ func (m *Manager) Start(workDir string) error {
 
 	// Bridge socket lifecycle into the SessionActor so connection state and
 	// persistence retries are deterministic.
-	m.wsClient.OnConnect(func() {
-		if m.sessionActor != nil {
-			_ = m.sessionActor.Enqueue(sessionactor.WSConnected())
-		}
-	})
-	m.wsClient.OnDisconnect(func(reason string) {
-		if m.sessionActor != nil {
-			_ = m.sessionActor.Enqueue(sessionactor.WSDisconnected(reason))
-		}
-	})
+	if m.sessionActor != nil {
+		wireSessionActorToSocket(m.sessionActor, m.wsClient)
+	}
 
 	// Register event handlers
 	// Prefer structured updates; legacy message handler kept for backward compatibility
@@ -181,16 +174,9 @@ func (m *Manager) Start(workDir string) error {
 		m.terminalClient.SetTokenRefresher(func() (string, error) {
 			return cliauth.RefreshAccessToken(m.cfg, m.masterSecret)
 		})
-		m.terminalClient.OnConnect(func() {
-			if m.sessionActor != nil {
-				_ = m.sessionActor.Enqueue(sessionactor.TerminalConnected())
-			}
-		})
-		m.terminalClient.OnDisconnect(func(reason string) {
-			if m.sessionActor != nil {
-				_ = m.sessionActor.Enqueue(sessionactor.TerminalDisconnected(reason))
-			}
-		})
+		if m.sessionActor != nil {
+			wireSessionActorToTerminalSocket(m.sessionActor, m.terminalClient)
+		}
 		if err := m.terminalClient.Connect(); err != nil {
 			logger.Warnf("Terminal WebSocket connection failed: %v", err)
 			m.terminalClient = nil
