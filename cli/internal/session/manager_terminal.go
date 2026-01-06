@@ -11,6 +11,13 @@ import (
 	"github.com/bhandras/delight/shared/wire"
 )
 
+// terminalAckClient is the subset of websocket.Client used by terminal update
+// helpers. It exists to keep tests deterministic.
+type terminalAckClient interface {
+	IsConnected() bool
+	EmitWithAck(event string, payload any, timeout time.Duration) (map[string]any, error)
+}
+
 // registerTerminalRPCHandlers registers RPC methods available on the
 // terminal-scoped websocket.
 func (m *Manager) registerTerminalRPCHandlers() {
@@ -42,40 +49,50 @@ func (m *Manager) updateTerminalState() error {
 		return nil
 	}
 
-	if len(m.masterSecret) != 32 {
-		return fmt.Errorf("master secret must be 32 bytes, got %d", len(m.masterSecret))
-	}
-	encryptedState, err := crypto.EncryptWithDataKey(m.terminalState, m.masterSecret)
+	newVer, err := emitTerminalUpdateState(m.terminalClient, m.terminalID, m.terminalState, m.masterSecret, m.terminalStateVer)
 	if err != nil {
-		return fmt.Errorf("failed to encrypt daemon state: %w", err)
+		return err
+	}
+	m.terminalStateVer = newVer
+	return nil
+}
+
+// emitTerminalUpdateState encrypts and sends the terminal daemon state update,
+// returning the version reported by the server.
+func emitTerminalUpdateState(client terminalAckClient, terminalID string, state any, masterSecret []byte, expectedVersion int64) (int64, error) {
+	if len(masterSecret) != 32 {
+		return 0, fmt.Errorf("master secret must be 32 bytes, got %d", len(masterSecret))
+	}
+	encryptedState, err := crypto.EncryptWithDataKey(state, masterSecret)
+	if err != nil {
+		return 0, fmt.Errorf("failed to encrypt daemon state: %w", err)
 	}
 
-	resp, err := m.terminalClient.EmitWithAck(
+	resp, err := client.EmitWithAck(
 		"terminal-update-state",
 		wire.TerminalUpdateStatePayload{
-			TerminalID:      m.terminalID,
+			TerminalID:      terminalID,
 			DaemonState:     base64.StdEncoding.EncodeToString(encryptedState),
-			ExpectedVersion: m.terminalStateVer,
+			ExpectedVersion: expectedVersion,
 		},
 		5*time.Second,
 	)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if resp == nil {
-		return fmt.Errorf("missing ack")
+		return 0, fmt.Errorf("missing ack")
 	}
 
 	result, _ := resp["result"].(string)
 	switch result {
 	case "success":
-		m.terminalStateVer = getInt64(resp["version"])
+		return getInt64(resp["version"]), nil
 	case "version-mismatch":
-		m.terminalStateVer = getInt64(resp["version"])
+		return getInt64(resp["version"]), nil
 	default:
-		return fmt.Errorf("terminal-update-state failed: %v", result)
+		return 0, fmt.Errorf("terminal-update-state failed: %v", result)
 	}
-	return nil
 }
 
 // updateTerminalMetadata emits the current terminal metadata to the server.
@@ -84,40 +101,50 @@ func (m *Manager) updateTerminalMetadata() error {
 		return nil
 	}
 
-	if len(m.masterSecret) != 32 {
-		return fmt.Errorf("master secret must be 32 bytes, got %d", len(m.masterSecret))
-	}
-	encryptedMeta, err := crypto.EncryptWithDataKey(m.terminalMetadata, m.masterSecret)
+	newVer, err := emitTerminalUpdateMetadata(m.terminalClient, m.terminalID, m.terminalMetadata, m.masterSecret, m.terminalMetaVer)
 	if err != nil {
-		return fmt.Errorf("failed to encrypt terminal metadata: %w", err)
+		return err
+	}
+	m.terminalMetaVer = newVer
+	return nil
+}
+
+// emitTerminalUpdateMetadata encrypts and sends the terminal metadata update,
+// returning the version reported by the server.
+func emitTerminalUpdateMetadata(client terminalAckClient, terminalID string, metadata any, masterSecret []byte, expectedVersion int64) (int64, error) {
+	if len(masterSecret) != 32 {
+		return 0, fmt.Errorf("master secret must be 32 bytes, got %d", len(masterSecret))
+	}
+	encryptedMeta, err := crypto.EncryptWithDataKey(metadata, masterSecret)
+	if err != nil {
+		return 0, fmt.Errorf("failed to encrypt terminal metadata: %w", err)
 	}
 
-	resp, err := m.terminalClient.EmitWithAck(
+	resp, err := client.EmitWithAck(
 		"terminal-update-metadata",
 		wire.TerminalUpdateMetadataPayload{
-			TerminalID:      m.terminalID,
+			TerminalID:      terminalID,
 			Metadata:        base64.StdEncoding.EncodeToString(encryptedMeta),
-			ExpectedVersion: m.terminalMetaVer,
+			ExpectedVersion: expectedVersion,
 		},
 		5*time.Second,
 	)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if resp == nil {
-		return fmt.Errorf("missing ack")
+		return 0, fmt.Errorf("missing ack")
 	}
 
 	result, _ := resp["result"].(string)
 	switch result {
 	case "success":
-		m.terminalMetaVer = getInt64(resp["version"])
+		return getInt64(resp["version"]), nil
 	case "version-mismatch":
-		m.terminalMetaVer = getInt64(resp["version"])
+		return getInt64(resp["version"]), nil
 	default:
-		return fmt.Errorf("terminal-update-metadata failed: %v", result)
+		return 0, fmt.Errorf("terminal-update-metadata failed: %v", result)
 	}
-	return nil
 }
 
 func getInt64(value interface{}) int64 {
