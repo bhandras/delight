@@ -14,6 +14,18 @@ import (
 	"golang.org/x/term"
 )
 
+var (
+	takebackIsTerminal       = term.IsTerminal
+	takebackOpenTTY          = func() (*os.File, error) { return os.OpenFile(takebackTTYPath, os.O_RDONLY, 0) }
+	takebackMakeRaw          = term.MakeRaw
+	takebackRestore          = term.Restore
+	takebackPoll             = unix.Poll
+	takebackEnableISIG       = termutil.EnableISIG
+	takebackEnsureForeground = termutil.EnsureTTYForegroundSelf
+	takebackWriteLine        = writeLine
+	takebackNow              = time.Now
+)
+
 const (
 	// takebackTTYPath is the device path used to read raw keystrokes for desktop
 	// takeback.
@@ -52,7 +64,7 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 	// have a controlling terminal; opening /dev/tty + MakeRaw in that scenario
 	// can leave the developer terminal in a broken state when the test interrupts
 	// or kills the child process.
-	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !takebackIsTerminal(int(os.Stdin.Fd())) || !takebackIsTerminal(int(os.Stdout.Fd())) {
 		return
 	}
 
@@ -69,7 +81,7 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 	done := make(chan struct{})
 	r.takebackCancel = cancel
 	r.takebackDone = done
-	tty, err := os.OpenFile(takebackTTYPath, os.O_RDONLY, 0)
+	tty, err := takebackOpenTTY()
 	if err != nil {
 		r.takebackCancel = nil
 		r.takebackDone = nil
@@ -80,7 +92,7 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 	r.mu.Unlock()
 
 	fd := int(tty.Fd())
-	if !term.IsTerminal(fd) {
+	if !takebackIsTerminal(fd) {
 		_ = tty.Close()
 		r.stopDesktopTakebackWatcher()
 		return
@@ -98,7 +110,7 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 		defer signal.Reset(syscall.SIGTTIN, syscall.SIGTTOU)
 
 		restored := false
-		oldState, err := term.MakeRaw(fd)
+		oldState, err := takebackMakeRaw(fd)
 		if err != nil {
 			_ = tty.Close()
 			r.mu.Lock()
@@ -120,14 +132,14 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 		// term.MakeRaw disables ISIG, which makes Ctrl+C stop generating SIGINT.
 		// In remote mode we still want Ctrl+C to exit Delight reliably (even after
 		// repeated mode switches), so re-enable ISIG best-effort.
-		termutil.EnableISIG(fd)
+		takebackEnableISIG(fd)
 		// Also ensure Delight is the foreground process group so we continue
 		// receiving tty input after switching away from a local TUI.
-		termutil.EnsureTTYForegroundSelf()
+		takebackEnsureForeground()
 
 		defer func() {
 			if !restored {
-				_ = term.Restore(fd, oldState)
+				_ = takebackRestore(fd, oldState)
 			}
 			_ = tty.Close()
 			r.mu.Lock()
@@ -153,7 +165,7 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 			default:
 			}
 
-			pollRes, err := unix.Poll([]unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}, takebackPollTimeoutMillis)
+			pollRes, err := takebackPoll([]unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}, takebackPollTimeoutMillis)
 			if err != nil {
 				if err == unix.EINTR {
 					continue
@@ -172,14 +184,14 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 				// the foreground and keep the watcher alive so Ctrl+C/takeback still
 				// works after repeated mode switches.
 				if errors.Is(err, syscall.EIO) || errors.Is(err, unix.EIO) {
-					termutil.EnsureTTYForegroundSelf()
+					takebackEnsureForeground()
 					time.Sleep(50 * time.Millisecond)
 					continue
 				}
 				return
 			}
 
-			now := time.Now()
+			now := takebackNow()
 			if pendingSpace && now.Sub(pendingSpaceAt) > takebackConfirmWindow {
 				pendingSpace = false
 			}
@@ -204,7 +216,7 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 					localActive := r.engineLocalInteractive
 					r.mu.Unlock()
 					if !localActive {
-						writeLine(takebackPrompt)
+						takebackWriteLine(takebackPrompt)
 					}
 					continue
 				}
@@ -218,7 +230,7 @@ func (r *Runtime) startDesktopTakebackWatcher(ctx context.Context, emit func(fra
 				}
 			}
 
-			_ = term.Restore(fd, oldState)
+			_ = takebackRestore(fd, oldState)
 			restored = true
 			r.mu.Lock()
 			if r.takebackState == oldState {
@@ -252,7 +264,7 @@ func (r *Runtime) stopDesktopTakebackWatcher() {
 	}
 
 	if state != nil && tty != nil {
-		_ = term.Restore(int(tty.Fd()), state)
+		_ = takebackRestore(int(tty.Fd()), state)
 	}
 
 	if done != nil {

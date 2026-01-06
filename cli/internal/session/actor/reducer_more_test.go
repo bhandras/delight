@@ -182,6 +182,101 @@ func TestReducePermissionAwait_AutoApprove(t *testing.T) {
 	require.True(t, foundAck, "expected effSignalAck")
 }
 
+func TestReduceRunnerExited_RemoteStartingWithPendingInputs_FallsBackToLocal(t *testing.T) {
+	t.Parallel()
+
+	reply := make(chan error, 1)
+	state := State{
+		SessionID:             "s1",
+		FSM:                   StateRemoteStarting,
+		Mode:                  ModeRemote,
+		RunnerGen:             5,
+		PendingSwitchReply:    reply,
+		PendingRemoteSends:    []pendingRemoteSend{{text: "hi", nowMs: 123}},
+		PersistRetryRemaining: 1,
+		AgentState: types.AgentState{
+			ControlledByUser: false,
+		},
+	}
+	state = refreshAgentStateJSON(state)
+
+	next, effects := Reduce(state, evRunnerExited{Gen: 5, Mode: ModeRemote, Err: errors.New("start failed")})
+	require.Equal(t, ModeLocal, next.Mode)
+	require.Equal(t, StateLocalRunning, next.FSM)
+	require.True(t, next.AgentState.ControlledByUser)
+	require.Empty(t, next.PendingRemoteSends)
+
+	foundReply := false
+	foundInject := false
+	foundCancel := false
+	foundStart := false
+	for _, eff := range effects {
+		switch e := eff.(type) {
+		case effCompleteReply:
+			if e.Reply == reply {
+				require.Error(t, e.Err)
+				foundReply = true
+			}
+		case effLocalSendLine:
+			require.Equal(t, "hi", e.Text)
+			foundInject = true
+		case effCancelTimer:
+			foundCancel = true
+		case effStartTimer:
+			foundStart = true
+		}
+	}
+	require.True(t, foundReply)
+	require.True(t, foundInject)
+	require.True(t, foundCancel)
+	require.True(t, foundStart)
+}
+
+func TestReduceRunnerExited_RemoteRunning_FallsBackToLocalStarting(t *testing.T) {
+	t.Parallel()
+
+	state := State{
+		SessionID: "s1",
+		FSM:       StateRemoteRunning,
+		Mode:      ModeRemote,
+		RunnerGen: 3,
+		RemoteRunner: runnerHandle{
+			gen:     3,
+			running: true,
+		},
+		AgentState: types.AgentState{
+			ControlledByUser: false,
+		},
+	}
+	state = refreshAgentStateJSON(state)
+
+	next, effects := Reduce(state, evRunnerExited{Gen: 3, Mode: ModeRemote, Err: errors.New("boom")})
+	require.Equal(t, ModeLocal, next.Mode)
+	require.Equal(t, StateLocalStarting, next.FSM)
+	require.Equal(t, int64(4), next.RunnerGen)
+	require.Equal(t, int64(4), next.LocalRunner.gen)
+	require.True(t, next.AgentState.ControlledByUser)
+
+	foundStopRemote := false
+	foundStopTakeback := false
+	foundStartLocal := false
+	for _, eff := range effects {
+		switch e := eff.(type) {
+		case effStopRemoteRunner:
+			require.Equal(t, int64(3), e.Gen)
+			foundStopRemote = true
+		case effStopDesktopTakebackWatcher:
+			foundStopTakeback = true
+		case effStartLocalRunner:
+			require.Equal(t, int64(4), e.Gen)
+			foundStartLocal = true
+		}
+	}
+	require.True(t, foundStopRemote)
+	require.True(t, foundStopTakeback)
+	require.True(t, foundStartLocal)
+}
+
 // TestSessionEffect_InterfaceCoverage ensures effect structs satisfy the
 // session actor marker interface in a way that is exercised by tests.
 func TestSessionEffect_InterfaceCoverage(t *testing.T) {
