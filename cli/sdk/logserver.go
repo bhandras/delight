@@ -365,7 +365,3 @@ func (c *Client) StopLogServer() error {
 	logLine("Go log server stopped")
 	return server.Close()
 }
-
-func sanitizeContext(context string) string {
-	return strings.TrimSpace(context)
-}

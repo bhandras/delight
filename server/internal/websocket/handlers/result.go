@@ -29,10 +29,6 @@ func newUserUpdateSkippingSelf(userID string, event protocolwire.UpdateEvent) Up
 	return UpdateInstruction{scope: updateScopeUser, userID: userID, event: event, skipSelf: true}
 }
 
-func newSessionUpdate(userID, sessionID string, event protocolwire.UpdateEvent) UpdateInstruction {
-	return UpdateInstruction{scope: updateScopeSession, userID: userID, sessionID: sessionID, event: event}
-}
-
 func newSessionUpdateSkippingSelf(userID, sessionID string, event protocolwire.UpdateEvent) UpdateInstruction {
 	return UpdateInstruction{scope: updateScopeSession, userID: userID, sessionID: sessionID, event: event, skipSelf: true}
 }

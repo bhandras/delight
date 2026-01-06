@@ -2,7 +2,6 @@ package actor
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
 
@@ -134,7 +133,7 @@ func (r *Runtime) printRemoteRecordIfApplicable(plaintext []byte) {
 	}
 }
 
-func (r *Runtime) printRemoteUIEventIfApplicable(ev agentengine.EvUIEvent, atMs int64) {
+func (r *Runtime) printRemoteUIEventIfApplicable(ev agentengine.EvUIEvent) {
 	if r == nil {
 		return
 	}
@@ -197,25 +196,6 @@ func (r *Runtime) printSection(header string, body string) {
 	writeBlankLine()
 	writeLine(header)
 	writeLines(body)
-	writeBlankLine()
-}
-
-func (r *Runtime) printJSONSection(header string, payload any) {
-	writeBlankLine()
-	writeLine(header)
-	if payload == nil {
-		writeLine("{}")
-		writeBlankLine()
-		return
-	}
-	pretty, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		// Fall back to printing the raw payload.
-		writeLines(strings.TrimSpace(fmt.Sprintf("%v", payload)))
-		writeBlankLine()
-		return
-	}
-	writeLines(strings.TrimSpace(string(pretty)))
 	writeBlankLine()
 }
 

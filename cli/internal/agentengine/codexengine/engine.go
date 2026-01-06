@@ -1128,25 +1128,6 @@ func coerceInt(event map[string]interface{}, keys ...string) int64 {
 	return 0
 }
 
-// filterMap copies event into a new map excluding the given keys.
-func filterMap(event map[string]interface{}, excludeKeys ...string) map[string]interface{} {
-	if event == nil {
-		return nil
-	}
-	exclude := map[string]struct{}{}
-	for _, key := range excludeKeys {
-		exclude[key] = struct{}{}
-	}
-	out := make(map[string]interface{}, len(event))
-	for key, val := range event {
-		if _, ok := exclude[key]; ok {
-			continue
-		}
-		out[key] = val
-	}
-	return out
-}
-
 // normalizeUserText normalizes user input text for echo suppression.
 func normalizeUserText(text string) string {
 	return strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
@@ -1154,8 +1135,7 @@ func normalizeUserText(text string) string {
 
 // discoverLatestRolloutPath scans ~/.codex/sessions for the most recently updated rollout JSONL.
 func discoverLatestRolloutPath() (string, error) {
-	path, _, err := discoverLatestRolloutPathWithMod()
-	return path, err
+	return discoverLatestRolloutPathImpl()
 }
 
 // discoverLatestRolloutPathAfter returns the most recently modified rollout JSONL after since.
@@ -1174,7 +1154,7 @@ func waitForRolloutPath(ctx context.Context) (string, error) {
 		case <-deadline.C:
 			return "", fmt.Errorf("timed out waiting for codex rollout jsonl")
 		case <-ticker.C:
-			path, _, err := discoverLatestRolloutPathWithMod()
+			path, err := discoverLatestRolloutPathImpl()
 			if err != nil {
 				continue
 			}
@@ -1185,11 +1165,11 @@ func waitForRolloutPath(ctx context.Context) (string, error) {
 	}
 }
 
-// discoverLatestRolloutPathWithMod finds the latest rollout JSONL and returns its modtime.
-func discoverLatestRolloutPathWithMod() (string, time.Time, error) {
+// discoverLatestRolloutPathImpl finds the latest rollout JSONL.
+func discoverLatestRolloutPathImpl() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", time.Time{}, err
+		return "", err
 	}
 	root := filepath.Join(home, rolloutRootRelative)
 
@@ -1219,13 +1199,13 @@ func discoverLatestRolloutPathWithMod() (string, time.Time, error) {
 	})
 	if walkErr != nil {
 		if errors.Is(walkErr, os.ErrNotExist) {
-			return "", time.Time{}, fmt.Errorf("codex rollout directory not found: %s", root)
+			return "", fmt.Errorf("codex rollout directory not found: %s", root)
 		}
-		return "", time.Time{}, walkErr
+		return "", walkErr
 	}
 
 	if bestPath == "" {
-		return "", time.Time{}, fmt.Errorf("no codex rollout jsonl found under %s", root)
+		return "", fmt.Errorf("no codex rollout jsonl found under %s", root)
 	}
-	return bestPath, bestMod, nil
+	return bestPath, nil
 }

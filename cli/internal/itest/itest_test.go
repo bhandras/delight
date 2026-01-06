@@ -65,7 +65,7 @@ func TestFakeAgentRoundTrip(t *testing.T) {
 	}
 	defer stopProcess(t, serverCmd)
 
-	if err := waitForPort(port, 20*time.Second); err != nil {
+	if err := waitForPort(port); err != nil {
 		t.Fatalf("server not ready: %v\nlogs:\n%s", err, serverBuf.String())
 	}
 
@@ -193,7 +193,7 @@ func TestArtifactSocketFlow(t *testing.T) {
 	}
 	defer stopProcess(t, serverCmd)
 
-	if err := waitForPort(port, 20*time.Second); err != nil {
+	if err := waitForPort(port); err != nil {
 		t.Fatalf("server not ready: %v\nlogs:\n%s", err, serverBuf.String())
 	}
 
@@ -296,7 +296,7 @@ func TestRPCRoundTrip(t *testing.T) {
 	}
 	defer stopProcess(t, serverCmd)
 
-	if err := waitForPort(port, 20*time.Second); err != nil {
+	if err := waitForPort(port); err != nil {
 		t.Fatalf("server not ready: %v\nlogs:\n%s", err, serverBuf.String())
 	}
 
@@ -333,7 +333,7 @@ func TestRPCRoundTrip(t *testing.T) {
 	}
 	defer stopProcess(t, cliCmd)
 
-	sessionID := waitForSessionWithLogs(t, serverURL, token, 20*time.Second, &cliBuf, &serverBuf)
+	sessionID := waitForSessionWithLogs(t, serverURL, token, &cliBuf, &serverBuf)
 
 	sock := connectUserSocket(t, serverURL, token)
 	defer sock.Close()
@@ -392,7 +392,7 @@ func TestTerminalRPCRoundTrip(t *testing.T) {
 	}
 	defer stopProcess(t, serverCmd)
 
-	if err := waitForPort(port, 20*time.Second); err != nil {
+	if err := waitForPort(port); err != nil {
 		t.Fatalf("server not ready: %v\nlogs:\n%s", err, serverBuf.String())
 	}
 
@@ -435,7 +435,7 @@ func TestTerminalRPCRoundTrip(t *testing.T) {
 	}
 	defer stopProcess(t, cliCmd)
 
-	_ = waitForSessionWithLogs(t, serverURL, token, 20*time.Second, &cliBuf, &serverBuf)
+	_ = waitForSessionWithLogs(t, serverURL, token, &cliBuf, &serverBuf)
 
 	sock := connectUserSocket(t, serverURL, token)
 	defer sock.Close()
@@ -616,7 +616,7 @@ func TestACPFlowWithAwait(t *testing.T) {
 	}
 	defer stopProcess(t, serverCmd)
 
-	if err := waitForPort(port, 20*time.Second); err != nil {
+	if err := waitForPort(port); err != nil {
 		t.Fatalf("server not ready: %v\nlogs:\n%s", err, serverBuf.String())
 	}
 
@@ -656,7 +656,7 @@ func TestACPFlowWithAwait(t *testing.T) {
 	}
 	defer stopProcess(t, cliCmd)
 
-	sessionID := waitForSessionWithLogs(t, serverURL, token, 20*time.Second, &cliBuf, &serverBuf)
+	sessionID := waitForSessionWithLogs(t, serverURL, token, &cliBuf, &serverBuf)
 	dataKey := waitForSessionDataEncryptionKey(t, serverURL, token, sessionID, masterSecret, 10*time.Second)
 
 	userSock := connectUserSocket(t, serverURL, token)
@@ -748,8 +748,10 @@ func pickFreePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-func waitForPort(port int, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+const waitTimeout = 20 * time.Second
+
+func waitForPort(port int) error {
+	deadline := time.Now().Add(waitTimeout)
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
 		if err == nil {
@@ -787,7 +789,7 @@ func startServerAndCLI(t *testing.T) *testEnv {
 		t.Fatalf("start server: %v", err)
 	}
 
-	if err := waitForPort(port, 20*time.Second); err != nil {
+	if err := waitForPort(port); err != nil {
 		stopProcess(t, serverCmd)
 		t.Fatalf("server not ready: %v\nlogs:\n%s", err, serverBuf.String())
 	}
@@ -835,7 +837,7 @@ func startServerAndCLI(t *testing.T) *testEnv {
 		t.Fatalf("start cli: %v", err)
 	}
 
-	sessionID := waitForSessionWithLogs(t, serverURL, token, 20*time.Second, cliBuf, serverBuf)
+	sessionID := waitForSessionWithLogs(t, serverURL, token, cliBuf, serverBuf)
 
 	env := &testEnv{
 		serverURL:  serverURL,
@@ -992,7 +994,7 @@ func waitForSession(t *testing.T, serverURL, token string, timeout time.Duration
 	return ""
 }
 
-func waitForSessionWithLogs(t *testing.T, serverURL, token string, timeout time.Duration, cliBuf, serverBuf *bytes.Buffer) string {
+func waitForSessionWithLogs(t *testing.T, serverURL, token string, cliBuf, serverBuf *bytes.Buffer) string {
 	t.Helper()
 
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -1004,7 +1006,7 @@ func waitForSessionWithLogs(t *testing.T, serverURL, token string, timeout time.
 		Sessions []session `json:"sessions"`
 	}
 
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(waitTimeout)
 	for time.Now().Before(deadline) {
 		req, err := http.NewRequest("GET", serverURL+"/v1/sessions", nil)
 		if err != nil {
@@ -1476,42 +1478,6 @@ func waitForEphemeralType(t *testing.T, updateCh <-chan map[string]interface{}, 
 	}
 }
 
-func getInt64(value interface{}) int64 {
-	switch v := value.(type) {
-	case int64:
-		return v
-	case int:
-		return int64(v)
-	case float64:
-		return int64(v)
-	default:
-		return 0
-	}
-}
-
-func waitForRPCMethod(t *testing.T, sock *socket.Socket, method, params string, timeout time.Duration) map[string]interface{} {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		resp, err := emitAckMaybe(sock, "rpc-call", map[string]interface{}{
-			"method": method,
-			"params": params,
-		}, 20*time.Second)
-		if err != nil {
-			t.Fatalf("%v", err)
-		}
-		if ok, _ := resp["ok"].(bool); ok {
-			return resp
-		}
-		if errMsg, _ := resp["error"].(string); errMsg != "" && errMsg != "RPC method not available" {
-			return resp
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	t.Fatalf("rpc method not available: %s", method)
-	return nil
-}
-
 func waitForRPCMethodWithLogs(t *testing.T, sock *socket.Socket, method, params string, timeout time.Duration, cliBuf, serverBuf *bytes.Buffer) map[string]interface{} {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -1592,19 +1558,6 @@ func waitForUpdateType(t *testing.T, updateCh <-chan map[string]interface{}, upd
 			}
 		case <-deadline:
 			t.Fatalf("timeout waiting for update type %s", updateType)
-		}
-	}
-}
-
-func waitForUpdate(t *testing.T, updateCh <-chan map[string]interface{}) map[string]interface{} {
-	t.Helper()
-	deadline := time.After(10 * time.Second)
-	for {
-		select {
-		case update := <-updateCh:
-			return update
-		case <-deadline:
-			t.Fatal("timeout waiting for update")
 		}
 	}
 }

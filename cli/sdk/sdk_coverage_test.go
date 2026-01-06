@@ -194,8 +194,7 @@ func TestConnectWithoutTokenErrors(t *testing.T) {
 }
 
 type disconnectListener struct {
-	ch     chan string
-	reason string
+	ch chan string
 }
 
 func (d *disconnectListener) OnConnected()                 {}

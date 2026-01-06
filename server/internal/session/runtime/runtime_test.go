@@ -83,7 +83,7 @@ func TestManager_EnqueueMessage_SerializesPerSession(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(n)
 	for i := 0; i < n; i++ {
-		go func(i int) {
+		go func(_ int) {
 			defer wg.Done()
 			mgr.EnqueueMessage(context.Background(), "u1", "s1", "cipher", nil, "")
 		}(i)

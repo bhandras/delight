@@ -548,31 +548,6 @@ func (m *Manager) createTerminal() error {
 	return nil
 }
 
-// handleMessage handles incoming messages from the server (from mobile app)
-// handleMessage routes inbound websocket messages to the appropriate handler.
-func (m *Manager) handleMessage(data map[string]interface{}) {
-	if m.debug {
-		logger.Tracef("Received message from server: %+v", data)
-	}
-
-	wire.DumpToTestdata("session_message_event", data)
-
-	cipher, localID, ok, err := wire.ExtractMessageCipher(data)
-	if err != nil {
-		if m.debug {
-			logger.Debugf("Message parse error: %v", err)
-		}
-		return
-	}
-	if !ok || cipher == "" {
-		if m.debug {
-			logger.Debugf("Message has no usable ciphertext payload")
-		}
-		return
-	}
-	m.handleEncryptedUserMessage(cipher, localID)
-}
-
 // handleEncryptedUserMessage decrypts, parses, and routes an inbound user message.
 func (m *Manager) handleEncryptedUserMessage(cipher string, localID string) {
 

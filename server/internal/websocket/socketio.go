@@ -187,32 +187,6 @@ func (s *SocketIOServer) EmitEphemeralToUser(userID string, payload any) {
 	s.emitEphemeralToUser(userID, payload, "")
 }
 
-func getFirstMap(data []any) (map[string]any, bool) {
-	if len(data) == 0 {
-		return nil, false
-	}
-	payload, ok := data[0].(map[string]any)
-	return payload, ok
-}
-
-func getFirstMapWithAck(data []any) (map[string]any, func(...any)) {
-	var ack func(...any)
-	if len(data) == 0 {
-		return nil, nil
-	}
-	if cb, ok := data[len(data)-1].(func(...any)); ok {
-		ack = cb
-		data = data[:len(data)-1]
-	} else if cb, ok := data[len(data)-1].(socket.Ack); ok {
-		ack = func(args ...any) {
-			cb(args, nil)
-		}
-		data = data[:len(data)-1]
-	}
-	payload, _ := getFirstMap(data)
-	return payload, ack
-}
-
 func getFirstAnyWithAck(data []any) (any, func(...any)) {
 	var ack func(...any)
 	if len(data) == 0 {
@@ -239,79 +213,6 @@ func shouldDebugRPC() bool {
 	}
 	return strings.EqualFold(os.Getenv("DELIGHT_DEBUG_RPC"), "true") ||
 		strings.EqualFold(os.Getenv("DELIGHT_DEBUG_RPC"), "1")
-}
-
-func getString(payload map[string]any, key string) string {
-	if payload == nil {
-		return ""
-	}
-	if v, ok := payload[key].(string); ok {
-		return v
-	}
-	return ""
-}
-
-func getOptionalString(payload map[string]any, key string) *string {
-	if payload == nil {
-		return nil
-	}
-	if v, ok := payload[key]; ok {
-		if v == nil {
-			return nil
-		}
-		if s, ok := v.(string); ok {
-			return &s
-		}
-	}
-	return nil
-}
-
-func getInt64(payload map[string]any, key string) int64 {
-	if payload == nil {
-		return 0
-	}
-	switch v := payload[key].(type) {
-	case int64:
-		return v
-	case int:
-		return int64(v)
-	case float64:
-		return int64(v)
-	case float32:
-		return int64(v)
-	case json.Number:
-		i, _ := v.Int64()
-		return i
-	default:
-		return 0
-	}
-}
-
-func getBool(payload map[string]any, key string) bool {
-	if payload == nil {
-		return false
-	}
-	if v, ok := payload[key].(bool); ok {
-		return v
-	}
-	return false
-}
-
-func boolToInt64(value bool) int64 {
-	if value {
-		return 1
-	}
-	return 0
-}
-
-func getMap(payload map[string]any, key string) map[string]any {
-	if payload == nil {
-		return nil
-	}
-	if v, ok := payload[key].(map[string]any); ok {
-		return v
-	}
-	return nil
 }
 
 // getSocketData retrieves socket metadata by socket ID

@@ -107,7 +107,7 @@ func (r *Runtime) handleEngineEvent(ev agentengine.Event, emit func(framework.In
 			nowMs = time.Now().UnixMilli()
 		}
 		if mode == ModeRemote {
-			r.printRemoteUIEventIfApplicable(v, nowMs)
+			r.printRemoteUIEventIfApplicable(v)
 		}
 		emit(evEngineUIEvent{
 			Gen:           gen,

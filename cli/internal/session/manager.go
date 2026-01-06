@@ -41,7 +41,6 @@ type Manager struct {
 	terminalStateVer      int64
 	disableTerminalSocket bool
 	metadata              *types.Metadata
-	metaVersion           int64
 	terminalMetadata      *types.TerminalMetadata
 	terminalState         *types.DaemonState
 	debug                 bool

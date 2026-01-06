@@ -1,8 +1,6 @@
 package session
 
 import (
-	"time"
-
 	"github.com/bhandras/delight/cli/internal/session/runtime"
 )
 
@@ -43,25 +41,5 @@ func (m *Manager) handleRuntimeCommand(cmd runtime.Command) {
 	switch c := cmd.(type) {
 	case runtime.EmitActivityCommand:
 		m.broadcastThinking(c.Thinking)
-	}
-}
-
-func (m *Manager) setThinking(thinking bool) {
-	if m.thinking == thinking {
-		return
-	}
-	m.thinking = thinking
-
-	if m.rt == nil {
-		m.broadcastThinking(thinking)
-		return
-	}
-
-	if !m.rt.Post(runtime.SetThinkingEvent{
-		Thinking: thinking,
-		AtMs:     time.Now().UnixMilli(),
-	}) {
-		// Best-effort fallback if the runtime queue is full or stopping.
-		m.broadcastThinking(thinking)
 	}
 }

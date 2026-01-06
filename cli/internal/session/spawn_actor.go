@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -72,23 +71,17 @@ type evChildStarted struct {
 	Directory string
 }
 
-func (evChildStarted) isSpawnActorInput() {}
-
 type evChildStartFailed struct {
 	framework.InputBase
 	ReqID int64
 	Err   error
 }
 
-func (evChildStartFailed) isSpawnActorInput() {}
-
 type evChildStopped struct {
 	framework.InputBase
 	ReqID int64
 	Err   error
 }
-
-func (evChildStopped) isSpawnActorInput() {}
 
 type effStartChild struct {
 	framework.EffectBase
@@ -97,29 +90,21 @@ type effStartChild struct {
 	Agent     string
 }
 
-func (effStartChild) isSpawnActorEffect() {}
-
 type effStopChild struct {
 	framework.EffectBase
 	ReqID     int64
 	SessionID string
 }
 
-func (effStopChild) isSpawnActorEffect() {}
-
 type effRestoreChildren struct {
 	framework.EffectBase
 	ReqID int64
 }
 
-func (effRestoreChildren) isSpawnActorEffect() {}
-
 type effShutdownChildren struct {
 	framework.EffectBase
 	ReqID int64
 }
-
-func (effShutdownChildren) isSpawnActorEffect() {}
 
 func reduceSpawnActor(state spawnActorState, input framework.Input) (spawnActorState, []framework.Effect) {
 	switch in := input.(type) {
@@ -501,38 +486,6 @@ func (m *Manager) initSpawnActor() {
 		rt,
 	)
 	m.spawnActor.Start()
-}
-
-func (m *Manager) spawnChildSession(directory string, agent string) (string, error) {
-	if m.spawnActor == nil {
-		return "", errors.New("spawn actor not initialized")
-	}
-	reply := make(chan spawnResult, 1)
-	if !m.spawnActor.Enqueue(cmdSpawnChild{Directory: directory, Agent: agent, Reply: reply}) {
-		return "", fmt.Errorf("failed to schedule spawn")
-	}
-	select {
-	case <-m.stopCh:
-		return "", fmt.Errorf("session closed")
-	case res := <-reply:
-		return res.SessionID, res.Err
-	}
-}
-
-func (m *Manager) stopChildSession(sessionID string) error {
-	if m.spawnActor == nil {
-		return errors.New("spawn actor not initialized")
-	}
-	reply := make(chan spawnResult, 1)
-	if !m.spawnActor.Enqueue(cmdStopChild{SessionID: sessionID, Reply: reply}) {
-		return fmt.Errorf("failed to schedule stop")
-	}
-	select {
-	case <-m.stopCh:
-		return fmt.Errorf("session closed")
-	case res := <-reply:
-		return res.Err
-	}
 }
 
 func (m *Manager) restoreSpawnedSessions() error {

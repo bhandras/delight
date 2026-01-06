@@ -595,7 +595,7 @@ func TestReduceDebouncedPersistence_CoalescesToLatest(t *testing.T) {
 func TestStepHelper(t *testing.T) {
 	t.Parallel()
 
-	reducer := func(s int, in actor.Input) (int, []actor.Effect) { return s + 1, nil }
+	reducer := func(s int, _ actor.Input) (int, []actor.Effect) { return s + 1, nil }
 	next, _ := actor.Step(41, testEvent{n: 1}, func(state int, input actor.Input) (int, []actor.Effect) {
 		return reducer(state, input)
 	})
