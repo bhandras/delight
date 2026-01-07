@@ -15,6 +15,7 @@ import (
 
 	"github.com/bhandras/delight/cli/internal/agentengine"
 	"github.com/bhandras/delight/cli/pkg/types"
+	"github.com/bhandras/delight/shared/logger"
 )
 
 // codexExecEvent is a JSONL event emitted by `codex exec --json`.
@@ -46,6 +47,13 @@ func (e *Engine) runCodexExecTurn(ctx context.Context, spec codexExecTurnSpec) e
 	cmd, stdout, stderr, err := buildCodexExecCommand(ctx, spec)
 	if err != nil {
 		return err
+	}
+
+	e.setRemoteThinking(true, time.Now().UnixMilli())
+	defer e.setRemoteThinking(false, time.Now().UnixMilli())
+
+	if e.debug {
+		logger.Debugf("codex exec: %s", strings.Join(cmd.Args, " "))
 	}
 
 	e.mu.Lock()
@@ -170,10 +178,6 @@ func (e *Engine) handleCodexExecEvent(ev codexExecEvent) {
 
 	case "turn.started":
 		e.startRemoteTurn()
-		e.setRemoteThinking(true, time.Now().UnixMilli())
-
-	case "turn.completed":
-		e.setRemoteThinking(false, time.Now().UnixMilli())
 
 	case "item.started":
 		if ev.Item == nil {

@@ -28,6 +28,12 @@ const (
 )
 
 const (
+	// defaultRemoteModel is the Codex model we select when no explicit model is
+	// configured. This keeps behavior stable across Codex config changes.
+	defaultRemoteModel = "gpt-5.2-codex"
+)
+
+const (
 	// rolloutDiscoveryTimeout bounds how long we wait for Codex to create a rollout file.
 	rolloutDiscoveryTimeout = 8 * time.Second
 	// rolloutDiscoveryPollInterval bounds how often we poll for a new rollout file.
@@ -182,9 +188,14 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 	model := e.remoteModel
 	reasoningEffort := e.remoteReasoningEffort
 	resumeToken := e.remoteResumeToken
+	busy := e.remoteExecCmd != nil
 	e.mu.Unlock()
 	if !enabled {
 		return fmt.Errorf("codex remote mode not active")
+	}
+	if busy {
+		e.emitRemoteAssistantError("Codex is still working on the previous request. Press Stop to abort, then retry.")
+		return nil
 	}
 
 	turnCtx, cancel := context.WithCancel(ctx)
@@ -207,6 +218,9 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 
 	permissionMode = normalizePermissionMode(permissionMode)
 	model = strings.TrimSpace(model)
+	if model == "" {
+		model = defaultRemoteModel
+	}
 	reasoningEffort = strings.TrimSpace(reasoningEffort)
 
 	sandbox := sandboxPolicy(permissionMode)
@@ -298,7 +312,11 @@ func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSp
 	e.mu.Lock()
 	e.remoteEnabled = true
 	e.remotePermissionMode = normalizePermissionMode(spec.Config.PermissionMode)
-	e.remoteModel = strings.TrimSpace(spec.Config.Model)
+	model := strings.TrimSpace(spec.Config.Model)
+	if model == "" {
+		model = defaultRemoteModel
+	}
+	e.remoteModel = model
 	e.remoteReasoningEffort = strings.TrimSpace(spec.Config.ReasoningEffort)
 
 	e.remoteResumeToken = ""
