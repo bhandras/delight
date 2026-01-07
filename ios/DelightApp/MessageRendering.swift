@@ -1,5 +1,6 @@
 import SwiftUI
 import MarkdownUI
+import UIKit
 
 /// MessageBubble renders a single chat message.
 ///
@@ -230,17 +231,50 @@ private struct CodeBlockView: View {
     let content: String
     let fontSize: CGFloat
 
+    /// Preview limits keep large code/tool outputs from forcing expensive text
+    /// layout work while scrolling the transcript.
+    enum PreviewLimits {
+        /// maxInlineLines is the maximum number of lines we render inline
+        /// before collapsing the code block behind a "Show full" affordance.
+        static let maxInlineLines: Int = 80
+
+        /// maxInlineCharacters is the maximum number of characters we render
+        /// inline before collapsing the code block behind a "Show full"
+        /// affordance.
+        static let maxInlineCharacters: Int = 6_000
+    }
+
+    @State private var isShowingFull = false
+
     var body: some View {
         let codeFontSize = CGFloat(TerminalAppearance.codeFontSize(for: Double(fontSize)))
+        let preview = codePreview(content, maxLines: PreviewLimits.maxInlineLines, maxChars: PreviewLimits.maxInlineCharacters)
         VStack(alignment: .leading, spacing: 8) {
             if let language, !language.isEmpty {
                 Text(language)
                     .font(.system(size: max(codeFontSize - 3, 10), weight: .semibold, design: .monospaced))
                     .foregroundColor(Theme.accent)
             }
-            Text(content)
+            Text(preview.text)
                 .font(.system(size: codeFontSize, weight: .regular, design: .monospaced))
                 .foregroundColor(Theme.codeText)
+
+            if preview.isTruncated {
+                HStack(spacing: 10) {
+                    Button("Show full") {
+                        isShowingFull = true
+                    }
+                    .font(.system(size: max(codeFontSize - 2, 12), weight: .semibold))
+                    .foregroundColor(Theme.accent)
+
+                    Button("Copy") {
+                        UIPasteboard.general.string = content
+                    }
+                    .font(.system(size: max(codeFontSize - 2, 12), weight: .semibold))
+                    .foregroundColor(Theme.accent)
+                }
+                .padding(.top, 2)
+            }
         }
         .padding(12)
         .background(Theme.codeBackground)
@@ -249,6 +283,94 @@ private struct CodeBlockView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Theme.codeBorder, lineWidth: 1)
         )
+        .sheet(isPresented: $isShowingFull) {
+            NavigationStack {
+                CodeTextView(
+                    text: content,
+                    fontSize: codeFontSize,
+                    textColor: UIColor(Theme.codeText),
+                    backgroundColor: UIColor(Theme.codeBackground)
+                )
+                .navigationTitle(language ?? "Code")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Copy") {
+                            UIPasteboard.general.string = content
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct CodePreview {
+    let text: String
+    let isTruncated: Bool
+}
+
+/// codePreview truncates large preformatted blocks so the transcript can keep
+/// scrolling smoothly even when verbose tool outputs are present.
+private func codePreview(_ content: String, maxLines: Int, maxChars: Int) -> CodePreview {
+    let normalized = content.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+    // Cap by lines first (at most maxLines+1 splits), then cap by characters.
+    let lines = normalized.split(separator: "\n", maxSplits: maxLines, omittingEmptySubsequences: false)
+    let isOverLines = lines.count > maxLines
+    let limitedText: String
+    if isOverLines {
+        limitedText = lines.prefix(maxLines).joined(separator: "\n")
+    } else {
+        limitedText = normalized
+    }
+
+    if limitedText.count > maxChars {
+        let idx = limitedText.index(limitedText.startIndex, offsetBy: maxChars)
+        return CodePreview(text: String(limitedText[..<idx]) + "\n…", isTruncated: true)
+    }
+
+    if isOverLines {
+        return CodePreview(text: limitedText + "\n…", isTruncated: true)
+    }
+
+    return CodePreview(text: limitedText, isTruncated: false)
+}
+
+/// CodeTextView is a UIKit-backed text view used for large tool/code outputs.
+///
+/// Using UITextView here avoids heavy SwiftUI text layout work for very large
+/// preformatted blocks while still supporting selection and copy.
+private struct CodeTextView: UIViewRepresentable {
+    let text: String
+    let fontSize: CGFloat
+    let textColor: UIColor
+    let backgroundColor: UIColor
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.alwaysBounceVertical = true
+        view.backgroundColor = backgroundColor
+        view.textContainerInset = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        view.textContainer.lineFragmentPadding = 0
+        view.keyboardDismissMode = .interactive
+        view.showsVerticalScrollIndicator = true
+        view.showsHorizontalScrollIndicator = true
+        view.text = text
+        view.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        view.textColor = textColor
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return view
+    }
+
+    func updateUIView(_ uiView: UITextView, context: Context) {
+        if uiView.text != text {
+            uiView.text = text
+        }
+        uiView.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        uiView.textColor = textColor
+        uiView.backgroundColor = backgroundColor
     }
 }
 
@@ -256,24 +378,36 @@ private struct ToolChipView: View {
     let summary: ToolCallSummary
     let fontSize: CGFloat
 
+    /// Layout holds sizing constants for tool/thinking chips in the transcript.
+    enum Layout {
+        /// blockVerticalPadding separates chips from surrounding message rows.
+        ///
+        /// This is intentionally outside the chip background so it reads like
+        /// spacing between messages rather than extra padding inside the chip.
+        static let blockVerticalPadding: CGFloat = 4
+    }
+
     var body: some View {
         let chipFontSize = CGFloat(TerminalAppearance.chipFontSize(for: Double(fontSize)))
-        if summary.icon == "sparkles" {
-            ActivityChip(text: summary.title, fontSize: chipFontSize)
-        } else {
-            HStack(spacing: 6) {
-                Image(systemName: summary.icon)
-                    .font(.system(size: chipFontSize, weight: .semibold))
-                Text(summary.title)
-                    .font(.custom("AvenirNext-Medium", size: chipFontSize))
-                    .lineLimit(1)
+        Group {
+            if summary.icon == "sparkles" {
+                ActivityChip(text: summary.title, fontSize: chipFontSize)
+            } else {
+                HStack(spacing: 6) {
+                    Image(systemName: summary.icon)
+                        .font(.system(size: chipFontSize, weight: .semibold))
+                    Text(summary.title)
+                        .font(.custom("AvenirNext-Medium", size: chipFontSize))
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Theme.toolChipBackground)
+                .foregroundColor(Theme.toolChipText)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Theme.toolChipBackground)
-            .foregroundColor(Theme.toolChipText)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
+        .padding(.vertical, Layout.blockVerticalPadding)
     }
 }
 

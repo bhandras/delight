@@ -71,6 +71,157 @@ final class SDKBridgeTests: XCTestCase {
         waitForExpectations(timeout: 1.0)
     }
 
+    func testSessionUIUpdateOfflineClearsThinkingOverride() {
+        let model = HarnessViewModel()
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 1,
+                active: true,
+                activeAt: nil,
+                title: "agent",
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: SessionUIState(
+                    state: "remote",
+                    connected: true,
+                    active: true,
+                    controlledByUser: false,
+                    switching: false,
+                    transition: "",
+                    canTakeControl: false,
+                    canSend: true
+                ),
+                thinking: false
+            )
+        ]
+
+        model.handleActivityUpdate("{\"type\":\"activity\",\"id\":\"s1\",\"thinking\":true}")
+        let update = """
+        {"body":{"t":"session-ui","sid":"s1","ui":{"state":"offline","connected":false,"active":false,"controlledByUser":true,"switching":false,"transition":"","canTakeControl":false,"canSend":false}}}
+        """
+
+        let expectation = expectation(description: "offline clears thinking")
+        model.onUpdate(nil, updateJSON: update)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertFalse(model.isThinking(sessionID: "s1"))
+            XCTAssertEqual(model.sessions.first?.uiState?.state, "offline")
+            XCTAssertEqual(model.sessions.first?.thinking, false)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
+
+    func testParseSessionsOfflineClearsThinkingOverride() {
+        let model = HarnessViewModel()
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 1,
+                active: true,
+                activeAt: nil,
+                title: "agent",
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: nil,
+                thinking: false
+            )
+        ]
+
+        model.handleActivityUpdate("{\"type\":\"activity\",\"id\":\"s1\",\"thinking\":true}")
+        let sessionsJSON = """
+        {"sessions":[{"id":"s1","updatedAt":1,"active":true,"activeAt":1,"metadata":"{\\"agent\\":\\"codex\\",\\"path\\":\\"/work/project\\",\\"host\\":\\"m2.local\\"}","ui":{"state":"offline","connected":false,"active":false,"controlledByUser":true,"switching":false,"transition":"","canTakeControl":false,"canSend":false}}]}
+        """
+
+        let expectation = expectation(description: "parse sessions clears thinking")
+        model.parseSessions(sessionsJSON)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertFalse(model.isThinking(sessionID: "s1"))
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
+
+    func testSessionUIUpdateConnectedFalseClearsThinkingOverride() {
+        let model = HarnessViewModel()
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 1,
+                active: true,
+                activeAt: nil,
+                title: "agent",
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: SessionUIState(
+                    state: "remote",
+                    connected: true,
+                    active: true,
+                    controlledByUser: false,
+                    switching: false,
+                    transition: "",
+                    canTakeControl: false,
+                    canSend: true
+                ),
+                thinking: false
+            )
+        ]
+
+        model.handleActivityUpdate("{\"type\":\"activity\",\"id\":\"s1\",\"thinking\":true}")
+        let update = """
+        {"body":{"t":"session-ui","sid":"s1","ui":{"state":"remote","connected":false,"active":false,"controlledByUser":true,"switching":false,"transition":"","canTakeControl":false,"canSend":false}}}
+        """
+
+        let expectation = expectation(description: "connected=false clears thinking")
+        model.onUpdate(nil, updateJSON: update)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertFalse(model.isThinking(sessionID: "s1"))
+            XCTAssertEqual(model.sessions.first?.uiState?.state, "remote")
+            XCTAssertEqual(model.sessions.first?.uiState?.connected, false)
+            XCTAssertEqual(model.sessions.first?.thinking, false)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
+
+    func testParseSessionsConnectedFalseClearsThinkingOverride() {
+        let model = HarnessViewModel()
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 1,
+                active: true,
+                activeAt: nil,
+                title: "agent",
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: nil,
+                thinking: false
+            )
+        ]
+
+        model.handleActivityUpdate("{\"type\":\"activity\",\"id\":\"s1\",\"thinking\":true}")
+        let sessionsJSON = """
+        {"sessions":[{"id":"s1","updatedAt":1,"active":true,"activeAt":1,"metadata":"{\\"agent\\":\\"codex\\",\\"path\\":\\"/work/project\\",\\"host\\":\\"m2.local\\"}","ui":{"state":"remote","connected":false,"active":false,"controlledByUser":true,"switching":false,"transition":"","canTakeControl":false,"canSend":false}}]}
+        """
+
+        let expectation = expectation(description: "parse sessions clears thinking")
+        model.parseSessions(sessionsJSON)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertFalse(model.isThinking(sessionID: "s1"))
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
+
     func testParseTerminalsSetsMetadata() {
         let model = HarnessViewModel()
         let json = """

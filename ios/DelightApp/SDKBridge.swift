@@ -292,6 +292,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var sessions: [SessionSummary] = []
     @Published var messages: [MessageItem] = []
     @Published var hasMoreHistory: Bool = false
+    @Published var isLoadingLatest: Bool = false
     @Published var isLoadingHistory: Bool = false
     @Published var scrollRequest: ScrollRequest?
     @Published var terminals: [TerminalInfo] = []
@@ -365,6 +366,28 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private var messagesFetchGeneration: Int = 0
     private var scheduledSessionRefresh: DispatchWorkItem?
     private var lastSessionRefreshAt: Date = .distantPast
+
+    private struct TranscriptCache {
+        let messages: [MessageItem]
+        let hasMoreHistory: Bool
+        let oldestLoadedSeq: Int64?
+    }
+
+    private var transcriptCacheBySessionID: [String: TranscriptCache] = [:]
+
+    /// transcriptDecodeQueue runs JSON decoding and message merging off the
+    /// SDK call queue so UI work doesn't get stuck behind Go RPC calls (and
+    /// vice versa).
+    private let transcriptDecodeQueue = DispatchQueue(
+        label: "com.bhandras.delight.harness.transcriptDecodeQueue",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
+
+    /// decodeTranscriptAsync schedules JSON decoding work off the main thread.
+    private func decodeTranscriptAsync(_ work: @escaping () -> Void) {
+        transcriptDecodeQueue.async(execute: work)
+    }
 
     // Calls into the gomobile-generated SDK must be serialized and must never be made
     // synchronously from inside a Go→Swift callback (e.g. `onUpdate`).
@@ -1135,9 +1158,18 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         sessionID = id
         selectedMetadata = sessions.first(where: { $0.id == id })?.metadata
         messagesFetchGeneration += 1
-        messages = []
-        hasMoreHistory = false
-        oldestLoadedSeq = nil
+        isLoadingLatest = true
+        isLoadingHistory = false
+
+        if let cached = transcriptCacheBySessionID[id] {
+            messages = cached.messages
+            hasMoreHistory = cached.hasMoreHistory
+            oldestLoadedSeq = cached.oldestLoadedSeq
+        } else {
+            messages = []
+            hasMoreHistory = false
+            oldestLoadedSeq = nil
+        }
         isLoadingHistory = false
         fetchLatestMessages(reset: true)
     }
@@ -1167,6 +1199,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             let serverURLSnapshot = self.serverURL
             let tokenSnapshot = self.token
             let masterKeySnapshot = self.masterKey
+            self.isLoadingLatest = true
 
             self.sdkCallAsync {
                 do {
@@ -1182,14 +1215,29 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     )
                     guard let json = self.stringFromBuffer(responseBuf) else {
                         self.log("Get messages error: unable to decode response")
+                        DispatchQueue.main.async {
+                            guard self.sessionID == requestedSessionID else { return }
+                            guard self.messagesFetchGeneration == generation else { return }
+                            self.isLoadingLatest = false
+                    }
                         return
                     }
+                    self.decodeTranscriptAsync {
+                        self.applyMessagesResponse(
+                            json,
+                            reset: reset,
+                            scrollToBottom: true,
+                            expectedSessionID: requestedSessionID,
+                            expectedGeneration: generation,
+                            clearLoadingLatest: true
+                        )
+                    }
+                } catch {
                     DispatchQueue.main.async {
                         guard self.sessionID == requestedSessionID else { return }
                         guard self.messagesFetchGeneration == generation else { return }
-                        self.applyMessagesResponse(json, reset: reset, scrollToBottom: true)
+                        self.isLoadingLatest = false
                     }
-                } catch {
                     self.log("Get messages error: \(error)")
                 }
             }
@@ -1218,19 +1266,15 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     }
                     return
                 }
-                DispatchQueue.main.async {
-                    guard self.sessionID == requestedSessionID else {
-                        self.isLoadingHistory = false
-                        return
-                    }
-                    guard self.messagesFetchGeneration == generation else {
-                        // A transcript reset happened while this history page was in flight.
-                        // Drop the stale result to avoid scroll position glitches.
-                        self.isLoadingHistory = false
-                        return
-                    }
-                    self.applyMessagesResponse(json, reset: false, scrollToBottom: false)
-                    self.isLoadingHistory = false
+                self.decodeTranscriptAsync {
+                    self.applyMessagesResponse(
+                        json,
+                        reset: false,
+                        scrollToBottom: false,
+                        expectedSessionID: requestedSessionID,
+                        expectedGeneration: generation,
+                        clearLoadingHistory: true
+                    )
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -1403,6 +1447,19 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     uiState: ui,
                     thinking: prev.thinking
                 )
+            }
+
+            // If the session goes offline, we may never receive a "thinking end"
+            // UI event. Clear the override to avoid showing stale vibing state.
+            if self.isUIOffline(ui) {
+                self.thinkingOverrides[sessionID] = false
+                if let index = self.sessions.firstIndex(where: { $0.id == sessionID }) {
+                    self.sessions[index] = self.sessions[index].updatingActivity(
+                        active: nil,
+                        activeAt: nil,
+                        thinking: false
+                    )
+                }
             }
         }
         return true
@@ -2063,6 +2120,18 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             }
             self.sessions = parsedSessions
 
+            // Drop stale thinking overrides for sessions that no longer exist, and
+            // proactively clear thinking for sessions that are offline. Offline
+            // sessions may never emit a "thinking end" UI event, so without this
+            // the UI can show stuck "vibing" state.
+            let currentIDs = Set(parsedSessions.map { $0.id })
+            self.thinkingOverrides = Dictionary(
+                uniqueKeysWithValues: self.thinkingOverrides.filter { currentIDs.contains($0.key) }
+            )
+            for session in parsedSessions where self.isUIOffline(session.uiState) {
+                self.thinkingOverrides[session.id] = false
+            }
+
             // Hydrate pending permission prompts from durable agent state.
             let now = Int64(Date().timeIntervalSince1970 * 1000)
             for session in parsedSessions {
@@ -2210,10 +2279,21 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         _ json: String,
         reset: Bool,
         scrollToBottom: Bool,
-        anchorID: String? = nil
+        anchorID: String? = nil,
+        expectedSessionID: String? = nil,
+        expectedGeneration: Int? = nil,
+        clearLoadingLatest: Bool = false,
+        clearLoadingHistory: Bool = false
     ) {
         let page = decodeMessagesPage(json)
         DispatchQueue.main.async {
+            if let expectedSessionID {
+                guard self.sessionID == expectedSessionID else { return }
+            }
+            if let expectedGeneration {
+                guard self.messagesFetchGeneration == expectedGeneration else { return }
+            }
+
             if !page.uiEvents.isEmpty {
                 for (key, payload) in page.uiEvents {
                     self.uiEventsByKey[key] = payload
@@ -2228,10 +2308,25 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             self.oldestLoadedSeq = self.messages.compactMap(\.seq).min()
             self.hasMoreHistory = page.hasMore
 
+            if !self.sessionID.isEmpty {
+                self.transcriptCacheBySessionID[self.sessionID] = TranscriptCache(
+                    messages: self.messages,
+                    hasMoreHistory: self.hasMoreHistory,
+                    oldestLoadedSeq: self.oldestLoadedSeq
+                )
+            }
+
             if scrollToBottom, !self.messages.isEmpty {
                 self.scrollRequest = ScrollRequest(target: .bottom)
             } else if let anchorID {
                 self.scrollRequest = ScrollRequest(target: .message(id: anchorID, anchor: .top))
+            }
+
+            if clearLoadingLatest {
+                self.isLoadingLatest = false
+            }
+            if clearLoadingHistory {
+                self.isLoadingHistory = false
             }
         }
     }
@@ -2843,6 +2938,23 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 )
                 self.sessions[index] = updated
             }
+        }
+    }
+
+    /// isUIOffline returns true when the provided UI state indicates the session
+    /// cannot be interacted with from the phone (e.g. the CLI/terminal is offline).
+    ///
+    /// This is intentionally conservative: if the SDK says the session isn't
+    /// connected, treat it as offline for the purposes of clearing ephemeral
+    /// thinking/activity state.
+    private func isUIOffline(_ ui: SessionUIState?) -> Bool {
+        guard let ui else { return true }
+        if !ui.connected { return true }
+        switch ui.state {
+        case "offline", "disconnected":
+            return true
+        default:
+            return false
         }
     }
 

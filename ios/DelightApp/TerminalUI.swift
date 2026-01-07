@@ -201,28 +201,22 @@ struct TerminalDetailView: View {
                 if uiState == "local" {
                     ControlStatusBanner(model: model, session: currentSession)
                 }
-                TerminalMessagesView(
+                TerminalTranscriptCollectionView(
                     messages: model.messages,
                     hasMoreHistory: model.hasMoreHistory,
                     isLoadingHistory: model.isLoadingHistory,
+                    isLoadingLatest: model.isLoadingLatest,
                     onLoadOlder: { model.fetchOlderMessages() },
                     onDoubleTap: {
-                        // Double-tap: refresh and jump to the newest message.
-                        // Trigger a local scroll immediately (even if offline), then
-                        // refresh from the server which will request another scroll-to-bottom
-                        // once the latest page lands.
+                        // Double-tap: jump to the newest message.
                         model.scrollRequest = ScrollRequest(target: .bottom)
-                        model.fetchMessages()
                     },
                     scrollRequest: model.scrollRequest,
                     onConsumeScrollRequest: { model.scrollRequest = nil },
                     fontSize: CGFloat(model.terminalFontSize)
                 )
-                // Force a transcript re-host when font size changes so the
-                // underlying UITableView + hosted SwiftUI views are rebuilt.
-                // This avoids stale layout when toggling appearance settings.
-                .id("transcript-\(currentSession.id)-\(Int(model.terminalFontSize))")
-                .contentShape(Rectangle())
+                // Re-host on font size changes to keep the transcript layout stable.
+                .id("collection-transcript-\(currentSession.id)-\(Int(model.terminalFontSize))")
                 TerminalAgentConfigControls(model: model, session: currentSession, isEnabled: isPhoneControlled)
                     .background(Theme.cardBackground)
                 MessageComposer(model: model, isEnabled: isComposerEnabled, placeholder: placeholder)
@@ -340,14 +334,15 @@ private struct TerminalAgentConfigControls: View {
 
     var body: some View {
         let settings = model.agentEngineSettings[session.id]
-        let isOnline = (session.uiState?.connected ?? false) && ((session.uiState?.state ?? "") != "offline")
+        let ui = session.uiState
+        let isOnline = (ui?.connected ?? false) && ((ui?.state ?? "") != "offline") && ((ui?.state ?? "") != "disconnected")
         let vibe: String? = {
-            if !isEnabled {
-                return "take control"
-            }
             // If the CLI goes offline, hide the activity chip entirely. Otherwise,
             // stale "thinking" state can linger visually after disconnects.
             if !isOnline { return nil }
+            if !isEnabled {
+                return "take control"
+            }
             if session.agentState?.hasPendingRequests == true {
                 return "permission required"
             }

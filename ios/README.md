@@ -16,6 +16,8 @@ make ios-run
 This builds the Go SDK (`DelightSDK.xcframework`), boots a simulator if needed,
 installs the app, and launches it.
 
+Delight currently targets iOS 18+.
+
 ## Build SDK (Manual)
 
 ```bash
