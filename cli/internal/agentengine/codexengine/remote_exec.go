@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -122,7 +123,11 @@ func (e *Engine) consumeCodexExecJSON(ctx context.Context, r io.Reader) error {
 
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
-			if err == io.EOF {
+			// `codex exec --json` is a short-lived process. When it exits (or is
+			// aborted), the stdout pipe can close while we're blocked in ReadBytes.
+			// Treat this as a normal end-of-stream so remote mode doesn't surface
+			// spurious "file already closed" errors to the user.
+			if errors.Is(err, io.EOF) || isPipeClosedError(err) {
 				return nil
 			}
 			return err
@@ -138,6 +143,15 @@ func (e *Engine) consumeCodexExecJSON(ctx context.Context, r io.Reader) error {
 		}
 		e.handleCodexExecEvent(ev)
 	}
+}
+
+func isPipeClosedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "file already closed") ||
+		strings.Contains(msg, "use of closed file")
 }
 
 // handleCodexExecEvent translates a single codex exec JSON event into common
