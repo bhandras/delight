@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -81,7 +80,7 @@ func run() error {
 		if err := cfg.EnsureHome(); err != nil {
 			return err
 		}
-		logClose, err := setupLogging(".")
+		logClose, err := setupLogging(cfg.DelightHome)
 		if err != nil {
 			return err
 		}
@@ -132,7 +131,11 @@ func run() error {
 			if len(agentRunArgs) == 0 || strings.TrimSpace(agentRunArgs[0]) == "" {
 				return fmt.Errorf("usage: delight %s resume <session_id>", cmd)
 			}
-			return resumeAgent(cmd, strings.TrimSpace(agentRunArgs[0]))
+			// Resume should always start in remote mode so the phone can control
+			// the session immediately after reattaching.
+			cfg.ResumeToken = strings.TrimSpace(agentRunArgs[0])
+			cfg.StartingMode = "remote"
+			return runSession(cfg)
 		default:
 			return fmt.Errorf("unknown command: %s %s", cmd, subCmd)
 		}
@@ -243,66 +246,6 @@ func listSessions(cfg *config.Config) error {
 
 	_, _ = io.Copy(os.Stdout, &out)
 	return nil
-}
-
-// resumeAgent runs the upstream agent CLI in "resume" mode for the given token.
-func resumeAgent(agent string, resumeToken string) error {
-	resumeToken = strings.TrimSpace(resumeToken)
-	if resumeToken == "" {
-		return fmt.Errorf("resume token is empty")
-	}
-	switch agent {
-	case "codex":
-		cmd := exec.Command("codex", "resume", resumeToken)
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
-	case "claude":
-		launcher, err := resolveClaudeLauncher()
-		if err != nil {
-			return err
-		}
-		cmd := exec.Command("node", launcher, "--resume", resumeToken)
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
-	default:
-		return fmt.Errorf("resume not supported for agent %q", agent)
-	}
-}
-
-// resolveClaudeLauncher locates scripts/claude_launcher.cjs relative to the
-// Delight binary or the current working directory.
-func resolveClaudeLauncher() (string, error) {
-	execPath, err := os.Executable()
-	if err != nil {
-		execPath = ""
-	}
-	execDir := ""
-	if execPath != "" {
-		execDir = filepath.Dir(execPath)
-	}
-
-	candidates := []string{
-		filepath.Join(execDir, "scripts", "claude_launcher.cjs"),
-		filepath.Join(execDir, "..", "scripts", "claude_launcher.cjs"),
-		filepath.Join("scripts", "claude_launcher.cjs"),
-	}
-	for _, candidate := range candidates {
-		if candidate == "" {
-			continue
-		}
-		if _, err := os.Stat(candidate); err == nil {
-			abs, err := filepath.Abs(candidate)
-			if err != nil {
-				return candidate, nil
-			}
-			return abs, nil
-		}
-	}
-	return "", fmt.Errorf("claude_launcher.cjs not found (tried %v)", candidates)
 }
 
 // setupLogging configures log output to a file under workDir.
@@ -493,15 +436,15 @@ func runSession(cfg *config.Config) error {
 	if err != nil {
 		workDir = "."
 	}
-	logClose, err := setupLogging(workDir)
+	if err := cfg.EnsureHome(); err != nil {
+		return err
+	}
+
+	logClose, err := setupLogging(cfg.DelightHome)
 	if err != nil {
 		return err
 	}
 	defer logClose()
-
-	if err := cfg.EnsureHome(); err != nil {
-		return err
-	}
 
 	// Require explicit authentication. `delight run` should never prompt for QR
 	// pairing implicitly so it's safe to invoke in scripts.

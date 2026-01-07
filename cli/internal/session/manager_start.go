@@ -306,12 +306,14 @@ func (m *Manager) initSessionActor() {
 	}
 	if m.cfg != nil {
 		agentState.Model = strings.TrimSpace(m.cfg.Model)
+		agentState.ResumeToken = strings.TrimSpace(m.cfg.ResumeToken)
 	}
 	stateData, _ := json.Marshal(agentState)
 	initial := sessionactor.State{
 		SessionID:             m.sessionID,
 		FSM:                   sessionactor.StateClosed,
 		Mode:                  sessionactor.ModeLocal,
+		ResumeToken:           strings.TrimSpace(agentState.ResumeToken),
 		AgentState:            agentState,
 		AgentStateJSON:        string(stateData),
 		PersistRetryRemaining: 0,
@@ -374,6 +376,7 @@ func (m *Manager) createSession() error {
 	}
 	if m.cfg != nil {
 		initialAgentState.Model = strings.TrimSpace(m.cfg.Model)
+		initialAgentState.ResumeToken = strings.TrimSpace(m.cfg.ResumeToken)
 	}
 	agentStateJSON, err := json.Marshal(initialAgentState)
 	if err != nil {

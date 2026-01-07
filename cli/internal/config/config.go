@@ -27,6 +27,13 @@ type Config struct {
 	// This value is engine-specific; an empty string means "use engine default".
 	Model string
 
+	// ResumeToken is an engine-specific resume identifier used to resume an
+	// existing upstream conversation when starting a session.
+	//
+	// This is intended to be populated by explicit `delight <agent> resume <id>`
+	// commands and is not exposed as a CLI flag.
+	ResumeToken string
+
 	// Debug enables verbose logging.
 	Debug bool
 	// SocketIOTransport selects the Socket.IO transport mode ("websocket" or "polling").
@@ -83,6 +90,7 @@ func Default() (*Config, error) {
 		DelightHome:       delightHome,
 		AccessKey:         filepath.Join(delightHome, "access.key"),
 		Model:             "",
+		ResumeToken:       "",
 		Debug:             false,
 		SocketIOTransport: defaultSocketIOTransport,
 		Agent:             defaultAgent,

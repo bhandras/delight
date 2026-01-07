@@ -91,22 +91,23 @@ type Client struct {
 	debug   bool
 	workDir string
 
-	mu       sync.Mutex
-	nextID   int64
-	pending  map[int64]chan rpcResponse
-	inFlight int64
-	stopCh   chan struct{}
-	closed   bool
-	started  bool
-	event    EventHandler
-	perm     PermissionHandler
-	session  string
-	convo    string
-	rollout  string
-	shutdown bool
-	waitOnce sync.Once
-	waitErr  error
-	waitCh   chan struct{}
+	mu          sync.Mutex
+	nextID      int64
+	pending     map[int64]chan rpcResponse
+	inFlight    int64
+	stopCh      chan struct{}
+	closed      bool
+	started     bool
+	event       EventHandler
+	perm        PermissionHandler
+	session     string
+	convo       string
+	forcedConvo string
+	rollout     string
+	shutdown    bool
+	waitOnce    sync.Once
+	waitErr     error
+	waitCh      chan struct{}
 }
 
 type rpcResponse struct {
@@ -229,6 +230,10 @@ func (c *Client) initialize() error {
 }
 
 func (c *Client) StartSession(ctx context.Context, config SessionConfig) (map[string]interface{}, error) {
+	c.mu.Lock()
+	c.forcedConvo = ""
+	c.mu.Unlock()
+
 	args := map[string]interface{}{
 		"prompt": config.Prompt,
 	}
@@ -264,33 +269,119 @@ func (c *Client) StartSession(ctx context.Context, config SessionConfig) (map[st
 	if err != nil {
 		return nil, err
 	}
+	if err := toolCallError(resp); err != nil {
+		return nil, err
+	}
 	c.extractIdentifiers(resp)
 	return resp, nil
 }
 
-func (c *Client) ContinueSession(ctx context.Context, prompt string) (map[string]interface{}, error) {
-	if c.session == "" {
-		return nil, errors.New("codex session not initialized")
-	}
-	conversation := c.convo
-	if conversation == "" {
-		conversation = c.session
-		c.convo = conversation
+// ResumeConversation loads a persisted Codex conversation into the MCP server.
+//
+// The `codex-reply` tool-call can only continue conversations that are already
+// present in the server's in-memory thread manager. For stored sessions (e.g.
+// those resumed via `codex resume <id>`), callers must invoke resumeConversation
+// first so the thread is available for subsequent codex-reply turns.
+func (c *Client) ResumeConversation(ctx context.Context, conversationID string) (map[string]interface{}, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return nil, errors.New("conversation id is required")
 	}
 
-	resp, err := c.call(ctx, "tools/call", map[string]interface{}{
-		"name": "codex-reply",
-		"arguments": map[string]interface{}{
-			"sessionId":      c.session,
-			"conversationId": conversation,
-			"prompt":         prompt,
-		},
+	resp, err := c.call(ctx, "resumeConversation", map[string]interface{}{
+		"conversationId": conversationID,
 	}, 0)
 	if err != nil {
 		return nil, err
 	}
 	c.extractIdentifiers(resp)
+
+	c.mu.Lock()
+	if c.forcedConvo != "" && c.convo == c.forcedConvo {
+		c.forcedConvo = ""
+	}
+	c.mu.Unlock()
+
 	return resp, nil
+}
+
+func (c *Client) ContinueSession(ctx context.Context, prompt string) (map[string]interface{}, error) {
+	c.mu.Lock()
+	sessionID := c.session
+	conversation := c.convo
+	forced := c.forcedConvo
+	if forced != "" {
+		conversation = forced
+	}
+	c.mu.Unlock()
+	if conversation == "" {
+		return nil, errors.New("codex conversation not initialized")
+	}
+
+	args := map[string]interface{}{
+		"conversationId": conversation,
+		"prompt":         prompt,
+	}
+	// Some Codex MCP builds require sessionId, others accept conversationId only.
+	// Include it when available but do not force it to match the conversation id.
+	if sessionID != "" {
+		args["sessionId"] = sessionID
+	}
+
+	resp, err := c.call(ctx, "tools/call", map[string]interface{}{
+		"name":      "codex-reply",
+		"arguments": args,
+	}, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := toolCallError(resp); err != nil {
+		return nil, err
+	}
+	c.extractIdentifiers(resp)
+	c.mu.Lock()
+	if c.forcedConvo != "" && c.convo == conversation {
+		c.forcedConvo = ""
+	}
+	c.mu.Unlock()
+	return resp, nil
+}
+
+// toolCallError returns an error when the Codex MCP server returns an isError
+// tool response, surfacing the human-readable text message when available.
+func toolCallError(resp map[string]interface{}) error {
+	if resp == nil {
+		return nil
+	}
+	isErr, ok := resp["isError"]
+	if !ok {
+		isErr = resp["is_error"]
+	}
+	if flag, ok := isErr.(bool); !ok || !flag {
+		return nil
+	}
+
+	// Best effort: join any text blocks.
+	var parts []string
+	if raw, ok := resp["content"]; ok {
+		if blocks, ok := raw.([]interface{}); ok {
+			for _, block := range blocks {
+				m, ok := block.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if text, ok := m["text"].(string); ok && strings.TrimSpace(text) != "" {
+					parts = append(parts, strings.TrimSpace(text))
+				}
+			}
+		}
+	}
+
+	msg := strings.Join(parts, "\n")
+	if strings.TrimSpace(msg) == "" {
+		msg = "codex tool call failed"
+	}
+	return errors.New(msg)
 }
 
 // CancelInFlight requests that Codex interrupt the currently running tool call.
@@ -347,6 +438,7 @@ func (c *Client) ClearSession() {
 	defer c.mu.Unlock()
 	c.session = ""
 	c.convo = ""
+	c.forcedConvo = ""
 	c.rollout = ""
 }
 
@@ -389,6 +481,32 @@ func (c *Client) RolloutPath() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.rollout
+}
+
+// SetResumeToken forces the client to treat resumeToken as the active Codex
+// conversation identifier.
+//
+// This is used when switching into remote mode with a known resume token so the
+// next prompt uses the `codex-reply` tool instead of starting a fresh session.
+func (c *Client) SetResumeToken(resumeToken string) {
+	if c == nil {
+		return
+	}
+	resumeToken = strings.TrimSpace(resumeToken)
+	if resumeToken == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Codex uses separate identifiers for:
+	// - the MCP session (sessionId)
+	// - the upstream conversation (conversationId)
+	//
+	// The value returned by `codex resume <id>` maps to the conversation id.
+	// Do not overwrite the MCP session id, otherwise Codex may resume the wrong
+	// conversation (often the last active one).
+	c.forcedConvo = resumeToken
+	c.convo = resumeToken
 }
 
 // Shutdown requests that the Codex MCP server process exit gracefully.
@@ -952,7 +1070,12 @@ func (c *Client) updateIdentifiersFromMap(values map[string]interface{}) {
 	}
 	if conversationID != "" {
 		c.mu.Lock()
-		c.convo = conversationID
+		// If the client was explicitly primed with a resume token, ignore unrelated
+		// background events that reference a different conversation (Codex can emit
+		// metadata for the last active session on startup).
+		if c.forcedConvo == "" || c.forcedConvo == conversationID {
+			c.convo = conversationID
+		}
 		c.mu.Unlock()
 	}
 	if rolloutPath != "" {

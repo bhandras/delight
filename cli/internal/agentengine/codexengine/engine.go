@@ -263,6 +263,27 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 			e.setRemoteThinking(false, time.Now().UnixMilli())
 			return err
 		}
+
+		// Codex MCP (`codex mcp-server`) cannot load arbitrary persisted sessions
+		// into its in-memory thread manager. When we attempt to "resume" a remote
+		// conversation by id and Codex does not have that thread loaded, it returns
+		// a tool-call error like "Session not found for conversation_id ...".
+		//
+		// Treat this as a recoverable condition: keep remote mode running, surface
+		// an explicit assistant message, and allow the next send to start a fresh
+		// remote conversation instead of forcing a fallback into local mode.
+		if isCodexRemoteSessionNotFound(err) {
+			e.mu.Lock()
+			e.remoteSessionActive = false
+			e.mu.Unlock()
+			e.setRemoteThinking(false, time.Now().UnixMilli())
+			e.emitRemoteAssistantError(fmt.Sprintf(
+				"Remote resume is not available for this Codex session.\n\n%v\n\nSwitch to local mode to continue the existing Codex conversation, or send again to start a new remote conversation.",
+				err,
+			))
+			return nil
+		}
+
 		e.mu.Lock()
 		e.remoteSessionActive = false
 		e.mu.Unlock()
@@ -341,7 +362,10 @@ func (e *Engine) Wait() error {
 
 // startRemote starts (or reuses) the Codex MCP client.
 func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSpec) error {
-	_ = ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resumeToken := strings.TrimSpace(spec.ResumeToken)
 
 	e.mu.Lock()
 	client := e.remoteClient
@@ -380,6 +404,18 @@ func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSp
 		e.remoteModel = strings.TrimSpace(spec.Config.Model)
 		e.remoteReasoningEffort = strings.TrimSpace(spec.Config.ReasoningEffort)
 		e.mu.Unlock()
+	}
+
+	// If we have a resume token (typically captured from a prior local or remote
+	// run), prime the MCP client so the first remote turn continues the existing
+	// conversation via `codex-reply` instead of starting a fresh session.
+	if resumeToken != "" {
+		client.SetResumeToken(resumeToken)
+
+		e.mu.Lock()
+		e.remoteSessionActive = true
+		e.mu.Unlock()
+		e.emitIdentifiers()
 	}
 
 	e.mu.Lock()
@@ -1093,6 +1129,34 @@ func (e *Engine) tryEmit(ev agentengine.Event) {
 	case e.events <- ev:
 	default:
 	}
+}
+
+// isCodexRemoteSessionNotFound reports whether Codex rejected a codex-reply
+// request because the referenced conversation is not loaded in the MCP server.
+func isCodexRemoteSessionNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Session not found for conversation_id")
+}
+
+// emitRemoteAssistantError publishes a best-effort assistant message for remote
+// mode describing an error condition.
+func (e *Engine) emitRemoteAssistantError(text string) {
+	if e == nil {
+		return
+	}
+	raw, err := marshalAssistantTextRecord(text, "unknown")
+	if err != nil {
+		return
+	}
+	e.tryEmit(agentengine.EvOutboundRecord{
+		Mode:    agentengine.ModeRemote,
+		LocalID: types.NewCUID(),
+		Payload: raw,
+		AtMs:    time.Now().UnixMilli(),
+	})
 }
 
 // marshalAssistantTextRecord encodes a plain assistant text message as an AgentOutputRecord.

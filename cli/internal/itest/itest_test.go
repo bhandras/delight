@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -46,16 +47,21 @@ func TestFakeAgentRoundTrip(t *testing.T) {
 	serverURL := fmt.Sprintf("http://localhost:%d", port)
 
 	tempDir := t.TempDir()
+	binsDir := filepath.Join(tempDir, "bins")
+	if err := os.MkdirAll(binsDir, 0o700); err != nil {
+		t.Fatalf("mkdir bins: %v", err)
+	}
 	dbPath := filepath.Join(tempDir, "delight.db")
 	secret := fmt.Sprintf("itest-secret-%d", time.Now().UnixNano())
 
-	serverCmd := exec.Command("go", "run", "./cmd/server")
-	serverCmd.Dir = filepath.Join(root, "server")
+	serverPath := buildGoBinary(t, filepath.Join(root, "server"), filepath.Join(binsDir, "server"), "./cmd/server")
+	serverCmd := exec.Command(serverPath)
 	serverCmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
 		fmt.Sprintf("DELIGHT_MASTER_SECRET=%s", secret),
 		fmt.Sprintf("DATABASE_PATH=%s", dbPath),
 	)
+	withProcessGroup(serverCmd)
 
 	var serverBuf bytes.Buffer
 	serverCmd.Stdout = &serverBuf
@@ -83,10 +89,9 @@ func TestFakeAgentRoundTrip(t *testing.T) {
 		t.Fatalf("write access.key: %v", err)
 	}
 
+	cliPath := buildGoBinary(t, filepath.Join(root, "cli"), filepath.Join(binsDir, "delight"), "./cmd/delight")
 	cliCmd := exec.Command(
-		"go",
-		"run",
-		"./cmd/delight",
+		cliPath,
 		"run",
 		"--server-url", serverURL,
 		"--home-dir", delightHome,
@@ -98,6 +103,7 @@ func TestFakeAgentRoundTrip(t *testing.T) {
 	var cliBuf bytes.Buffer
 	cliCmd.Stdout = &cliBuf
 	cliCmd.Stderr = &cliBuf
+	withProcessGroup(cliCmd)
 	if err := cliCmd.Start(); err != nil {
 		t.Fatalf("start cli: %v", err)
 	}
@@ -174,16 +180,21 @@ func TestArtifactSocketFlow(t *testing.T) {
 	serverURL := fmt.Sprintf("http://localhost:%d", port)
 
 	tempDir := t.TempDir()
+	binsDir := filepath.Join(tempDir, "bins")
+	if err := os.MkdirAll(binsDir, 0o700); err != nil {
+		t.Fatalf("mkdir bins: %v", err)
+	}
 	dbPath := filepath.Join(tempDir, "delight.db")
 	secret := fmt.Sprintf("itest-secret-%d", time.Now().UnixNano())
 
-	serverCmd := exec.Command("go", "run", "./cmd/server")
-	serverCmd.Dir = filepath.Join(root, "server")
+	serverPath := buildGoBinary(t, filepath.Join(root, "server"), filepath.Join(binsDir, "server"), "./cmd/server")
+	serverCmd := exec.Command(serverPath)
 	serverCmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
 		fmt.Sprintf("DELIGHT_MASTER_SECRET=%s", secret),
 		fmt.Sprintf("DATABASE_PATH=%s", dbPath),
 	)
+	withProcessGroup(serverCmd)
 
 	var serverBuf bytes.Buffer
 	serverCmd.Stdout = &serverBuf
@@ -277,16 +288,21 @@ func TestRPCRoundTrip(t *testing.T) {
 	serverURL := fmt.Sprintf("http://localhost:%d", port)
 
 	tempDir := t.TempDir()
+	binsDir := filepath.Join(tempDir, "bins")
+	if err := os.MkdirAll(binsDir, 0o700); err != nil {
+		t.Fatalf("mkdir bins: %v", err)
+	}
 	dbPath := filepath.Join(tempDir, "delight.db")
 	secret := fmt.Sprintf("itest-secret-%d", time.Now().UnixNano())
 
-	serverCmd := exec.Command("go", "run", "./cmd/server")
-	serverCmd.Dir = filepath.Join(root, "server")
+	serverPath := buildGoBinary(t, filepath.Join(root, "server"), filepath.Join(binsDir, "server"), "./cmd/server")
+	serverCmd := exec.Command(serverPath)
 	serverCmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
 		fmt.Sprintf("DELIGHT_MASTER_SECRET=%s", secret),
 		fmt.Sprintf("DATABASE_PATH=%s", dbPath),
 	)
+	withProcessGroup(serverCmd)
 
 	var serverBuf bytes.Buffer
 	serverCmd.Stdout = &serverBuf
@@ -313,10 +329,9 @@ func TestRPCRoundTrip(t *testing.T) {
 		t.Fatalf("write access.key: %v", err)
 	}
 
+	cliPath := buildGoBinary(t, filepath.Join(root, "cli"), filepath.Join(binsDir, "delight"), "./cmd/delight")
 	cliCmd := exec.Command(
-		"go",
-		"run",
-		"./cmd/delight",
+		cliPath,
 		"run",
 		"--server-url", serverURL,
 		"--home-dir", delightHome,
@@ -328,6 +343,7 @@ func TestRPCRoundTrip(t *testing.T) {
 	var cliBuf bytes.Buffer
 	cliCmd.Stdout = &cliBuf
 	cliCmd.Stderr = &cliBuf
+	withProcessGroup(cliCmd)
 	if err := cliCmd.Start(); err != nil {
 		t.Fatalf("start cli: %v", err)
 	}
@@ -373,16 +389,21 @@ func TestTerminalRPCRoundTrip(t *testing.T) {
 	serverURL := fmt.Sprintf("http://localhost:%d", port)
 
 	tempDir := t.TempDir()
+	binsDir := filepath.Join(tempDir, "bins")
+	if err := os.MkdirAll(binsDir, 0o700); err != nil {
+		t.Fatalf("mkdir bins: %v", err)
+	}
 	dbPath := filepath.Join(tempDir, "delight.db")
 	secret := fmt.Sprintf("itest-secret-%d", time.Now().UnixNano())
 
-	serverCmd := exec.Command("go", "run", "./cmd/server")
-	serverCmd.Dir = filepath.Join(root, "server")
+	serverPath := buildGoBinary(t, filepath.Join(root, "server"), filepath.Join(binsDir, "server"), "./cmd/server")
+	serverCmd := exec.Command(serverPath)
 	serverCmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
 		fmt.Sprintf("DELIGHT_MASTER_SECRET=%s", secret),
 		fmt.Sprintf("DATABASE_PATH=%s", dbPath),
 	)
+	withProcessGroup(serverCmd)
 
 	var serverBuf bytes.Buffer
 	serverCmd.Stdout = &serverBuf
@@ -409,10 +430,9 @@ func TestTerminalRPCRoundTrip(t *testing.T) {
 		t.Fatalf("write access.key: %v", err)
 	}
 
+	cliPath := buildGoBinary(t, filepath.Join(root, "cli"), filepath.Join(binsDir, "delight"), "./cmd/delight")
 	cliCmd := exec.Command(
-		"go",
-		"run",
-		"./cmd/delight",
+		cliPath,
 		"run",
 		"--server-url", serverURL,
 		"--home-dir", delightHome,
@@ -430,6 +450,7 @@ func TestTerminalRPCRoundTrip(t *testing.T) {
 	var cliBuf bytes.Buffer
 	cliCmd.Stdout = &cliBuf
 	cliCmd.Stderr = &cliBuf
+	withProcessGroup(cliCmd)
 	if err := cliCmd.Start(); err != nil {
 		t.Fatalf("start cli: %v", err)
 	}
@@ -597,16 +618,21 @@ func TestACPFlowWithAwait(t *testing.T) {
 	serverURL := fmt.Sprintf("http://localhost:%d", port)
 
 	tempDir := t.TempDir()
+	binsDir := filepath.Join(tempDir, "bins")
+	if err := os.MkdirAll(binsDir, 0o700); err != nil {
+		t.Fatalf("mkdir bins: %v", err)
+	}
 	dbPath := filepath.Join(tempDir, "delight.db")
 	secret := fmt.Sprintf("itest-secret-%d", time.Now().UnixNano())
 
-	serverCmd := exec.Command("go", "run", "./cmd/server")
-	serverCmd.Dir = filepath.Join(root, "server")
+	serverPath := buildGoBinary(t, filepath.Join(root, "server"), filepath.Join(binsDir, "server"), "./cmd/server")
+	serverCmd := exec.Command(serverPath)
 	serverCmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
 		fmt.Sprintf("DELIGHT_MASTER_SECRET=%s", secret),
 		fmt.Sprintf("DATABASE_PATH=%s", dbPath),
 	)
+	withProcessGroup(serverCmd)
 
 	var serverBuf bytes.Buffer
 	serverCmd.Stdout = &serverBuf
@@ -634,10 +660,9 @@ func TestACPFlowWithAwait(t *testing.T) {
 		t.Fatalf("write access.key: %v", err)
 	}
 
+	cliPath := buildGoBinary(t, filepath.Join(root, "cli"), filepath.Join(binsDir, "delight"), "./cmd/delight")
 	cliCmd := exec.Command(
-		"go",
-		"run",
-		"./cmd/delight",
+		cliPath,
 		"run",
 		"--server-url", serverURL,
 		"--home-dir", delightHome,
@@ -651,6 +676,7 @@ func TestACPFlowWithAwait(t *testing.T) {
 	var cliBuf bytes.Buffer
 	cliCmd.Stdout = &cliBuf
 	cliCmd.Stderr = &cliBuf
+	withProcessGroup(cliCmd)
 	if err := cliCmd.Start(); err != nil {
 		t.Fatalf("start cli: %v", err)
 	}
@@ -763,6 +789,51 @@ func waitForPort(port int) error {
 	return fmt.Errorf("port %d not ready", port)
 }
 
+// buildGoBinary compiles pkg within dir and writes the resulting binary to outPath.
+//
+// This is preferred over `go run` for itests because `go run` spawns a child
+// binary that can outlive the parent `go` process, leading to orphaned Delight
+// processes that keep reconnecting and spamming logs.
+func buildGoBinary(t *testing.T, dir string, outPath string, pkg string) string {
+	t.Helper()
+	cmd := exec.Command("go", "build", "-o", outPath, pkg)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go build %s: %v\n%s", pkg, err, string(out))
+	}
+	return outPath
+}
+
+// withProcessGroup configures cmd to run in its own process group (Unix only).
+//
+// This allows tests to terminate cmd and any subprocesses it spawns (e.g. agent
+// runners) by killing the process group.
+func withProcessGroup(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+}
+
+// processGroupID returns the process group id for proc on Unix, or 0 otherwise.
+func processGroupID(proc *os.Process) int {
+	if proc == nil {
+		return 0
+	}
+	if runtime.GOOS == "windows" {
+		return 0
+	}
+	pgid, err := syscall.Getpgid(proc.Pid)
+	if err != nil {
+		return 0
+	}
+	return pgid
+}
+
 func startServerAndCLI(t *testing.T) *testEnv {
 	t.Helper()
 
@@ -771,16 +842,21 @@ func startServerAndCLI(t *testing.T) *testEnv {
 	serverURL := fmt.Sprintf("http://localhost:%d", port)
 
 	tempDir := t.TempDir()
+	binsDir := filepath.Join(tempDir, "bins")
+	if err := os.MkdirAll(binsDir, 0o700); err != nil {
+		t.Fatalf("mkdir bins: %v", err)
+	}
 	dbPath := filepath.Join(tempDir, "delight.db")
 	secret := fmt.Sprintf("itest-secret-%d", time.Now().UnixNano())
 
-	serverCmd := exec.Command("go", "run", "./cmd/server")
-	serverCmd.Dir = filepath.Join(root, "server")
+	serverPath := buildGoBinary(t, filepath.Join(root, "server"), filepath.Join(binsDir, "server"), "./cmd/server")
+	serverCmd := exec.Command(serverPath)
 	serverCmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
 		fmt.Sprintf("DELIGHT_MASTER_SECRET=%s", secret),
 		fmt.Sprintf("DATABASE_PATH=%s", dbPath),
 	)
+	withProcessGroup(serverCmd)
 
 	serverBuf := &bytes.Buffer{}
 	serverCmd.Stdout = serverBuf
@@ -810,10 +886,9 @@ func startServerAndCLI(t *testing.T) *testEnv {
 		t.Fatalf("write access.key: %v", err)
 	}
 
+	cliPath := buildGoBinary(t, filepath.Join(root, "cli"), filepath.Join(binsDir, "delight"), "./cmd/delight")
 	cliCmd := exec.Command(
-		"go",
-		"run",
-		"./cmd/delight",
+		cliPath,
 		"run",
 		"--server-url", serverURL,
 		"--home-dir", delightHome,
@@ -832,6 +907,7 @@ func startServerAndCLI(t *testing.T) *testEnv {
 	cliBuf := &bytes.Buffer{}
 	cliCmd.Stdout = cliBuf
 	cliCmd.Stderr = cliBuf
+	withProcessGroup(cliCmd)
 	if err := cliCmd.Start(); err != nil {
 		stopProcess(t, serverCmd)
 		t.Fatalf("start cli: %v", err)
@@ -1407,7 +1483,11 @@ func stopProcess(t *testing.T, cmd *exec.Cmd) {
 	select {
 	case <-done:
 	case <-ctx.Done():
-		_ = cmd.Process.Kill()
+		if pgid := processGroupID(cmd.Process); pgid != 0 {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		} else {
+			_ = cmd.Process.Kill()
+		}
 	}
 }
 
