@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bhandras/delight/cli/internal/agentengine"
@@ -96,6 +97,9 @@ type Engine struct {
 	remoteTurnID          string
 	remoteThinkingSteps   []string
 	remoteWaitStarted     bool
+	remoteCancel          context.CancelFunc
+	remoteCancelID        int64
+	remoteCancelNextID    int64
 
 	localCmd               *exec.Cmd
 	localCancel            context.CancelFunc
@@ -181,6 +185,10 @@ func (e *Engine) Close(ctx context.Context) error {
 
 // SendUserMessage implements agentengine.AgentEngine.
 func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessage) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	e.mu.Lock()
 	client := e.remoteClient
 	active := e.remoteSessionActive
@@ -199,6 +207,22 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 			return err
 		}
 	}
+
+	turnCtx, cancel := context.WithCancel(ctx)
+	cancelID := atomic.AddInt64(&e.remoteCancelNextID, 1)
+	e.mu.Lock()
+	e.remoteCancel = cancel
+	e.remoteCancelID = cancelID
+	e.mu.Unlock()
+	defer func() {
+		cancel()
+		e.mu.Lock()
+		if e.remoteCancelID == cancelID {
+			e.remoteCancel = nil
+			e.remoteCancelID = 0
+		}
+		e.mu.Unlock()
+	}()
 
 	e.startRemoteTurn()
 	e.setRemoteThinking(true, time.Now().UnixMilli())
@@ -221,7 +245,7 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 	}
 
 	if !active {
-		if _, err := client.StartSession(ctx, cfg); err != nil {
+		if _, err := client.StartSession(turnCtx, cfg); err != nil {
 			e.setRemoteThinking(false, time.Now().UnixMilli())
 			return err
 		}
@@ -234,7 +258,11 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 		return nil
 	}
 
-	if _, err := client.ContinueSession(ctx, msg.Text); err != nil {
+	if _, err := client.ContinueSession(turnCtx, msg.Text); err != nil {
+		if errors.Is(err, context.Canceled) {
+			e.setRemoteThinking(false, time.Now().UnixMilli())
+			return err
+		}
 		e.mu.Lock()
 		e.remoteSessionActive = false
 		e.mu.Unlock()
@@ -247,8 +275,6 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 
 // Abort implements agentengine.AgentEngine.
 func (e *Engine) Abort(ctx context.Context) error {
-	// Codex MCP does not currently provide a standardized "abort turn" request.
-	// Best-effort: tear down the MCP server process and reset remote session state.
 	if e == nil {
 		return nil
 	}
@@ -256,13 +282,20 @@ func (e *Engine) Abort(ctx context.Context) error {
 	e.mu.Lock()
 	client := e.remoteClient
 	wasThinking := e.remoteThinking
-	e.remoteClient = nil
-	e.remoteSessionActive = false
+	cancel := e.remoteCancel
+	e.remoteCancel = nil
+	e.remoteCancelID = 0
 	e.remoteThinking = false
 	e.remoteTurnID = ""
 	e.remoteThinkingSteps = nil
 	e.remoteWaitStarted = false
 	e.mu.Unlock()
+
+	// First, unblock any in-flight SendUserMessage call immediately. This is
+	// independent of whether Codex honors the MCP cancellation notification.
+	if cancel != nil {
+		cancel()
+	}
 
 	if wasThinking {
 		e.tryEmit(agentengine.EvThinking{
@@ -276,17 +309,9 @@ func (e *Engine) Abort(ctx context.Context) error {
 		return nil
 	}
 
-	shutdownCtx := ctx
-	if shutdownCtx == nil {
-		shutdownCtx = context.Background()
-	}
-	if deadline, ok := shutdownCtx.Deadline(); !ok || time.Until(deadline) > remoteShutdownTimeout {
-		var cancel context.CancelFunc
-		shutdownCtx, cancel = context.WithTimeout(shutdownCtx, remoteShutdownTimeout)
-		defer cancel()
-	}
-	_ = client.Shutdown(shutdownCtx)
-	_ = client.Close()
+	// Best-effort: request that Codex interrupts the currently running tool call.
+	// This preserves remote session continuity (resume token) for future turns.
+	_ = client.CancelInFlight(ctx, "user abort")
 	return nil
 }
 

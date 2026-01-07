@@ -94,6 +94,7 @@ type Client struct {
 	mu       sync.Mutex
 	nextID   int64
 	pending  map[int64]chan rpcResponse
+	inFlight int64
 	stopCh   chan struct{}
 	closed   bool
 	started  bool
@@ -290,6 +291,55 @@ func (c *Client) ContinueSession(ctx context.Context, prompt string) (map[string
 	}
 	c.extractIdentifiers(resp)
 	return resp, nil
+}
+
+// CancelInFlight requests that Codex interrupt the currently running tool call.
+//
+// Codex MCP supports the `notifications/cancelled` notification, keyed by the
+// JSON-RPC request id. This is the preferred way to stop an in-flight turn
+// without tearing down the MCP process (which helps preserve resume tokens and
+// session continuity).
+//
+// This is best-effort: older Codex builds may ignore the notification.
+func (c *Client) CancelInFlight(ctx context.Context, reason string) error {
+	if c == nil {
+		return nil
+	}
+
+	c.mu.Lock()
+	requestID := c.inFlight
+	closed := c.closed
+	c.mu.Unlock()
+	if closed || requestID == 0 {
+		return nil
+	}
+
+	params := map[string]interface{}{
+		"requestId": requestID,
+	}
+	if strings.TrimSpace(reason) != "" {
+		params["reason"] = reason
+	}
+
+	cancelCtx := ctx
+	if cancelCtx == nil {
+		cancelCtx = context.Background()
+	}
+
+	// This is a notification: there is no response to wait for.
+	// We still apply a short timeout so CancelInFlight does not block shutdown.
+	cancelCtx, cancel := context.WithTimeout(cancelCtx, 500*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- c.notify("notifications/cancelled", params) }()
+
+	select {
+	case <-cancelCtx.Done():
+		return cancelCtx.Err()
+	case err := <-done:
+		return err
+	}
 }
 
 func (c *Client) ClearSession() {
@@ -771,6 +821,7 @@ func (c *Client) call(ctx context.Context, method string, params map[string]inte
 		return nil, ErrClientClosed
 	}
 	c.pending[id] = respCh
+	c.inFlight = id
 	c.mu.Unlock()
 
 	msg := rpcMessage{
@@ -782,6 +833,9 @@ func (c *Client) call(ctx context.Context, method string, params map[string]inte
 	if err := c.send(msg); err != nil {
 		c.mu.Lock()
 		delete(c.pending, id)
+		if c.inFlight == id {
+			c.inFlight = 0
+		}
 		c.mu.Unlock()
 		return nil, err
 	}
@@ -800,9 +854,17 @@ func (c *Client) call(ctx context.Context, method string, params map[string]inte
 		if ch := c.pending[id]; ch == respCh {
 			delete(c.pending, id)
 		}
+		if c.inFlight == id {
+			c.inFlight = 0
+		}
 		c.mu.Unlock()
 		return nil, ctx.Err()
 	case resp := <-respCh:
+		c.mu.Lock()
+		if c.inFlight == id {
+			c.inFlight = 0
+		}
+		c.mu.Unlock()
 		return resp.result, resp.err
 	}
 }
