@@ -222,7 +222,21 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 		spec.ResumeToken = resumeToken
 	}
 
-	return e.runCodexExecTurn(turnCtx, spec)
+	if err := e.runCodexExecTurn(turnCtx, spec); err != nil {
+		// Cancellation should still propagate so the runtime can stop waiting.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+
+		// Remote mode should remain available even if Codex fails to complete a
+		// single `codex exec` turn. Returning an error would cause the session FSM
+		// to treat the remote runner as exited and auto-switch into local mode,
+		// which is surprising for users driving the session from mobile.
+		e.setRemoteThinking(false, time.Now().UnixMilli())
+		e.emitRemoteAssistantError(fmt.Sprintf("Codex remote error: %v", err))
+		return nil
+	}
+	return nil
 }
 
 // Abort implements agentengine.AgentEngine.
