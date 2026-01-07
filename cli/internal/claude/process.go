@@ -69,9 +69,13 @@ func (p *Process) restoreTTYLocked() {
 	p.ttyFD = -1
 }
 
-// NewProcess creates a new Claude process wrapper with fd 3 tracking
-// Uses our launcher script to intercept UUID and fetch events
-func NewProcess(workDir string, debug bool) (*Process, error) {
+// NewProcess creates a new Claude process wrapper with fd 3 tracking.
+//
+// When resumeToken is non-empty, the underlying Claude Code CLI is started with
+// `--resume <resumeToken>` so local mode can continue an existing session.
+//
+// Uses our launcher script to intercept UUID and fetch events.
+func NewProcess(workDir string, resumeToken string, debug bool) (*Process, error) {
 	// Find launcher script
 	launcherPath, err := findLauncher()
 	if err != nil {
@@ -89,7 +93,12 @@ func NewProcess(workDir string, debug bool) (*Process, error) {
 	}
 
 	// Create command using our launcher script
-	cmd := exec.Command("node", launcherPath)
+	args := []string{launcherPath}
+	resumeToken = strings.TrimSpace(resumeToken)
+	if resumeToken != "" {
+		args = append(args, "--resume", resumeToken)
+	}
+	cmd := exec.Command("node", args...)
 	cmd.Dir = workDir
 
 	// Set up environment with NODE_PATH for module resolution

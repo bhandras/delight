@@ -376,7 +376,8 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 		return fmt.Errorf("missing workDir")
 	}
 
-	proc, err := claude.NewProcess(workDir, e.debug)
+	resumeToken := strings.TrimSpace(spec.ResumeToken)
+	proc, err := claude.NewProcess(workDir, resumeToken, e.debug)
 	if err != nil {
 		return err
 	}
