@@ -71,6 +71,12 @@ private struct SwitchControlResponse: Decodable {
     let result: Result?
 }
 
+/// AbortRPCResponse is the best-effort response schema for abort RPC calls.
+private struct AbortRPCResponse: Decodable {
+    let success: Bool?
+    let error: String?
+}
+
 /// RawUserMessageRecord is the schema used by the CLI to represent a user chat message.
 ///
 /// This is forwarded to the CLI via the Go SDK as `rawRecordJSON`.
@@ -353,6 +359,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     ///   Codex heuristics, optimistic send flow). This map keeps a stable
     ///   best-effort value independent of session list refreshes.
     private var thinkingOverrides: [String: Bool] = [:]
+    private var promptHistoryBySession: [String: PromptHistoryState] = [:]
     private var uiEventsByKey: [String: UIEventPayload] = [:]
     private var logLines: [String] = []
     private var pendingPublishedLogLine: String = ""
@@ -1306,6 +1313,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
 
         let outgoingText = messageText
+        recordPromptHistory(outgoingText, sessionID: sessionID)
         messageText = ""
         let localID = UUID().uuidString
 
@@ -1357,6 +1365,142 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             updateSessionThinking(false)
             log("Send error: \(error)")
         }
+    }
+
+    /// abortCurrentTurn requests the CLI abort the in-flight remote turn (best-effort).
+    ///
+    /// This maps to the session-scoped `sessionID:abort` RPC handler in the CLI.
+    func abortCurrentTurn(sessionID: String? = nil) {
+        let targetID = sessionID ?? self.sessionID
+        guard !targetID.isEmpty else {
+            log("Session ID required")
+            return
+        }
+
+        // Require explicit "Take Control" before aborting from phone.
+        if let session = sessions.first(where: { $0.id == targetID }) {
+            let ui = session.uiState
+            let controlledByDesktop = ui?.controlledByUser ?? (session.agentState?.controlledByUser ?? true)
+            if controlledByDesktop {
+                log("Desktop controls this session. Tap “Take Control” first.")
+                return
+            }
+        }
+
+        // Optimistically clear the thinking UI. If abort fails, normal activity
+        // updates will reassert the correct state.
+        updateSessionThinking(false, sessionID: targetID)
+
+        sdkCallAsync {
+            do {
+                let method = targetID + ":abort"
+                let paramsJSON = "{}"
+                let responseBuf = try self.sdkCallSync {
+                    try self.client.callRPCBuffer(method, paramsJSON: paramsJSON)
+                }
+                guard let responseJSON = self.stringFromBuffer(responseBuf) else {
+                    self.log("Abort error: unable to decode response")
+                    return
+                }
+                if let decoded = try? JSONCoding.decode(AbortRPCResponse.self, from: responseJSON),
+                   decoded.success != true,
+                   let error = decoded.error,
+                   !error.isEmpty {
+                    self.log("Abort error: \(error)")
+                    return
+                }
+                self.log("Abort requested")
+            } catch {
+                self.log("Abort error: \(error)")
+            }
+        }
+    }
+
+    /// hasPromptHistory returns true when the current session has at least one prompt.
+    func hasPromptHistory(sessionID: String? = nil) -> Bool {
+        let targetID = (sessionID ?? self.sessionID).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !targetID.isEmpty else { return false }
+        return !(promptHistoryBySession[targetID]?.entries.isEmpty ?? true)
+    }
+
+    /// stepPromptHistory moves the input text to older/newer entries like bash history.
+    ///
+    /// Direction:
+    /// - `-1`: older (up)
+    /// - `+1`: newer (down)
+    func stepPromptHistory(direction: Int, sessionID: String? = nil) {
+        let targetID = sessionID ?? self.sessionID
+        guard !targetID.isEmpty else { return }
+        guard direction != 0 else { return }
+
+        var state = promptHistoryBySession[targetID] ?? PromptHistoryState()
+        guard !state.entries.isEmpty else { return }
+
+        // First entry into history browsing: capture the current draft so we
+        // can restore it when the user returns to the "end" position.
+        if state.cursor == nil {
+            state.draft = messageText
+        }
+
+        if direction < 0 {
+            // Older.
+            if let cursor = state.cursor {
+                state.cursor = max(0, cursor - 1)
+            } else {
+                state.cursor = state.entries.count - 1
+            }
+        } else {
+            // Newer.
+            if let cursor = state.cursor {
+                let next = cursor + 1
+                if next >= state.entries.count {
+                    state.cursor = nil
+                } else {
+                    state.cursor = next
+                }
+            } else {
+                return
+            }
+        }
+
+        if let cursor = state.cursor {
+            messageText = state.entries[cursor]
+        } else {
+            messageText = state.draft ?? ""
+            state.draft = nil
+        }
+
+        promptHistoryBySession[targetID] = state
+    }
+
+    /// resetPromptHistoryCursor exits history browsing mode for the current session.
+    func resetPromptHistoryCursor(sessionID: String? = nil) {
+        let targetID = sessionID ?? self.sessionID
+        guard !targetID.isEmpty else { return }
+        var state = promptHistoryBySession[targetID] ?? PromptHistoryState()
+        state.cursor = nil
+        state.draft = nil
+        promptHistoryBySession[targetID] = state
+    }
+
+    /// PromptHistoryState stores per-session prompt history with a bash-like cursor.
+    private struct PromptHistoryState {
+        var entries: [String] = []
+        var cursor: Int? = nil
+        var draft: String? = nil
+    }
+
+    /// recordPromptHistory appends a sent prompt to the per-session history.
+    private func recordPromptHistory(_ text: String, sessionID: String) {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        var state = promptHistoryBySession[sessionID] ?? PromptHistoryState()
+        if state.entries.last != normalized {
+            state.entries.append(normalized)
+        }
+        state.cursor = nil
+        state.draft = nil
+        promptHistoryBySession[sessionID] = state
     }
 
     // MARK: - SdkListener

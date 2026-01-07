@@ -189,11 +189,15 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 	model := e.remoteModel
 	reasoningEffort := e.remoteReasoningEffort
 	e.mu.Unlock()
-	if client == nil {
-		return fmt.Errorf("codex remote client not started")
-	}
 	if !enabled {
 		return fmt.Errorf("codex remote mode not active")
+	}
+	if client == nil {
+		var err error
+		client, err = e.ensureRemoteClient()
+		if err != nil {
+			return err
+		}
 	}
 
 	e.startRemoteTurn()
@@ -243,8 +247,46 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 
 // Abort implements agentengine.AgentEngine.
 func (e *Engine) Abort(ctx context.Context) error {
-	_ = ctx
 	// Codex MCP does not currently provide a standardized "abort turn" request.
+	// Best-effort: tear down the MCP server process and reset remote session state.
+	if e == nil {
+		return nil
+	}
+
+	e.mu.Lock()
+	client := e.remoteClient
+	wasThinking := e.remoteThinking
+	e.remoteClient = nil
+	e.remoteSessionActive = false
+	e.remoteThinking = false
+	e.remoteTurnID = ""
+	e.remoteThinkingSteps = nil
+	e.remoteWaitStarted = false
+	e.mu.Unlock()
+
+	if wasThinking {
+		e.tryEmit(agentengine.EvThinking{
+			Mode:     agentengine.ModeRemote,
+			Thinking: false,
+			AtMs:     time.Now().UnixMilli(),
+		})
+	}
+
+	if client == nil {
+		return nil
+	}
+
+	shutdownCtx := ctx
+	if shutdownCtx == nil {
+		shutdownCtx = context.Background()
+	}
+	if deadline, ok := shutdownCtx.Deadline(); !ok || time.Until(deadline) > remoteShutdownTimeout {
+		var cancel context.CancelFunc
+		shutdownCtx, cancel = context.WithTimeout(shutdownCtx, remoteShutdownTimeout)
+		defer cancel()
+	}
+	_ = client.Shutdown(shutdownCtx)
+	_ = client.Close()
 	return nil
 }
 
@@ -327,6 +369,64 @@ func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSp
 
 	e.tryEmit(agentengine.EvReady{Mode: agentengine.ModeRemote})
 	return nil
+}
+
+// ensureRemoteClient returns an initialized Codex MCP client, starting one if
+// necessary.
+//
+// This is used to recover after a best-effort abort, which tears down the MCP
+// process so the user can continue with a fresh session while remaining in
+// remote mode.
+func (e *Engine) ensureRemoteClient() (*codex.Client, error) {
+	if e == nil {
+		return nil, fmt.Errorf("codex engine is nil")
+	}
+
+	e.mu.Lock()
+	client := e.remoteClient
+	workDir := e.workDir
+	debug := e.debug
+	requester := e.requester
+	e.mu.Unlock()
+
+	if client != nil {
+		return client, nil
+	}
+
+	client = codex.NewClient(workDir, debug)
+	client.SetEventHandler(func(event map[string]interface{}) {
+		e.handleMCPEvent(event)
+	})
+	client.SetPermissionHandler(func(requestID string, toolName string, input map[string]interface{}) (*codex.PermissionDecision, error) {
+		return e.handlePermission(requestID, toolName, input, requester)
+	})
+	if err := client.Start(); err != nil {
+		return nil, err
+	}
+
+	e.mu.Lock()
+	if e.remoteClient != nil {
+		existing := e.remoteClient
+		e.mu.Unlock()
+		_ = client.Close()
+		return existing, nil
+	}
+	e.remoteClient = client
+	e.remoteWaitStarted = false
+	e.mu.Unlock()
+
+	e.mu.Lock()
+	if e.remoteClient == client && !e.remoteWaitStarted {
+		e.remoteWaitStarted = true
+		go func(c *codex.Client) {
+			err := c.Wait()
+			e.tryEmit(agentengine.EvExited{Mode: agentengine.ModeRemote, Err: err})
+		}(client)
+	}
+	e.mu.Unlock()
+
+	e.tryEmit(agentengine.EvReady{Mode: agentengine.ModeRemote})
+	return client, nil
 }
 
 // Capabilities implements agentengine.AgentEngine.

@@ -884,7 +884,35 @@ private struct MessageComposer: View {
     let placeholder: String
 
     var body: some View {
+        let isThinking = model.isThinking(sessionID: model.sessionID)
+        let hasHistory = model.hasPromptHistory()
+
         HStack(spacing: 12) {
+            VStack(spacing: 6) {
+                Button {
+                    model.stepPromptHistory(direction: -1)
+                } label: {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Theme.mutedText)
+                        .frame(width: 30, height: 30)
+                        .background(Color(uiColor: .tertiarySystemBackground))
+                        .clipShape(Circle())
+                }
+                .disabled(!isEnabled || !hasHistory)
+
+                Button {
+                    model.stepPromptHistory(direction: 1)
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Theme.mutedText)
+                        .frame(width: 30, height: 30)
+                        .background(Color(uiColor: .tertiarySystemBackground))
+                        .clipShape(Circle())
+                }
+                .disabled(!isEnabled || !hasHistory)
+            }
             TextField(text: $model.messageText, axis: .vertical) {
                 Text(placeholder)
                     .foregroundColor(Color(uiColor: .secondaryLabel))
@@ -901,19 +929,34 @@ private struct MessageComposer: View {
                     .stroke(Color(uiColor: .separator).opacity(0.7), lineWidth: 1)
             )
             .disabled(!isEnabled)
-            Button {
-                model.sendMessage()
-                model.messageText = ""
-            } label: {
-                Image(systemName: "paperplane.fill")
-                    .font(.system(size: 16, weight: .bold))
-                    .padding(10)
-                    .background(Theme.accent)
-                    .foregroundColor(.white)
-                    .clipShape(Circle())
+
+            if isThinking {
+                Button {
+                    model.abortCurrentTurn()
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 16, weight: .bold))
+                        .padding(10)
+                        .background(Theme.warning)
+                        .foregroundColor(.white)
+                        .clipShape(Circle())
+                }
+                .disabled(!isEnabled || model.sessionID.isEmpty)
+            } else {
+                Button {
+                    model.sendMessage()
+                    model.messageText = ""
+                } label: {
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 16, weight: .bold))
+                        .padding(10)
+                        .background(Theme.accent)
+                        .foregroundColor(.white)
+                        .clipShape(Circle())
+                }
+                .disabled(!isEnabled || model.sessionID.isEmpty || model.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .opacity((!isEnabled || model.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ? 0.5 : 1.0)
             }
-            .disabled(!isEnabled || model.sessionID.isEmpty || model.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .opacity((!isEnabled || model.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ? 0.5 : 1.0)
         }
         .padding()
     }
