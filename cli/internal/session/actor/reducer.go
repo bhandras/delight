@@ -56,13 +56,24 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 		return reduceRunnerExited(state, in)
 	case evEngineSessionIdentified:
 		if in.Gen == 0 || in.Gen == state.RunnerGen {
-			state.ResumeToken = in.ResumeToken
-			// Preserve legacy ClaudeSessionID for bridging and best-effort resume.
-			state.ClaudeSessionID = in.ResumeToken
-			state.AgentState.ResumeToken = strings.TrimSpace(in.ResumeToken)
-			state = refreshAgentStateJSON(state)
-			state, effects := schedulePersistDebounced(state)
-			return state, effects
+			// Only let local-mode observations set ResumeToken when we don't
+			// already have one. This prevents local runners from overwriting a
+			// stable remote resume token with an engine-internal id from a
+			// different identifier domain (which would fork conversations when
+			// switching modes).
+			//
+			// Remote mode is authoritative because it represents the session the
+			// phone is controlling (and is also what the user typically wants to
+			// resume via CLI).
+			if in.Mode == ModeRemote || strings.TrimSpace(state.ResumeToken) == "" {
+				state.ResumeToken = in.ResumeToken
+				// Preserve legacy ClaudeSessionID for bridging and best-effort resume.
+				state.ClaudeSessionID = in.ResumeToken
+				state.AgentState.ResumeToken = strings.TrimSpace(in.ResumeToken)
+				state = refreshAgentStateJSON(state)
+				state, effects := schedulePersistDebounced(state)
+				return state, effects
+			}
 		}
 		return state, nil
 	case evEngineRolloutPath:

@@ -10,7 +10,7 @@ import (
 func TestReduceEngineSessionIdentifiedStoresResumeToken(t *testing.T) {
 	state := State{RunnerGen: 2}
 
-	next, effects := Reduce(state, evEngineSessionIdentified{Gen: 2, ResumeToken: "abc"})
+	next, effects := Reduce(state, evEngineSessionIdentified{Gen: 2, Mode: ModeRemote, ResumeToken: "abc"})
 	require.NotNil(t, effects)
 	require.NotEmpty(t, effects)
 	require.Equal(t, "abc", next.ResumeToken)

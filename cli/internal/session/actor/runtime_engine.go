@@ -139,8 +139,8 @@ func (r *Runtime) handleEngineEvent(ev agentengine.Event, emit func(framework.In
 		}
 		emit(evRunnerExited{Gen: gen, Mode: mode, Err: v.Err})
 	case agentengine.EvSessionIdentified:
-		gen, _ := r.engineGenForMode(v.Mode)
-		emit(evEngineSessionIdentified{Gen: gen, ResumeToken: v.ResumeToken})
+		gen, mode := r.engineGenForMode(v.Mode)
+		emit(evEngineSessionIdentified{Gen: gen, Mode: mode, ResumeToken: v.ResumeToken})
 	case agentengine.EvRolloutPath:
 		gen, _ := r.engineGenForMode(v.Mode)
 		emit(evEngineRolloutPath{Gen: gen, Path: v.Path})

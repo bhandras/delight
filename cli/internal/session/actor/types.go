@@ -366,6 +366,7 @@ func (evRunnerExited) isSessionEvent() {}
 type evEngineSessionIdentified struct {
 	actor.InputBase
 	Gen         int64
+	Mode        Mode
 	ResumeToken string
 }
 
