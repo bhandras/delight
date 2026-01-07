@@ -9,14 +9,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/bhandras/delight/cli/internal/agentengine"
-	"github.com/bhandras/delight/cli/internal/codex"
 	"github.com/bhandras/delight/cli/internal/codex/rollout"
 	"github.com/bhandras/delight/cli/pkg/types"
 	"github.com/bhandras/delight/shared/wire"
@@ -48,8 +46,8 @@ const (
 )
 
 const (
-	// remoteShutdownTimeout bounds how long we wait for the Codex MCP server to exit
-	// after requesting a shutdown when switching away from remote mode.
+	// remoteShutdownTimeout bounds how long we wait for an in-flight remote
+	// Codex exec process to exit when leaving remote mode.
 	remoteShutdownTimeout = 2 * time.Second
 
 	// localShutdownTimeout bounds how long we wait for the Codex local TUI to exit
@@ -58,25 +56,12 @@ const (
 )
 
 const (
-	// codexDecisionApproved is the Codex ReviewDecision string for approval.
-	codexDecisionApproved = "approved"
-	// codexDecisionDenied is the Codex ReviewDecision string for denial.
-	codexDecisionDenied = "denied"
-)
-
-const (
-	// configKeyPermissionMode is the meta key used by Delight to choose Codex permissions.
-	configKeyPermissionMode = "permissionMode"
-	// configKeyModel is the meta key used by Delight to choose the Codex model.
-	configKeyModel = "model"
-)
-
-const (
 	// rolloutRootRelative is the default relative directory containing Codex rollout JSONLs.
 	rolloutRootRelative = ".codex/sessions"
 )
 
-// Engine adapts Codex (MCP + rollout JSONL) to the AgentEngine interface.
+// Engine adapts Codex (local TUI + rollout JSONL, remote `codex exec --json`)
+// to the AgentEngine interface.
 type Engine struct {
 	mu sync.Mutex
 
@@ -87,19 +72,20 @@ type Engine struct {
 
 	events chan agentengine.Event
 
-	remoteClient          *codex.Client
 	remoteSessionActive   bool
 	remoteEnabled         bool
 	remotePermissionMode  string
 	remoteModel           string
 	remoteReasoningEffort string
+	remoteResumeToken     string
 	remoteThinking        bool
 	remoteTurnID          string
 	remoteThinkingSteps   []string
-	remoteWaitStarted     bool
 	remoteCancel          context.CancelFunc
 	remoteCancelID        int64
 	remoteCancelNextID    int64
+	remoteExecCmd         *exec.Cmd
+	remoteExecDone        chan error
 
 	localCmd               *exec.Cmd
 	localCancel            context.CancelFunc
@@ -190,22 +176,15 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 	}
 
 	e.mu.Lock()
-	client := e.remoteClient
 	active := e.remoteSessionActive
 	enabled := e.remoteEnabled
 	permissionMode := e.remotePermissionMode
 	model := e.remoteModel
 	reasoningEffort := e.remoteReasoningEffort
+	resumeToken := e.remoteResumeToken
 	e.mu.Unlock()
 	if !enabled {
 		return fmt.Errorf("codex remote mode not active")
-	}
-	if client == nil {
-		var err error
-		client, err = e.ensureRemoteClient()
-		if err != nil {
-			return err
-		}
 	}
 
 	turnCtx, cancel := context.WithCancel(ctx)
@@ -225,73 +204,25 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 	}()
 
 	e.startRemoteTurn()
-	e.setRemoteThinking(true, time.Now().UnixMilli())
 
 	permissionMode = normalizePermissionMode(permissionMode)
 	model = strings.TrimSpace(model)
 	reasoningEffort = strings.TrimSpace(reasoningEffort)
 
-	cfg := codex.SessionConfig{
-		Prompt:         msg.Text,
-		ApprovalPolicy: approvalPolicy(permissionMode),
-		Sandbox:        sandboxPolicy(permissionMode),
-		Cwd:            e.workDir,
-		Model:          model,
-	}
-	if reasoningEffort != "" {
-		cfg.Config = map[string]interface{}{
-			"model_reasoning_effort": reasoningEffort,
-		}
-	}
+	sandbox := sandboxPolicy(permissionMode)
 
-	if !active {
-		if _, err := client.StartSession(turnCtx, cfg); err != nil {
-			e.setRemoteThinking(false, time.Now().UnixMilli())
-			return err
-		}
-		e.mu.Lock()
-		e.remoteSessionActive = true
-		e.remotePermissionMode = permissionMode
-		e.remoteModel = model
-		e.mu.Unlock()
-		e.emitIdentifiers()
-		return nil
+	spec := codexExecTurnSpec{
+		WorkDir:         e.workDir,
+		Prompt:          msg.Text,
+		Model:           model,
+		ReasoningEffort: reasoningEffort,
+		Sandbox:         sandbox,
+	}
+	if active {
+		spec.ResumeToken = resumeToken
 	}
 
-	if _, err := client.ContinueSession(turnCtx, msg.Text); err != nil {
-		if errors.Is(err, context.Canceled) {
-			e.setRemoteThinking(false, time.Now().UnixMilli())
-			return err
-		}
-
-		// Codex MCP (`codex mcp-server`) cannot load arbitrary persisted sessions
-		// into its in-memory thread manager. When we attempt to "resume" a remote
-		// conversation by id and Codex does not have that thread loaded, it returns
-		// a tool-call error like "Session not found for conversation_id ...".
-		//
-		// Treat this as a recoverable condition: keep remote mode running, surface
-		// an explicit assistant message, and allow the next send to start a fresh
-		// remote conversation instead of forcing a fallback into local mode.
-		if isCodexRemoteSessionNotFound(err) {
-			e.mu.Lock()
-			e.remoteSessionActive = false
-			e.mu.Unlock()
-			e.setRemoteThinking(false, time.Now().UnixMilli())
-			e.emitRemoteAssistantError(fmt.Sprintf(
-				"Remote resume is not available for this Codex session.\n\n%v\n\nSwitch to local mode to continue the existing Codex conversation, or send again to start a new remote conversation.",
-				err,
-			))
-			return nil
-		}
-
-		e.mu.Lock()
-		e.remoteSessionActive = false
-		e.mu.Unlock()
-		e.setRemoteThinking(false, time.Now().UnixMilli())
-		return err
-	}
-	e.emitIdentifiers()
-	return nil
+	return e.runCodexExecTurn(turnCtx, spec)
 }
 
 // Abort implements agentengine.AgentEngine.
@@ -301,22 +232,20 @@ func (e *Engine) Abort(ctx context.Context) error {
 	}
 
 	e.mu.Lock()
-	client := e.remoteClient
 	wasThinking := e.remoteThinking
 	cancel := e.remoteCancel
+	cmd := e.remoteExecCmd
 	e.remoteCancel = nil
 	e.remoteCancelID = 0
 	e.remoteThinking = false
 	e.remoteTurnID = ""
 	e.remoteThinkingSteps = nil
-	e.remoteWaitStarted = false
 	e.mu.Unlock()
 
-	// First, unblock any in-flight SendUserMessage call immediately. This is
-	// independent of whether Codex honors the MCP cancellation notification.
 	if cancel != nil {
 		cancel()
 	}
+	e.stopRemoteExec(cmd)
 
 	if wasThinking {
 		e.tryEmit(agentengine.EvThinking{
@@ -326,13 +255,6 @@ func (e *Engine) Abort(ctx context.Context) error {
 		})
 	}
 
-	if client == nil {
-		return nil
-	}
-
-	// Best-effort: request that Codex interrupts the currently running tool call.
-	// This preserves remote session continuity (resume token) for future turns.
-	_ = client.CancelInFlight(ctx, "user abort")
 	return nil
 }
 
@@ -343,15 +265,10 @@ func (e *Engine) Wait() error {
 
 		e.mu.Lock()
 		localWaitCh := e.localWaitCh
-		client := e.remoteClient
 		e.mu.Unlock()
 
 		if localWaitCh != nil {
 			e.waitErr = <-localWaitCh
-			return
-		}
-		if client != nil {
-			e.waitErr = client.Wait()
 			return
 		}
 		e.waitErr = nil
@@ -362,132 +279,27 @@ func (e *Engine) Wait() error {
 
 // startRemote starts (or reuses) the Codex MCP client.
 func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSpec) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	resumeToken := strings.TrimSpace(spec.ResumeToken)
 
 	e.mu.Lock()
-	client := e.remoteClient
-	workDir := e.workDir
-	if spec.WorkDir != "" {
-		workDir = spec.WorkDir
-	}
-	debug := e.debug
-	requester := e.requester
-	e.mu.Unlock()
+	e.remoteEnabled = true
+	e.remotePermissionMode = normalizePermissionMode(spec.Config.PermissionMode)
+	e.remoteModel = strings.TrimSpace(spec.Config.Model)
+	e.remoteReasoningEffort = strings.TrimSpace(spec.Config.ReasoningEffort)
 
-	if client == nil {
-		client = codex.NewClient(workDir, debug)
-		client.SetEventHandler(func(event map[string]interface{}) {
-			e.handleMCPEvent(event)
-		})
-		client.SetPermissionHandler(func(requestID string, toolName string, input map[string]interface{}) (*codex.PermissionDecision, error) {
-			return e.handlePermission(requestID, toolName, input, requester)
-		})
-		if err := client.Start(); err != nil {
-			return err
-		}
-
-		e.mu.Lock()
-		e.remoteClient = client
-		e.remotePermissionMode = normalizePermissionMode(spec.Config.PermissionMode)
-		e.remoteModel = strings.TrimSpace(spec.Config.Model)
-		e.remoteReasoningEffort = strings.TrimSpace(spec.Config.ReasoningEffort)
-		e.remoteEnabled = true
-		e.remoteWaitStarted = false
-		e.mu.Unlock()
-	} else {
-		e.mu.Lock()
-		e.remoteEnabled = true
-		e.remotePermissionMode = normalizePermissionMode(spec.Config.PermissionMode)
-		e.remoteModel = strings.TrimSpace(spec.Config.Model)
-		e.remoteReasoningEffort = strings.TrimSpace(spec.Config.ReasoningEffort)
-		e.mu.Unlock()
-	}
-
-	// If we have a resume token (typically captured from a prior local or remote
-	// run), prime the MCP client so the first remote turn continues the existing
-	// conversation via `codex-reply` instead of starting a fresh session.
+	e.remoteResumeToken = ""
+	e.remoteSessionActive = false
 	if resumeToken != "" {
-		client.SetResumeToken(resumeToken)
-
-		e.mu.Lock()
+		e.remoteResumeToken = resumeToken
 		e.remoteSessionActive = true
-		e.mu.Unlock()
-		e.emitIdentifiers()
-	}
-
-	e.mu.Lock()
-	if e.remoteClient == client && !e.remoteWaitStarted {
-		e.remoteWaitStarted = true
-		go func(c *codex.Client) {
-			err := c.Wait()
-			e.tryEmit(agentengine.EvExited{Mode: agentengine.ModeRemote, Err: err})
-		}(client)
 	}
 	e.mu.Unlock()
 
+	if resumeToken != "" {
+		e.tryEmit(agentengine.EvSessionIdentified{Mode: agentengine.ModeRemote, ResumeToken: resumeToken})
+	}
 	e.tryEmit(agentengine.EvReady{Mode: agentengine.ModeRemote})
 	return nil
-}
-
-// ensureRemoteClient returns an initialized Codex MCP client, starting one if
-// necessary.
-//
-// This is used to recover after a best-effort abort, which tears down the MCP
-// process so the user can continue with a fresh session while remaining in
-// remote mode.
-func (e *Engine) ensureRemoteClient() (*codex.Client, error) {
-	if e == nil {
-		return nil, fmt.Errorf("codex engine is nil")
-	}
-
-	e.mu.Lock()
-	client := e.remoteClient
-	workDir := e.workDir
-	debug := e.debug
-	requester := e.requester
-	e.mu.Unlock()
-
-	if client != nil {
-		return client, nil
-	}
-
-	client = codex.NewClient(workDir, debug)
-	client.SetEventHandler(func(event map[string]interface{}) {
-		e.handleMCPEvent(event)
-	})
-	client.SetPermissionHandler(func(requestID string, toolName string, input map[string]interface{}) (*codex.PermissionDecision, error) {
-		return e.handlePermission(requestID, toolName, input, requester)
-	})
-	if err := client.Start(); err != nil {
-		return nil, err
-	}
-
-	e.mu.Lock()
-	if e.remoteClient != nil {
-		existing := e.remoteClient
-		e.mu.Unlock()
-		_ = client.Close()
-		return existing, nil
-	}
-	e.remoteClient = client
-	e.remoteWaitStarted = false
-	e.mu.Unlock()
-
-	e.mu.Lock()
-	if e.remoteClient == client && !e.remoteWaitStarted {
-		e.remoteWaitStarted = true
-		go func(c *codex.Client) {
-			err := c.Wait()
-			e.tryEmit(agentengine.EvExited{Mode: agentengine.ModeRemote, Err: err})
-		}(client)
-	}
-	e.mu.Unlock()
-
-	e.tryEmit(agentengine.EvReady{Mode: agentengine.ModeRemote})
-	return client, nil
 }
 
 // Capabilities implements agentengine.AgentEngine.
@@ -556,12 +368,10 @@ func (e *Engine) ApplyConfig(ctx context.Context, cfg agentengine.AgentConfig) e
 		return nil
 	}
 
-	// Best-effort: Codex applies model/effort/approval policy at session start.
+	// Best-effort: Codex applies model/effort/sandbox policy at turn start.
 	// Clearing the session ensures subsequent turns use the updated config.
-	if e.remoteClient != nil {
-		e.remoteClient.ClearSession()
-	}
 	e.remoteSessionActive = false
+	e.remoteResumeToken = ""
 	e.remoteModel = model
 	e.remotePermissionMode = permissionMode
 	e.remoteReasoningEffort = reasoningEffort
@@ -574,7 +384,12 @@ func normalizePermissionMode(mode string) string {
 	if mode == "" {
 		return permissionModeDefault
 	}
-	return mode
+	switch mode {
+	case permissionModeDefault, "read-only", "safe-yolo", "yolo":
+		return mode
+	default:
+		return permissionModeDefault
+	}
 }
 
 // startLocal starts a Codex local TUI process and a rollout tailer.
@@ -761,14 +576,24 @@ func (e *Engine) detachLocalLocked() localStopHandle {
 
 func (e *Engine) stopRemoteAndWait(ctx context.Context) error {
 	e.mu.Lock()
-	client := e.remoteClient
 	wasThinking := e.remoteThinking
-	e.remoteClient = nil
 	e.remoteEnabled = false
 	e.remoteSessionActive = false
+	e.remoteResumeToken = ""
 	e.remoteThinking = false
-	e.remoteWaitStarted = false
+	cancel := e.remoteCancel
+	cmd := e.remoteExecCmd
+	done := e.remoteExecDone
+	e.remoteCancel = nil
+	e.remoteCancelID = 0
+	e.remoteExecCmd = nil
+	e.remoteExecDone = nil
 	e.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	e.stopRemoteExec(cmd)
 
 	if wasThinking {
 		e.tryEmit(agentengine.EvThinking{
@@ -778,13 +603,9 @@ func (e *Engine) stopRemoteAndWait(ctx context.Context) error {
 		})
 	}
 
-	// Only one Codex process should be active at a time. When leaving remote
-	// mode, fully close the MCP server so switching to local doesn't leave
-	// a background `codex mcp-server` running.
-	if client == nil {
+	if done == nil {
 		return nil
 	}
-	_ = client.Shutdown(ctx)
 
 	waitCtx := ctx
 	if waitCtx == nil {
@@ -796,12 +617,8 @@ func (e *Engine) stopRemoteAndWait(ctx context.Context) error {
 		defer cancel()
 	}
 
-	done := make(chan error, 1)
-	go func() { done <- client.Wait() }()
 	select {
 	case <-waitCtx.Done():
-		// Best-effort: if graceful shutdown timed out, hard-kill and return the timeout.
-		_ = client.Close()
 		return waitCtx.Err()
 	case err := <-done:
 		return err
@@ -856,59 +673,6 @@ func (e *Engine) handleRolloutEvent(ev rollout.Event) {
 	}
 }
 
-// handleMCPEvent converts an MCP codex/event payload into an outbound wire record.
-func (e *Engine) handleMCPEvent(event map[string]interface{}) {
-	if event == nil {
-		return
-	}
-
-	evtType, _ := event["type"].(string)
-
-	// Emit identifiers opportunistically.
-	e.emitIdentifiers()
-
-	switch evtType {
-	case "agent_message":
-		e.setRemoteThinking(false, time.Now().UnixMilli())
-		message := coerceString(event, "message")
-		if strings.TrimSpace(message) == "" {
-			return
-		}
-		raw, err := marshalAssistantTextRecord(message, "unknown")
-		if err != nil {
-			return
-		}
-		e.tryEmit(agentengine.EvOutboundRecord{
-			Mode:    agentengine.ModeRemote,
-			LocalID: types.NewCUID(),
-			Payload: raw,
-			AtMs:    time.Now().UnixMilli(),
-		})
-	case "agent_reasoning":
-		e.setRemoteThinking(true, time.Now().UnixMilli())
-		text := coerceString(event, "text", "message")
-		if strings.TrimSpace(text) == "" {
-			return
-		}
-		e.appendRemoteThinkingStep(text)
-	case "exec_command_begin", "exec_approval_request":
-		e.setRemoteThinking(true, time.Now().UnixMilli())
-		callID := coerceString(event, "call_id", "callId")
-		if callID == "" {
-			callID = types.NewCUID()
-		}
-		e.emitRemoteToolUIEventStart(callID, event)
-	case "exec_command_end":
-		// Keep thinking=true until we see an agent_message; Codex may execute
-		// multiple tools per turn before producing the final assistant message.
-		callID := coerceString(event, "call_id", "callId")
-		if callID == "" {
-			callID = types.NewCUID()
-		}
-		e.emitRemoteToolUIEventEnd(callID, event)
-	}
-}
-
 // startRemoteTurn resets per-turn state used for UI events (thinking log).
 func (e *Engine) startRemoteTurn() {
 	if e == nil {
@@ -918,104 +682,6 @@ func (e *Engine) startRemoteTurn() {
 	e.remoteTurnID = types.NewCUID()
 	e.remoteThinkingSteps = nil
 	e.mu.Unlock()
-}
-
-// appendRemoteThinkingStep records a best-effort "thinking" status snippet and emits a UI event.
-func (e *Engine) appendRemoteThinkingStep(text string) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return
-	}
-	const maxSteps = 16
-	const maxStepLen = 120
-	if len(text) > maxStepLen {
-		text = text[:maxStepLen] + "…"
-	}
-
-	e.mu.Lock()
-	if len(e.remoteThinkingSteps) > 0 && e.remoteThinkingSteps[len(e.remoteThinkingSteps)-1] == text {
-		e.mu.Unlock()
-		return
-	}
-	e.remoteThinkingSteps = append(e.remoteThinkingSteps, text)
-	if len(e.remoteThinkingSteps) > maxSteps {
-		e.remoteThinkingSteps = e.remoteThinkingSteps[len(e.remoteThinkingSteps)-maxSteps:]
-	}
-	turnID := e.remoteTurnID
-	steps := append([]string(nil), e.remoteThinkingSteps...)
-	e.mu.Unlock()
-
-	if strings.TrimSpace(turnID) == "" {
-		return
-	}
-
-	brief := "Thinking…"
-	full := "### Thinking\n"
-	for _, step := range steps {
-		full += "- " + step + "\n"
-		brief = step
-	}
-
-	e.tryEmit(agentengine.EvUIEvent{
-		Mode:          agentengine.ModeRemote,
-		EventID:       "thinking-" + turnID,
-		Kind:          agentengine.UIEventThinking,
-		Phase:         agentengine.UIEventPhaseUpdate,
-		Status:        agentengine.UIEventStatusRunning,
-		BriefMarkdown: brief,
-		FullMarkdown:  strings.TrimSpace(full),
-		AtMs:          time.Now().UnixMilli(),
-	})
-}
-
-// emitRemoteToolUIEventStart emits a best-effort tool start UI event for Codex exec commands.
-func (e *Engine) emitRemoteToolUIEventStart(callID string, event map[string]interface{}) {
-	command := coerceString(event, "command", "cmd", "codex_command")
-	if strings.TrimSpace(command) == "" {
-		command = "exec"
-	}
-	brief := "🔧 bash: " + strings.TrimSpace(command)
-	full := "### Tool: bash\n\n```sh\n" + strings.TrimSpace(command) + "\n```"
-
-	e.tryEmit(agentengine.EvUIEvent{
-		Mode:          agentengine.ModeRemote,
-		EventID:       "tool-" + callID,
-		Kind:          agentengine.UIEventTool,
-		Phase:         agentengine.UIEventPhaseStart,
-		Status:        agentengine.UIEventStatusRunning,
-		BriefMarkdown: brief,
-		FullMarkdown:  full,
-		AtMs:          time.Now().UnixMilli(),
-	})
-}
-
-// emitRemoteToolUIEventEnd emits a best-effort tool end UI event for Codex exec commands.
-func (e *Engine) emitRemoteToolUIEventEnd(callID string, event map[string]interface{}) {
-	command := coerceString(event, "command", "cmd", "codex_command")
-	if strings.TrimSpace(command) == "" {
-		command = "exec"
-	}
-	status := agentengine.UIEventStatusOK
-	if exit := coerceInt(event, "exit_code", "exitCode", "code"); exit != 0 {
-		status = agentengine.UIEventStatusError
-	}
-	briefPrefix := "✅"
-	if status == agentengine.UIEventStatusError {
-		briefPrefix = "❌"
-	}
-	brief := briefPrefix + " bash: " + strings.TrimSpace(command)
-	full := "### Tool: bash (" + string(status) + ")\n\n```sh\n" + strings.TrimSpace(command) + "\n```"
-
-	e.tryEmit(agentengine.EvUIEvent{
-		Mode:          agentengine.ModeRemote,
-		EventID:       "tool-" + callID,
-		Kind:          agentengine.UIEventTool,
-		Phase:         agentengine.UIEventPhaseEnd,
-		Status:        status,
-		BriefMarkdown: brief,
-		FullMarkdown:  full,
-		AtMs:          time.Now().UnixMilli(),
-	})
 }
 
 // setRemoteThinking updates the cached remote thinking state and emits a
@@ -1072,54 +738,6 @@ func (e *Engine) setRemoteThinking(thinking bool, atMs int64) {
 	})
 }
 
-// emitIdentifiers emits session id + rollout path if available.
-func (e *Engine) emitIdentifiers() {
-	e.mu.Lock()
-	client := e.remoteClient
-	e.mu.Unlock()
-	if client == nil {
-		return
-	}
-
-	resumeToken := client.ResumeToken()
-	if strings.TrimSpace(resumeToken) != "" {
-		e.tryEmit(agentengine.EvSessionIdentified{Mode: agentengine.ModeRemote, ResumeToken: resumeToken})
-	}
-	rolloutPath := client.RolloutPath()
-	if strings.TrimSpace(rolloutPath) != "" {
-		e.tryEmit(agentengine.EvRolloutPath{Mode: agentengine.ModeRemote, Path: rolloutPath})
-	}
-}
-
-// handlePermission turns an MCP elicitation request into a PermissionDecision.
-func (e *Engine) handlePermission(requestID string, toolName string, input map[string]interface{}, requester agentengine.PermissionRequester) (*codex.PermissionDecision, error) {
-	if requester == nil {
-		return &codex.PermissionDecision{Decision: "denied", Message: "permission requester not configured"}, nil
-	}
-
-	payload, err := json.Marshal(input)
-	if err != nil {
-		return nil, err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	decision, err := requester.AwaitPermission(ctx, requestID, toolName, payload, time.Now().UnixMilli())
-	if err != nil {
-		return &codex.PermissionDecision{Decision: "denied", Message: err.Error()}, nil
-	}
-
-	approved := codexDecisionDenied
-	if decision.Allow {
-		approved = codexDecisionApproved
-	}
-	return &codex.PermissionDecision{
-		Decision: approved,
-		Message:  decision.Message,
-	}, nil
-}
-
 // tryEmit enqueues an engine event without blocking.
 func (e *Engine) tryEmit(ev agentengine.Event) {
 	if e == nil {
@@ -1129,16 +747,6 @@ func (e *Engine) tryEmit(ev agentengine.Event) {
 	case e.events <- ev:
 	default:
 	}
-}
-
-// isCodexRemoteSessionNotFound reports whether Codex rejected a codex-reply
-// request because the referenced conversation is not loaded in the MCP server.
-func isCodexRemoteSessionNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "Session not found for conversation_id")
 }
 
 // emitRemoteAssistantError publishes a best-effort assistant message for remote
@@ -1206,53 +814,6 @@ func marshalUserTextRecord(text string, meta map[string]any) ([]byte, error) {
 }
 
 // resolveMode extracts permissionMode/model from meta and reports if they changed.
-func resolveMode(currentPermissionMode string, currentModel string, meta map[string]any) (string, string, bool) {
-	permissionMode := currentPermissionMode
-	model := currentModel
-	changed := false
-
-	if permissionMode == "" {
-		permissionMode = permissionModeDefault
-	}
-
-	if meta == nil {
-		return permissionMode, model, changed
-	}
-
-	if raw, ok := meta[configKeyPermissionMode]; ok {
-		if value, ok := raw.(string); ok && value != "" && value != permissionMode {
-			permissionMode = value
-			changed = true
-		}
-	}
-
-	if raw, ok := meta[configKeyModel]; ok {
-		if raw == nil {
-			if model != "" {
-				model = ""
-				changed = true
-			}
-		} else if value, ok := raw.(string); ok && value != model {
-			model = value
-			changed = true
-		}
-	}
-
-	return permissionMode, model, changed
-}
-
-// approvalPolicy maps Delight's permissionMode value to a Codex approval-policy.
-func approvalPolicy(permissionMode string) string {
-	switch permissionMode {
-	case "read-only":
-		return "never"
-	case "safe-yolo", "yolo":
-		return "on-failure"
-	default:
-		return "untrusted"
-	}
-}
-
 // sandboxPolicy maps Delight's permissionMode value to a Codex sandbox policy.
 func sandboxPolicy(permissionMode string) string {
 	switch permissionMode {
@@ -1263,58 +824,6 @@ func sandboxPolicy(permissionMode string) string {
 	default:
 		return "workspace-write"
 	}
-}
-
-// coerceString returns the first non-empty string from the given keys.
-func coerceString(event map[string]interface{}, keys ...string) string {
-	for _, key := range keys {
-		if raw, ok := event[key]; ok {
-			if s, ok := raw.(string); ok && s != "" {
-				return s
-			}
-			if raw != nil {
-				if s := fmt.Sprint(raw); s != "" {
-					return s
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// coerceInt returns the first key that can be interpreted as an integer.
-func coerceInt(event map[string]interface{}, keys ...string) int64 {
-	for _, key := range keys {
-		raw, ok := event[key]
-		if !ok || raw == nil {
-			continue
-		}
-		switch v := raw.(type) {
-		case int:
-			return int64(v)
-		case int64:
-			return v
-		case float64:
-			return int64(v)
-		case string:
-			s := strings.TrimSpace(v)
-			if s == "" {
-				continue
-			}
-			if parsed, err := strconv.ParseInt(s, 10, 64); err == nil {
-				return parsed
-			}
-		default:
-			s := strings.TrimSpace(fmt.Sprint(v))
-			if s == "" {
-				continue
-			}
-			if parsed, err := strconv.ParseInt(s, 10, 64); err == nil {
-				return parsed
-			}
-		}
-	}
-	return 0
 }
 
 // normalizeUserText normalizes user input text for echo suppression.

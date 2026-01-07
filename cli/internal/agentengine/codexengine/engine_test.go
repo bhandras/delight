@@ -7,19 +7,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestResolveModeExtractsMeta ensures resolveMode reads permissionMode/model from meta.
-func TestResolveModeExtractsMeta(t *testing.T) {
-	meta := map[string]any{
-		configKeyPermissionMode: "read-only",
-		configKeyModel:          "gpt-5.2",
-	}
-
-	permissionMode, model, changed := resolveMode(permissionModeDefault, "", meta)
-	require.True(t, changed)
-	require.Equal(t, "read-only", permissionMode)
-	require.Equal(t, "gpt-5.2", model)
-}
-
 // TestMarshalAssistantTextRecordWrapsOutputRecord ensures marshalAssistantTextRecord produces an AgentOutputRecord.
 func TestMarshalAssistantTextRecordWrapsOutputRecord(t *testing.T) {
 	raw, err := marshalAssistantTextRecord("hi", "gpt-5.2-codex")
