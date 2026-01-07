@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -16,6 +21,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/config"
 	"github.com/bhandras/delight/cli/internal/session"
 	"github.com/bhandras/delight/cli/internal/version"
+	"github.com/bhandras/delight/cli/pkg/types"
 	"github.com/bhandras/delight/shared/logger"
 )
 
@@ -92,15 +98,20 @@ func run() error {
 			return err
 		}
 		return runSession(cfg)
+	case "sessions":
+		if err := parseFlags(cfg, append([]string(nil), leadingFlags...)); err != nil {
+			return err
+		}
+		if err := parseFlags(cfg, append([]string(nil), trailingArgs...)); err != nil {
+			return err
+		}
+		return listSessions(cfg)
 	case "acp", "claude", "codex":
 		cfg.Agent = cmd
 		subCmdIndex, subCmd := findCommand(trailingArgs)
 		if subCmd == "" {
 			printUsage()
 			return nil
-		}
-		if subCmd != "run" {
-			return fmt.Errorf("unknown command: %s %s", cmd, subCmd)
 		}
 		agentLeading := append([]string(nil), leadingFlags...)
 		agentTrailing := append([]string(nil), trailingArgs[:subCmdIndex]...)
@@ -114,10 +125,184 @@ func run() error {
 		if err := parseFlags(cfg, agentRunArgs); err != nil {
 			return err
 		}
-		return runSession(cfg)
+		switch subCmd {
+		case "run":
+			return runSession(cfg)
+		case "resume":
+			if len(agentRunArgs) == 0 || strings.TrimSpace(agentRunArgs[0]) == "" {
+				return fmt.Errorf("usage: delight %s resume <session_id>", cmd)
+			}
+			return resumeAgent(cmd, strings.TrimSpace(agentRunArgs[0]))
+		default:
+			return fmt.Errorf("unknown command: %s %s", cmd, subCmd)
+		}
 	default:
 		return fmt.Errorf("unknown command: %s", cmd)
 	}
+}
+
+type listSessionsResponse struct {
+	Sessions []listSessionItem `json:"sessions"`
+}
+
+type listSessionItem struct {
+	ID         string  `json:"id"`
+	TerminalID string  `json:"terminalId"`
+	Active     bool    `json:"active"`
+	ActiveAt   int64   `json:"activeAt"`
+	UpdatedAt  int64   `json:"updatedAt"`
+	Metadata   string  `json:"metadata"`
+	AgentState *string `json:"agentState"`
+}
+
+// listSessions prints all known sessions for the currently authenticated user.
+func listSessions(cfg *config.Config) error {
+	if err := cfg.EnsureHome(); err != nil {
+		return err
+	}
+
+	// Require explicit authentication. `delight sessions` should never prompt
+	// for QR pairing implicitly so it's safe to invoke in scripts.
+	masterKeyPath := filepath.Join(cfg.DelightHome, "master.key")
+	if _, err := os.Stat(masterKeyPath); os.IsNotExist(err) {
+		return fmt.Errorf(
+			"not authenticated (missing %s); run `delight auth` first",
+			masterKeyPath,
+		)
+	}
+
+	token, err := cli.EnsureAccessToken(cfg)
+	if err != nil {
+		return fmt.Errorf("not authenticated: %w", err)
+	}
+
+	req, err := http.NewRequest("GET", strings.TrimRight(cfg.ServerURL, "/")+"/v1/sessions", nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to list sessions: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return fmt.Errorf("failed to list sessions: %s", msg)
+	}
+
+	var decoded listSessionsResponse
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	var out bytes.Buffer
+	for _, sess := range decoded.Sessions {
+		meta := types.Metadata{}
+		if sess.Metadata != "" {
+			if raw, err := base64.StdEncoding.DecodeString(sess.Metadata); err == nil {
+				_ = json.Unmarshal(raw, &meta)
+			}
+		}
+
+		state := types.AgentState{}
+		if sess.AgentState != nil && strings.TrimSpace(*sess.AgentState) != "" {
+			_ = json.Unmarshal([]byte(*sess.AgentState), &state)
+		}
+
+		agentType := strings.TrimSpace(state.AgentType)
+		if agentType == "" {
+			agentType = "unknown"
+		}
+		dir := strings.TrimSpace(meta.Path)
+		host := strings.TrimSpace(meta.Host)
+
+		lastActive := ""
+		if sess.ActiveAt > 0 {
+			lastActive = time.UnixMilli(sess.ActiveAt).Format(time.RFC3339)
+		}
+
+		fmt.Fprintf(&out, "session=%s agent=%s active=%t last_active=%s\n", sess.ID, agentType, sess.Active, lastActive)
+		if host != "" || dir != "" {
+			fmt.Fprintf(&out, "  host=%s dir=%s terminal=%s\n", host, dir, sess.TerminalID)
+		}
+		if token := strings.TrimSpace(state.ResumeToken); token != "" && (agentType == "codex" || agentType == "claude") {
+			fmt.Fprintf(&out, "  resume: delight %s resume %s\n", agentType, token)
+		}
+	}
+
+	_, _ = io.Copy(os.Stdout, &out)
+	return nil
+}
+
+// resumeAgent runs the upstream agent CLI in "resume" mode for the given token.
+func resumeAgent(agent string, resumeToken string) error {
+	resumeToken = strings.TrimSpace(resumeToken)
+	if resumeToken == "" {
+		return fmt.Errorf("resume token is empty")
+	}
+	switch agent {
+	case "codex":
+		cmd := exec.Command("codex", "resume", resumeToken)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	case "claude":
+		launcher, err := resolveClaudeLauncher()
+		if err != nil {
+			return err
+		}
+		cmd := exec.Command("node", launcher, "--resume", resumeToken)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	default:
+		return fmt.Errorf("resume not supported for agent %q", agent)
+	}
+}
+
+// resolveClaudeLauncher locates scripts/claude_launcher.cjs relative to the
+// Delight binary or the current working directory.
+func resolveClaudeLauncher() (string, error) {
+	execPath, err := os.Executable()
+	if err != nil {
+		execPath = ""
+	}
+	execDir := ""
+	if execPath != "" {
+		execDir = filepath.Dir(execPath)
+	}
+
+	candidates := []string{
+		filepath.Join(execDir, "scripts", "claude_launcher.cjs"),
+		filepath.Join(execDir, "..", "scripts", "claude_launcher.cjs"),
+		filepath.Join("scripts", "claude_launcher.cjs"),
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if _, err := os.Stat(candidate); err == nil {
+			abs, err := filepath.Abs(candidate)
+			if err != nil {
+				return candidate, nil
+			}
+			return abs, nil
+		}
+	}
+	return "", fmt.Errorf("claude_launcher.cjs not found (tried %v)", candidates)
 }
 
 // setupLogging configures log output to a file under workDir.
@@ -218,6 +403,9 @@ Commands:
   claude run           Start a session using Claude
   codex run            Start a session using Codex
   acp run              Start a session using ACP
+  claude resume        Resume a Claude session by id
+  codex resume         Resume a Codex session by id
+  sessions             List all sessions for this account
   auth                 Authenticate with QR code for mobile pairing
   help                 Show this help message
   version              Show version information
@@ -243,6 +431,13 @@ Examples:
 
   # Start a Claude session
   delight claude run
+
+  # List sessions and their resume commands
+  delight sessions
+
+  # Resume an upstream session locally
+  delight codex resume <id>
+  delight claude resume <id>
 
   # Start a session with custom server and model
   delight run --server-url=http://localhost:3005 --model=gpt-5.2-codex`)
