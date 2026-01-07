@@ -11,9 +11,11 @@ func TestReduceEngineSessionIdentifiedStoresResumeToken(t *testing.T) {
 	state := State{RunnerGen: 2}
 
 	next, effects := Reduce(state, evEngineSessionIdentified{Gen: 2, ResumeToken: "abc"})
-	require.Nil(t, effects)
+	require.NotNil(t, effects)
+	require.NotEmpty(t, effects)
 	require.Equal(t, "abc", next.ResumeToken)
 	require.Equal(t, "abc", next.ClaudeSessionID)
+	require.Equal(t, "abc", next.AgentState.ResumeToken)
 }
 
 // TestReduceEngineRolloutPathStoresPath ensures evEngineRolloutPath updates state.RolloutPath.

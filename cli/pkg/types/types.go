@@ -50,6 +50,16 @@ type AgentState struct {
 	// An empty string means "default".
 	PermissionMode string `json:"permissionMode,omitempty"`
 
+	// ResumeToken is an engine-specific session identifier that can be used to
+	// resume a conversation using the upstream CLI.
+	//
+	// Examples:
+	//   - Codex: conversationId/sessionId for `codex resume <token>`
+	//   - Claude Code: sessionId for `claude --resume <token>`
+	//
+	// This value is intended to be user-visible (copy/paste) and is best-effort.
+	ResumeToken string `json:"resumeToken,omitempty"`
+
 	// Requests contains pending permission requests keyed by request id.
 	Requests map[string]AgentPendingRequest `json:"requests,omitempty"`
 

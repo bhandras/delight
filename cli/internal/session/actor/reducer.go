@@ -59,6 +59,10 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 			state.ResumeToken = in.ResumeToken
 			// Preserve legacy ClaudeSessionID for bridging and best-effort resume.
 			state.ClaudeSessionID = in.ResumeToken
+			state.AgentState.ResumeToken = strings.TrimSpace(in.ResumeToken)
+			state = refreshAgentStateJSON(state)
+			state, effects := schedulePersistDebounced(state)
+			return state, effects
 		}
 		return state, nil
 	case evEngineRolloutPath:
