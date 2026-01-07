@@ -2,6 +2,7 @@ package actor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/agentengine/claudeengine"
 	"github.com/bhandras/delight/cli/internal/agentengine/codexengine"
 	"github.com/bhandras/delight/cli/internal/agentengine/fakeengine"
+	"github.com/bhandras/delight/cli/internal/codex"
 	"github.com/bhandras/delight/cli/internal/termutil"
 	"github.com/bhandras/delight/shared/logger"
 )
@@ -390,6 +392,11 @@ func (r *Runtime) engineRemoteSend(ctx context.Context, eff effRemoteSend) {
 			AtMs:    time.Now().UnixMilli(),
 		})
 		if err == nil {
+			return
+		}
+		// Aborts are best-effort and should not destabilize the runtime by
+		// forcing a runner exit.
+		if errors.Is(err, context.Canceled) || errors.Is(err, codex.ErrClientClosed) {
 			return
 		}
 

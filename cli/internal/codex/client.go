@@ -113,6 +113,12 @@ type rpcResponse struct {
 	err    error
 }
 
+var (
+	// ErrClientClosed is returned when an RPC cannot complete because the Codex
+	// MCP process or client has been closed.
+	ErrClientClosed = errors.New("codex client closed")
+)
+
 type rpcMessage struct {
 	JSONRPC string                 `json:"jsonrpc"`
 	ID      interface{}            `json:"id,omitempty"`
@@ -383,8 +389,17 @@ func (c *Client) Close() error {
 		return nil
 	}
 	c.closed = true
+	pending := c.pending
+	c.pending = make(map[int64]chan rpcResponse)
 	close(c.stopCh)
 	c.mu.Unlock()
+
+	for _, ch := range pending {
+		select {
+		case ch <- rpcResponse{err: ErrClientClosed}:
+		default:
+		}
+	}
 
 	if c.stdin != nil {
 		_ = c.stdin.Close()
@@ -751,6 +766,10 @@ func (c *Client) call(ctx context.Context, method string, params map[string]inte
 	id := atomic.AddInt64(&c.nextID, 1)
 	respCh := make(chan rpcResponse, 1)
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, ErrClientClosed
+	}
 	c.pending[id] = respCh
 	c.mu.Unlock()
 
@@ -775,6 +794,13 @@ func (c *Client) call(ctx context.Context, method string, params map[string]inte
 
 	select {
 	case <-ctx.Done():
+		c.mu.Lock()
+		// Remove the pending entry to avoid leaking response channels for
+		// canceled requests.
+		if ch := c.pending[id]; ch == respCh {
+			delete(c.pending, id)
+		}
+		c.mu.Unlock()
 		return nil, ctx.Err()
 	case resp := <-respCh:
 		return resp.result, resp.err
@@ -815,6 +841,9 @@ func (c *Client) send(msg rpcMessage) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.stdin == nil {
+		if c.closed {
+			return ErrClientClosed
+		}
 		return errors.New("codex stdin not available")
 	}
 	enc, err := json.Marshal(msg)
