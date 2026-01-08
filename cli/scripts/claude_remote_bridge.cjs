@@ -556,7 +556,10 @@ async function main() {
             const stderrText = currentStderrLines.join('\n');
             cleanupChild();
 
-            if (code !== 0) {
+            // `code` can be null when the process exits due to a signal (SIGTERM
+            // etc.). Treat this as a non-error so intentional restarts/aborts
+            // don't surface spurious errors to the Go side.
+            if (code != null && code !== 0) {
                 if (allowResumeRetry && resumeSessionId && resumeNotFoundRegex.test(stderrText)) {
                     debugLog('Resume session not found; retrying without --resume:', resumeSessionId);
                     resumeSessionId = null;
@@ -607,6 +610,15 @@ async function main() {
             if (!msg) return;
 
             applyMeta(msg.meta);
+
+            // If configuration changed (model/permission settings), restart the
+            // Claude process before sending the next message so the new args
+            // take effect immediately.
+            if (configDirty && currentChild) {
+                debugLog('Config changed; restarting Claude Code to apply new args');
+                try { currentChild.kill('SIGTERM'); } catch { }
+                cleanupChild();
+            }
 
             if (!currentChild) {
                 await spawnClaude(true);

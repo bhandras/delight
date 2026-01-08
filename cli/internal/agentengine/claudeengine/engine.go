@@ -378,7 +378,14 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 	}
 
 	resumeToken := strings.TrimSpace(spec.ResumeToken)
-	proc, err := claude.NewProcess(workDir, resumeToken, e.debug)
+	cfg := normalizeClaudeConfig(spec.Config)
+	proc, err := claude.NewProcess(claude.ProcessOptions{
+		WorkDir:        workDir,
+		ResumeToken:    resumeToken,
+		Model:          cfg.Model,
+		PermissionMode: cfg.PermissionMode,
+		Debug:          e.debug,
+	})
 	if err != nil {
 		return err
 	}

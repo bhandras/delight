@@ -58,6 +58,21 @@ type Process struct {
 	stopCh chan struct{}
 }
 
+// ProcessOptions describes how to start a Claude Code local process.
+type ProcessOptions struct {
+	// WorkDir is the working directory Claude should use.
+	WorkDir string
+	// ResumeToken is an optional session id to resume via `--resume`.
+	ResumeToken string
+	// Model is an optional model identifier passed via `--model`.
+	Model string
+	// PermissionMode is an optional permission preset passed via
+	// `--permission-mode`.
+	PermissionMode string
+	// Debug enables verbose logging.
+	Debug bool
+}
+
 func (p *Process) restoreTTYLocked() {
 	if p.ttyState == nil {
 		return
@@ -75,14 +90,19 @@ func (p *Process) restoreTTYLocked() {
 // `--resume <resumeToken>` so local mode can continue an existing session.
 //
 // Uses our launcher script to intercept UUID and fetch events.
-func NewProcess(workDir string, resumeToken string, debug bool) (*Process, error) {
+func NewProcess(opts ProcessOptions) (*Process, error) {
+	workDir := strings.TrimSpace(opts.WorkDir)
+	if workDir == "" {
+		return nil, fmt.Errorf("missing workDir")
+	}
+
 	// Find launcher script
 	launcherPath, err := findLauncher()
 	if err != nil {
 		return nil, fmt.Errorf("failed to find launcher: %w", err)
 	}
 
-	if debug {
+	if opts.Debug {
 		logger.Debugf("Using launcher at: %s", launcherPath)
 	}
 
@@ -94,9 +114,15 @@ func NewProcess(workDir string, resumeToken string, debug bool) (*Process, error
 
 	// Create command using our launcher script
 	args := []string{launcherPath}
-	resumeToken = strings.TrimSpace(resumeToken)
+	resumeToken := strings.TrimSpace(opts.ResumeToken)
 	if resumeToken != "" {
 		args = append(args, "--resume", resumeToken)
+	}
+	if model := strings.TrimSpace(opts.Model); model != "" {
+		args = append(args, "--model", model)
+	}
+	if permissionMode := strings.TrimSpace(opts.PermissionMode); permissionMode != "" {
+		args = append(args, "--permission-mode", permissionMode)
 	}
 	cmd := exec.Command("node", args...)
 	cmd.Dir = workDir
@@ -112,7 +138,7 @@ func NewProcess(workDir string, resumeToken string, debug bool) (*Process, error
 
 	return &Process{
 		cmd:           cmd,
-		debug:         debug,
+		debug:         opts.Debug,
 		fd3Reader:     fd3Reader,
 		fd3Writer:     fd3Writer,
 		sessionIDCh:   make(chan string, 1),
@@ -125,6 +151,17 @@ func NewProcess(workDir string, resumeToken string, debug bool) (*Process, error
 
 // findLauncher locates the claude_launcher.cjs script
 func findLauncher() (string, error) {
+	if override := strings.TrimSpace(os.Getenv("DELIGHT_CLAUDE_LAUNCHER_PATH")); override != "" {
+		if _, err := os.Stat(override); err == nil {
+			absPath, err := filepath.Abs(override)
+			if err != nil {
+				return override, nil
+			}
+			return absPath, nil
+		}
+		return "", fmt.Errorf("DELIGHT_CLAUDE_LAUNCHER_PATH not found: %s", override)
+	}
+
 	execPath, err := os.Executable()
 	if err != nil {
 		return "", err
