@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -98,6 +100,25 @@ const (
 	rolloutRootRelative = ".codex/sessions"
 )
 
+const (
+	// engineEventBufferSize bounds the number of engine events we can queue
+	// before dropping. Local mode can emit bursts of events (tool calls + outputs)
+	// while the rollout file is being tailed.
+	engineEventBufferSize = 512
+
+	// criticalEmitTimeout bounds how long we wait to enqueue critical events
+	// (assistant/user transcript + session identification) before dropping.
+	criticalEmitTimeout = 250 * time.Millisecond
+
+	// localToolArgsMaxChars bounds the size of tool arguments we include in UI
+	// events to avoid oversize ephemeral payloads.
+	localToolArgsMaxChars = 8_000
+
+	// localToolOutputMaxChars bounds the size of tool output we include in UI
+	// events to avoid oversize ephemeral payloads.
+	localToolOutputMaxChars = 24_000
+)
+
 // Engine adapts Codex (local TUI + rollout JSONL, remote `codex exec --json`)
 // to the AgentEngine interface.
 type Engine struct {
@@ -130,10 +151,17 @@ type Engine struct {
 	localTailer            *rollout.Tailer
 	localRestoreForeground func()
 	localWaitCh            chan error
+	localToolCalls         map[string]localToolCall
 
 	waitOnce sync.Once
 	waitErr  error
 	waitCh   chan struct{}
+}
+
+type localToolCall struct {
+	name      string
+	arguments string
+	atMs      int64
 }
 
 // New returns a Codex engine.
@@ -142,7 +170,7 @@ func New(workDir string, requester agentengine.PermissionRequester, debug bool) 
 		workDir:   workDir,
 		debug:     debug,
 		requester: requester,
-		events:    make(chan agentengine.Event, 128),
+		events:    make(chan agentengine.Event, engineEventBufferSize),
 		waitCh:    make(chan struct{}),
 	}
 }
@@ -568,6 +596,7 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 	e.localTailer = tailer
 	e.localRestoreForeground = restoreForeground
 	e.localWaitCh = waitErrCh
+	e.localToolCalls = make(map[string]localToolCall)
 	e.mu.Unlock()
 	old.stop(context.Background())
 
@@ -703,6 +732,7 @@ func (e *Engine) detachLocalLocked() localStopHandle {
 	e.localTailer = nil
 	e.localRestoreForeground = nil
 	e.localWaitCh = nil
+	e.localToolCalls = nil
 
 	return handle
 }
@@ -801,9 +831,201 @@ func (e *Engine) handleRolloutEvent(ev rollout.Event) {
 			Payload: raw,
 			AtMs:    v.AtMs,
 		})
+	case rollout.EvReasoningSummary:
+		text := strings.TrimSpace(v.Text)
+		if text == "" {
+			return
+		}
+		e.tryEmit(agentengine.EvUIEvent{
+			Mode:          agentengine.ModeLocal,
+			EventID:       types.NewCUID(),
+			Kind:          agentengine.UIEventThinking,
+			Phase:         agentengine.UIEventPhaseEnd,
+			Status:        agentengine.UIEventStatusOK,
+			BriefMarkdown: firstMarkdownLine(text),
+			FullMarkdown:  text,
+			AtMs:          v.AtMs,
+		})
+	case rollout.EvFunctionCall:
+		e.handleLocalFunctionCall(v)
+	case rollout.EvFunctionCallOutput:
+		e.handleLocalFunctionCallOutput(v)
 	default:
 		return
 	}
+}
+
+func (e *Engine) handleLocalFunctionCall(ev rollout.EvFunctionCall) {
+	if e == nil {
+		return
+	}
+	callID := strings.TrimSpace(ev.CallID)
+	if callID == "" {
+		callID = types.NewCUID()
+	}
+	name := strings.TrimSpace(ev.Name)
+	if name == "" {
+		name = "tool"
+	}
+
+	brief := fmt.Sprintf("Tool: `%s`", name)
+	full := fmt.Sprintf("Tool: `%s`", name)
+
+	argsText := prettyJSON(ev.Arguments)
+	argsText = truncateText(argsText, localToolArgsMaxChars)
+	if strings.TrimSpace(argsText) != "" {
+		full = fmt.Sprintf("%s\n\nArgs:\n\n```json\n%s\n```", full, argsText)
+	}
+
+	// Try to show a concise command preview for shell_command.
+	if name == "shell_command" {
+		if cmd := extractShellCommand(ev.Arguments); cmd != "" {
+			brief = fmt.Sprintf("Tool: `%s`", truncateOneLine(cmd, 64))
+			full = fmt.Sprintf("Tool: `shell_command`\n\n`%s`", cmd)
+			if strings.TrimSpace(argsText) != "" {
+				full = fmt.Sprintf("%s\n\nArgs:\n\n```json\n%s\n```", full, argsText)
+			}
+		}
+	}
+
+	e.mu.Lock()
+	if e.localToolCalls == nil {
+		e.localToolCalls = make(map[string]localToolCall)
+	}
+	e.localToolCalls[callID] = localToolCall{name: name, arguments: ev.Arguments, atMs: ev.AtMs}
+	e.mu.Unlock()
+
+	e.tryEmit(agentengine.EvUIEvent{
+		Mode:          agentengine.ModeLocal,
+		EventID:       callID,
+		Kind:          agentengine.UIEventTool,
+		Phase:         agentengine.UIEventPhaseStart,
+		Status:        agentengine.UIEventStatusRunning,
+		BriefMarkdown: brief,
+		FullMarkdown:  full,
+		AtMs:          ev.AtMs,
+	})
+}
+
+func (e *Engine) handleLocalFunctionCallOutput(ev rollout.EvFunctionCallOutput) {
+	if e == nil {
+		return
+	}
+	callID := strings.TrimSpace(ev.CallID)
+	if callID == "" {
+		callID = types.NewCUID()
+	}
+
+	var call localToolCall
+	var ok bool
+	e.mu.Lock()
+	if e.localToolCalls != nil {
+		call, ok = e.localToolCalls[callID]
+		delete(e.localToolCalls, callID)
+	}
+	e.mu.Unlock()
+
+	name := strings.TrimSpace(call.name)
+	if name == "" {
+		name = "tool"
+	}
+
+	brief := fmt.Sprintf("Tool: `%s`", name)
+	full := fmt.Sprintf("Tool: `%s`", name)
+
+	argsText := prettyJSON(call.arguments)
+	argsText = truncateText(argsText, localToolArgsMaxChars)
+	if strings.TrimSpace(argsText) != "" {
+		full = fmt.Sprintf("%s\n\nArgs:\n\n```json\n%s\n```", full, argsText)
+	}
+
+	output := strings.TrimSpace(ev.Output)
+	outputSnippet := truncateText(output, localToolOutputMaxChars)
+	if outputSnippet != "" {
+		full = fmt.Sprintf("%s\n\nOutput:\n\n```\n%s\n```", full, outputSnippet)
+	}
+
+	if name == "shell_command" {
+		if cmd := extractShellCommand(call.arguments); cmd != "" {
+			brief = fmt.Sprintf("Tool: `%s`", truncateOneLine(cmd, 64))
+			full = fmt.Sprintf("Tool: `shell_command`\n\n`%s`", cmd)
+			if strings.TrimSpace(argsText) != "" {
+				full = fmt.Sprintf("%s\n\nArgs:\n\n```json\n%s\n```", full, argsText)
+			}
+			if outputSnippet != "" {
+				full = fmt.Sprintf("%s\n\nOutput:\n\n```\n%s\n```", full, outputSnippet)
+			}
+		}
+	}
+
+	status := agentengine.UIEventStatusOK
+	if exitCode, ok := parseExitCode(output); ok && exitCode != 0 {
+		status = agentengine.UIEventStatusError
+	}
+
+	atMs := ev.AtMs
+	if atMs == 0 && ok {
+		atMs = call.atMs
+	}
+
+	e.tryEmit(agentengine.EvUIEvent{
+		Mode:          agentengine.ModeLocal,
+		EventID:       callID,
+		Kind:          agentengine.UIEventTool,
+		Phase:         agentengine.UIEventPhaseEnd,
+		Status:        status,
+		BriefMarkdown: brief,
+		FullMarkdown:  full,
+		AtMs:          atMs,
+	})
+}
+
+func prettyJSON(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var v any
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return raw
+	}
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return raw
+	}
+	return string(b)
+}
+
+func extractShellCommand(arguments string) string {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		return ""
+	}
+	var payload struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Command)
+}
+
+var exitCodeRegex = regexp.MustCompile(`(?m)^Exit code:\\s*(\\d+)\\s*$`)
+
+func parseExitCode(output string) (int, bool) {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return 0, false
+	}
+	matches := exitCodeRegex.FindStringSubmatch(output)
+	if len(matches) != 2 {
+		return 0, false
+	}
+	value, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0, false
+	}
+	return value, true
 }
 
 // startRemoteTurn resets per-turn state used for UI events (thinking log).
@@ -871,14 +1093,45 @@ func (e *Engine) setRemoteThinking(thinking bool, atMs int64) {
 	})
 }
 
+func truncateText(text string, maxChars int) string {
+	if maxChars <= 0 {
+		return ""
+	}
+	if len(text) <= maxChars {
+		return text
+	}
+	omitted := len(text) - maxChars
+	return fmt.Sprintf("%s\n… (truncated; %d chars omitted)", text[:maxChars], omitted)
+}
+
 // tryEmit enqueues an engine event without blocking.
 func (e *Engine) tryEmit(ev agentengine.Event) {
 	if e == nil {
 		return
 	}
+
+	critical := false
+	switch ev.(type) {
+	case agentengine.EvOutboundRecord, agentengine.EvReady, agentengine.EvExited, agentengine.EvSessionIdentified:
+		critical = true
+	}
+
+	if !critical {
+		select {
+		case e.events <- ev:
+		default:
+		}
+		return
+	}
+
+	timer := time.NewTimer(criticalEmitTimeout)
+	defer timer.Stop()
+
 	select {
 	case e.events <- ev:
-	default:
+		return
+	case <-timer.C:
+		return
 	}
 }
 

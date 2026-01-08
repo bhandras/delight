@@ -34,6 +34,12 @@ const (
 const (
 	// ResponseItemTypeMessage is a response_item payload subtype for messages.
 	ResponseItemTypeMessage = "message"
+	// ResponseItemTypeReasoning is a response_item payload subtype for reasoning.
+	ResponseItemTypeReasoning = "reasoning"
+	// ResponseItemTypeFunctionCall is a response_item payload subtype for tool calls.
+	ResponseItemTypeFunctionCall = "function_call"
+	// ResponseItemTypeFunctionCallOutput is a response_item payload subtype for tool results.
+	ResponseItemTypeFunctionCallOutput = "function_call_output"
 )
 
 // Event is a marker interface for parsed rollout events.
@@ -74,6 +80,49 @@ type EvAssistantMessage struct {
 // isRolloutEvent marks EvAssistantMessage as an Event.
 func (EvAssistantMessage) isRolloutEvent() {}
 
+// EvReasoningSummary is emitted for reasoning response_item output.
+//
+// Codex local mode writes "reasoning" items (often encrypted) alongside a
+// plaintext summary list. We surface the summary text since the full reasoning
+// content may be encrypted and not present.
+type EvReasoningSummary struct {
+	// Text is the plaintext reasoning summary (markdown).
+	Text string
+	// AtMs is the wall-clock timestamp (unix millis) for the event.
+	AtMs int64
+}
+
+// isRolloutEvent marks EvReasoningSummary as an Event.
+func (EvReasoningSummary) isRolloutEvent() {}
+
+// EvFunctionCall is emitted when Codex requests a tool execution (function call).
+type EvFunctionCall struct {
+	// CallID is the stable identifier used to correlate with EvFunctionCallOutput.
+	CallID string
+	// Name is the function/tool name (e.g. "shell_command").
+	Name string
+	// Arguments is a JSON string payload (Codex stores arguments as a string).
+	Arguments string
+	// AtMs is the wall-clock timestamp (unix millis) for the event.
+	AtMs int64
+}
+
+// isRolloutEvent marks EvFunctionCall as an Event.
+func (EvFunctionCall) isRolloutEvent() {}
+
+// EvFunctionCallOutput is emitted for the output of a function call.
+type EvFunctionCallOutput struct {
+	// CallID is the identifier of the corresponding EvFunctionCall.
+	CallID string
+	// Output is the string output returned by the tool.
+	Output string
+	// AtMs is the wall-clock timestamp (unix millis) for the event.
+	AtMs int64
+}
+
+// isRolloutEvent marks EvFunctionCallOutput as an Event.
+func (EvFunctionCallOutput) isRolloutEvent() {}
+
 // ParseLine parses a JSONL line from a Codex rollout file.
 //
 // It returns (event, ok, err). ok is false for unsupported/uninteresting lines.
@@ -112,25 +161,95 @@ func ParseLine(line []byte) (Event, bool, error) {
 		return nil, false, nil
 
 	case LineTypeResponseItem:
-		var payload struct {
-			Type    string `json:"type"`
-			Role    string `json:"role"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
+		var envelope struct {
+			Type string `json:"type"`
 		}
-		if err := json.Unmarshal(rec.Payload, &payload); err != nil {
+		if err := json.Unmarshal(rec.Payload, &envelope); err != nil {
 			return nil, false, err
 		}
-		if payload.Type != ResponseItemTypeMessage || payload.Role != "assistant" {
+
+		switch envelope.Type {
+		case ResponseItemTypeMessage:
+			var payload struct {
+				Type    string `json:"type"`
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			}
+			if err := json.Unmarshal(rec.Payload, &payload); err != nil {
+				return nil, false, err
+			}
+			if payload.Role != "assistant" {
+				return nil, false, nil
+			}
+			text := collectTextBlocks(payload.Content, "output_text")
+			if strings.TrimSpace(text) == "" {
+				return nil, false, nil
+			}
+			return EvAssistantMessage{Text: text, AtMs: atMs}, true, nil
+
+		case ResponseItemTypeReasoning:
+			var payload struct {
+				Type    string `json:"type"`
+				Summary []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"summary"`
+			}
+			if err := json.Unmarshal(rec.Payload, &payload); err != nil {
+				return nil, false, err
+			}
+			text := collectTextBlocks(payload.Summary, "summary_text")
+			if strings.TrimSpace(text) == "" {
+				return nil, false, nil
+			}
+			return EvReasoningSummary{Text: text, AtMs: atMs}, true, nil
+
+		case ResponseItemTypeFunctionCall:
+			var payload struct {
+				Type      string `json:"type"`
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+				CallID    string `json:"call_id"`
+			}
+			if err := json.Unmarshal(rec.Payload, &payload); err != nil {
+				return nil, false, err
+			}
+			if strings.TrimSpace(payload.CallID) == "" || strings.TrimSpace(payload.Name) == "" {
+				return nil, false, nil
+			}
+			return EvFunctionCall{
+				CallID:    payload.CallID,
+				Name:      payload.Name,
+				Arguments: payload.Arguments,
+				AtMs:      atMs,
+			}, true, nil
+
+		case ResponseItemTypeFunctionCallOutput:
+			var payload struct {
+				Type   string `json:"type"`
+				CallID string `json:"call_id"`
+				Output string `json:"output"`
+			}
+			if err := json.Unmarshal(rec.Payload, &payload); err != nil {
+				return nil, false, err
+			}
+			if strings.TrimSpace(payload.CallID) == "" {
+				return nil, false, nil
+			}
+			if payload.Output == "" {
+				return nil, false, nil
+			}
+			return EvFunctionCallOutput{
+				CallID: payload.CallID,
+				Output: payload.Output,
+				AtMs:   atMs,
+			}, true, nil
+		default:
 			return nil, false, nil
 		}
-		text := collectTextBlocks(payload.Content, "output_text")
-		if strings.TrimSpace(text) == "" {
-			return nil, false, nil
-		}
-		return EvAssistantMessage{Text: text, AtMs: atMs}, true, nil
 
 	default:
 		return nil, false, nil

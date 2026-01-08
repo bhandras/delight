@@ -691,16 +691,25 @@ func reduceEngineUIEvent(state State, ev evEngineUIEvent) (State, []actor.Effect
 	if ev.Gen != 0 && ev.Gen != state.RunnerGen {
 		return state, nil
 	}
-	if ev.Mode != ModeRemote || state.FSM != StateRemoteRunning {
-		return state, nil
-	}
 	if state.SessionID == "" || ev.EventID == "" {
 		return state, nil
 	}
 
-	if ev.Kind == string(agentengine.UIEventThinking) {
-		thinking := ev.Phase != string(agentengine.UIEventPhaseEnd)
-		state.Thinking = thinking
+	switch state.FSM {
+	case StateRemoteRunning:
+		if ev.Mode != ModeRemote {
+			return state, nil
+		}
+		if ev.Kind == string(agentengine.UIEventThinking) {
+			thinking := ev.Phase != string(agentengine.UIEventPhaseEnd)
+			state.Thinking = thinking
+		}
+	case StateLocalRunning:
+		if ev.Mode != ModeLocal {
+			return state, nil
+		}
+	default:
+		return state, nil
 	}
 
 	return state, []actor.Effect{

@@ -4,8 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bhandras/delight/cli/internal/agentengine"
+	"github.com/bhandras/delight/cli/internal/codex/rollout"
 )
 
 // TestApplyConfigDoesNotClearRemoteResumeToken ensures ApplyConfig treats an
@@ -112,4 +114,96 @@ func TestBuildLocalCodexCommandYoloDisablesApprovals(t *testing.T) {
 	if !strings.Contains(args, " -a never ") {
 		t.Fatalf("expected yolo approval policy in args, got: %s", args)
 	}
+}
+
+func TestHandleRolloutEventEmitsToolUIEvents(t *testing.T) {
+	engine := New("/tmp", nil, false)
+
+	engine.handleRolloutEvent(rollout.EvFunctionCall{
+		CallID:    "call_1",
+		Name:      "shell_command",
+		Arguments: `{"command":"ls"}`,
+		AtMs:      123,
+	})
+	ev := readEngineEvent(t, engine, 2*time.Second)
+	ui, ok := ev.(agentengine.EvUIEvent)
+	if !ok {
+		t.Fatalf("expected EvUIEvent, got %T", ev)
+	}
+	if ui.Mode != agentengine.ModeLocal {
+		t.Fatalf("expected local mode, got %q", ui.Mode)
+	}
+	if ui.Kind != agentengine.UIEventTool {
+		t.Fatalf("expected tool UI event, got %q", ui.Kind)
+	}
+	if ui.Phase != agentengine.UIEventPhaseStart {
+		t.Fatalf("expected start phase, got %q", ui.Phase)
+	}
+	if ui.EventID != "call_1" {
+		t.Fatalf("expected event id call_1, got %q", ui.EventID)
+	}
+	if ui.Status != agentengine.UIEventStatusRunning {
+		t.Fatalf("expected running status, got %q", ui.Status)
+	}
+	if ui.BriefMarkdown != "Tool: `ls`" {
+		t.Fatalf("unexpected brief markdown: %q", ui.BriefMarkdown)
+	}
+
+	engine.handleRolloutEvent(rollout.EvFunctionCallOutput{
+		CallID: "call_1",
+		Output: "Exit code: 0\nOutput:\nhi",
+		AtMs:   124,
+	})
+	ev = readEngineEvent(t, engine, 2*time.Second)
+	ui, ok = ev.(agentengine.EvUIEvent)
+	if !ok {
+		t.Fatalf("expected EvUIEvent, got %T", ev)
+	}
+	if ui.Phase != agentengine.UIEventPhaseEnd {
+		t.Fatalf("expected end phase, got %q", ui.Phase)
+	}
+	if ui.Status != agentengine.UIEventStatusOK {
+		t.Fatalf("expected ok status, got %q", ui.Status)
+	}
+	if ui.EventID != "call_1" {
+		t.Fatalf("expected event id call_1, got %q", ui.EventID)
+	}
+	if !strings.Contains(ui.FullMarkdown, "Output:") {
+		t.Fatalf("expected full markdown output, got: %q", ui.FullMarkdown)
+	}
+}
+
+func TestHandleRolloutEventEmitsReasoningUIEvents(t *testing.T) {
+	engine := New("/tmp", nil, false)
+	engine.handleRolloutEvent(rollout.EvReasoningSummary{
+		Text: "**Plan**\n\nDo the thing.",
+		AtMs: 123,
+	})
+	ev := readEngineEvent(t, engine, 2*time.Second)
+	ui, ok := ev.(agentengine.EvUIEvent)
+	if !ok {
+		t.Fatalf("expected EvUIEvent, got %T", ev)
+	}
+	if ui.Kind != agentengine.UIEventThinking {
+		t.Fatalf("expected thinking UI event, got %q", ui.Kind)
+	}
+	if ui.Phase != agentengine.UIEventPhaseEnd {
+		t.Fatalf("expected end phase, got %q", ui.Phase)
+	}
+	if ui.BriefMarkdown != "**Plan**" {
+		t.Fatalf("unexpected brief markdown: %q", ui.BriefMarkdown)
+	}
+}
+
+func readEngineEvent(t *testing.T, engine *Engine, timeout time.Duration) agentengine.Event {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	select {
+	case <-deadline.C:
+		t.Fatalf("timed out waiting for engine event")
+	case ev := <-engine.Events():
+		return ev
+	}
+	return nil
 }
