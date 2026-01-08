@@ -139,6 +139,7 @@ type Engine struct {
 	remoteCancel    context.CancelFunc
 	remoteExited    chan struct{}
 	remoteExitErr   *error
+	remoteSessionID string
 	remoteTurnID    string
 	remoteThinking  bool
 	remoteToolNames map[string]string
@@ -503,20 +504,7 @@ func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSp
 	})
 
 	bridge.SetMessageHandler(func(msg *claude.RemoteMessage) error {
-		raw, ok := buildRawRecordBytesFromRemote(msg)
-		if !ok {
-			return nil
-		}
-
-		nowMs := time.Now().UnixMilli()
-		e.emitRemoteUIEventsFromRaw(raw, nowMs)
-		e.tryEmit(agentengine.EvOutboundRecord{
-			Mode:    agentengine.ModeRemote,
-			LocalID: types.NewCUID(),
-			Payload: raw,
-			AtMs:    nowMs,
-		})
-		return nil
+		return e.handleRemoteBridgeMessage(msg)
 	})
 
 	if err := bridge.Start(); err != nil {
@@ -536,6 +524,12 @@ func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSp
 	e.remoteExitErr = exitErr
 	e.mu.Unlock()
 
+	if resumeToken != "" {
+		e.mu.Lock()
+		e.remoteSessionID = resumeToken
+		e.mu.Unlock()
+		e.tryEmit(agentengine.EvSessionIdentified{Mode: agentengine.ModeRemote, ResumeToken: resumeToken})
+	}
 	e.tryEmit(agentengine.EvReady{Mode: agentengine.ModeRemote})
 
 	old.stop(context.Background())
@@ -605,7 +599,49 @@ func (e *Engine) detachRemoteLocked() remoteStopHandle {
 	e.remoteCtx = context.Background()
 	e.remoteExited = nil
 	e.remoteExitErr = nil
+	e.remoteSessionID = ""
 	return handle
+}
+
+// handleRemoteBridgeMessage processes a single message from the Claude remote
+// bridge and emits any derived engine events.
+func (e *Engine) handleRemoteBridgeMessage(msg *claude.RemoteMessage) error {
+	if msg == nil {
+		return nil
+	}
+
+	// Capture a stable resume token for remote mode. The bridge emits a "system"
+	// init message with a session_id once Claude has started (or resumed).
+	if msg.Type == "system" && msg.Subtype == "init" {
+		sessionID := strings.TrimSpace(msg.SessionID)
+		if sessionID != "" {
+			shouldEmit := false
+			e.mu.Lock()
+			if e.remoteSessionID != sessionID {
+				e.remoteSessionID = sessionID
+				shouldEmit = true
+			}
+			e.mu.Unlock()
+			if shouldEmit {
+				e.tryEmit(agentengine.EvSessionIdentified{Mode: agentengine.ModeRemote, ResumeToken: sessionID})
+			}
+		}
+	}
+
+	raw, ok := buildRawRecordBytesFromRemote(msg)
+	if !ok {
+		return nil
+	}
+
+	nowMs := time.Now().UnixMilli()
+	e.emitRemoteUIEventsFromRaw(raw, nowMs)
+	e.tryEmit(agentengine.EvOutboundRecord{
+		Mode:    agentengine.ModeRemote,
+		LocalID: types.NewCUID(),
+		Payload: raw,
+		AtMs:    nowMs,
+	})
+	return nil
 }
 
 func (e *Engine) watchLocalSession(ctx context.Context, workDir string, proc *claude.Process) {

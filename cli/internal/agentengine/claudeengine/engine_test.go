@@ -129,3 +129,51 @@ func TestHandleRemotePermissionRequest_DeniesOnTimeoutCtx(t *testing.T) {
 		t.Fatalf("expected message for deny on ctx error")
 	}
 }
+
+func TestHandleRemoteBridgeMessageEmitsSessionIdentified(t *testing.T) {
+	e := New(".", nil, false)
+	if err := e.handleRemoteBridgeMessage(&claude.RemoteMessage{
+		Type:      "system",
+		Subtype:   "init",
+		SessionID: "sess-1",
+	}); err != nil {
+		t.Fatalf("handleRemoteBridgeMessage returned error: %v", err)
+	}
+
+	select {
+	case ev := <-e.Events():
+		identified, ok := ev.(agentengine.EvSessionIdentified)
+		if !ok {
+			t.Fatalf("expected EvSessionIdentified, got %T", ev)
+		}
+		if identified.Mode != agentengine.ModeRemote {
+			t.Fatalf("expected remote mode, got %q", identified.Mode)
+		}
+		if identified.ResumeToken != "sess-1" {
+			t.Fatalf("expected resume token %q, got %q", "sess-1", identified.ResumeToken)
+		}
+	default:
+		t.Fatalf("expected session identified event")
+	}
+}
+
+func TestHandleRemoteBridgeMessageDedupesSessionIdentified(t *testing.T) {
+	e := New(".", nil, false)
+	e.mu.Lock()
+	e.remoteSessionID = "sess-1"
+	e.mu.Unlock()
+
+	if err := e.handleRemoteBridgeMessage(&claude.RemoteMessage{
+		Type:      "system",
+		Subtype:   "init",
+		SessionID: "sess-1",
+	}); err != nil {
+		t.Fatalf("handleRemoteBridgeMessage returned error: %v", err)
+	}
+
+	select {
+	case ev := <-e.Events():
+		t.Fatalf("expected no event, got %T", ev)
+	default:
+	}
+}
