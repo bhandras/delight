@@ -106,6 +106,9 @@ func (e *Engine) runCodexExecTurn(ctx context.Context, spec codexExecTurnSpec) e
 	}
 	e.mu.Unlock()
 
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if stdoutErr != nil {
 		return stdoutErr
 	}
@@ -143,6 +146,10 @@ func (e *Engine) consumeCodexExecJSON(ctx context.Context, r io.Reader) error {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 
 		var ev codexExecEvent
@@ -325,11 +332,7 @@ func (e *Engine) stopRemoteExec(cmd *exec.Cmd) {
 	if cmd == nil {
 		return
 	}
-	if runtime.GOOS == "windows" {
-		_ = cmd.Process.Kill()
-		return
-	}
-	stopLocalCmd(cmd)
+	stopExecCmd(cmd)
 }
 
 // emitRemoteAssistantText emits an assistant message record for remote mode.
