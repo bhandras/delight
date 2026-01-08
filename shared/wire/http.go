@@ -36,6 +36,16 @@ type CreateSessionResponseSession struct {
 	// DataEncryptionKey is the wrapped per-session data key (base64-encoded
 	// opaque bytes) when present.
 	DataEncryptionKey *string `json:"dataEncryptionKey,omitempty"`
+
+	// AgentState is the plaintext agent state JSON payload when present.
+	//
+	// The server may return this when a session already exists for a tag, so
+	// clients can restore durable config without issuing a separate ListSessions
+	// request.
+	AgentState *string `json:"agentState,omitempty"`
+
+	// AgentStateVersion is the server version of AgentState when present.
+	AgentStateVersion int64 `json:"agentStateVersion,omitempty"`
 }
 
 // CreateTerminalRequest is the HTTP POST /v1/terminals request body.

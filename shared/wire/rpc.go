@@ -52,8 +52,16 @@ type SetAgentConfigResponse struct {
 // configuration for a session.
 //
 // This is a session-scoped RPC (mobile -> server -> CLI). The request is
-// intentionally empty; the session id in the method name scopes the lookup.
-type AgentCapabilitiesRequest struct{}
+// intentionally best-effort; the session id in the method name scopes the
+// lookup.
+type AgentCapabilitiesRequest struct {
+	// Model optionally requests capabilities for the provided model selection.
+	//
+	// This is intended for UI flows that need to refresh dependent settings
+	// (e.g. reasoning effort presets) when the user highlights a model, without
+	// applying the config to the live session.
+	Model string `json:"model,omitempty"`
+}
 
 // AgentCapabilities describes which settings can be configured for a session.
 type AgentCapabilities struct {
