@@ -268,6 +268,13 @@ async function main() {
     let currentAllowedTools = undefined;
     let currentDisallowedTools = undefined;
 
+    // Track which runtime config has actually been applied inside the Claude
+    // process. This matters for resumed sessions: passing `--model` on startup
+    // does not necessarily override the model for an existing conversation.
+    let appliedPermissionMode = undefined;
+    let appliedModel = undefined;
+    const pendingControlAcks = new Map(); // request_id -> request
+
     let currentChild = null;
     let currentStdout = null;
     let currentStderr = null;
@@ -337,41 +344,41 @@ async function main() {
 
     function applyMeta(meta) {
         meta = meta || {};
-        let changed = false;
+        let restartChanged = false;
 
         if (Object.prototype.hasOwnProperty.call(meta, 'permissionMode') && typeof meta.permissionMode === 'string') {
-            if (currentPermissionMode !== meta.permissionMode) changed = true;
+            // Permission mode can be applied at runtime via control_request.
             currentPermissionMode = meta.permissionMode;
         }
         if (Object.prototype.hasOwnProperty.call(meta, 'model')) {
-            if (currentModel !== (meta.model || undefined)) changed = true;
+            // Model can be applied at runtime via control_request.
             currentModel = meta.model || undefined;
         }
         if (Object.prototype.hasOwnProperty.call(meta, 'fallbackModel')) {
-            if (currentFallbackModel !== (meta.fallbackModel || undefined)) changed = true;
+            if (currentFallbackModel !== (meta.fallbackModel || undefined)) restartChanged = true;
             currentFallbackModel = meta.fallbackModel || undefined;
         }
         if (Object.prototype.hasOwnProperty.call(meta, 'customSystemPrompt')) {
-            if (currentCustomSystemPrompt !== (meta.customSystemPrompt || undefined)) changed = true;
+            if (currentCustomSystemPrompt !== (meta.customSystemPrompt || undefined)) restartChanged = true;
             currentCustomSystemPrompt = meta.customSystemPrompt || undefined;
         }
         if (Object.prototype.hasOwnProperty.call(meta, 'appendSystemPrompt')) {
-            if (currentAppendSystemPrompt !== (meta.appendSystemPrompt || undefined)) changed = true;
+            if (currentAppendSystemPrompt !== (meta.appendSystemPrompt || undefined)) restartChanged = true;
             currentAppendSystemPrompt = meta.appendSystemPrompt || undefined;
         }
         if (Object.prototype.hasOwnProperty.call(meta, 'allowedTools')) {
             const next = meta.allowedTools || undefined;
-            if (JSON.stringify(currentAllowedTools) !== JSON.stringify(next)) changed = true;
+            if (JSON.stringify(currentAllowedTools) !== JSON.stringify(next)) restartChanged = true;
             currentAllowedTools = next;
         }
         if (Object.prototype.hasOwnProperty.call(meta, 'disallowedTools')) {
             const next = meta.disallowedTools || undefined;
-            if (JSON.stringify(currentDisallowedTools) !== JSON.stringify(next)) changed = true;
+            if (JSON.stringify(currentDisallowedTools) !== JSON.stringify(next)) restartChanged = true;
             currentDisallowedTools = next;
         }
 
         // If Claude is already running, changing CLI args requires a respawn.
-        if (changed && currentChild) {
+        if (restartChanged && currentChild) {
             configDirty = true;
         }
     }
@@ -383,7 +390,42 @@ async function main() {
         currentStderr = null;
         currentStderrLines = [];
         currentChild = null;
+        pendingControlAcks.clear();
+        appliedPermissionMode = undefined;
+        appliedModel = undefined;
         readyForNext = true;
+    }
+
+    function sendControlRequestToClaude(request) {
+        if (!currentChild || !currentChild.stdin || currentChild.stdin.destroyed) {
+            throw new Error('Claude Code process is not running');
+        }
+        const requestId = crypto.randomUUID();
+        const envelope = {
+            type: 'control_request',
+            request_id: requestId,
+            request
+        };
+        pendingControlAcks.set(requestId, request);
+        currentChild.stdin.write(JSON.stringify(envelope) + '\n');
+        return requestId;
+    }
+
+    function maybeApplyRuntimeConfigToClaude() {
+        // Claude Code supports mutating per-session state via `control_request`.
+        // This is required when resuming an existing conversation: CLI flags like
+        // `--model` may be ignored for a resumed session.
+        if (!currentChild) return;
+
+        if (typeof currentPermissionMode === 'string' && currentPermissionMode !== appliedPermissionMode) {
+            debugLog('Applying permission mode via control_request:', currentPermissionMode);
+            sendControlRequestToClaude({ subtype: 'set_permission_mode', mode: currentPermissionMode });
+        }
+
+        if (typeof currentModel === 'string' && currentModel.length > 0 && currentModel !== appliedModel) {
+            debugLog('Applying model via control_request:', currentModel);
+            sendControlRequestToClaude({ subtype: 'set_model', model: currentModel });
+        }
     }
 
     async function spawnClaude(allowResumeRetry = true) {
@@ -423,6 +465,22 @@ async function main() {
             } catch (err) {
                 debugLog('Invalid SDK message:', err.message);
                 return;
+            }
+
+            if (msg.type === 'control_response') {
+                const requestId = msg?.response?.request_id;
+                if (typeof requestId === 'string' && pendingControlAcks.has(requestId)) {
+                    const request = pendingControlAcks.get(requestId);
+                    pendingControlAcks.delete(requestId);
+                    if (msg?.response?.subtype === 'success' && request?.subtype === 'set_permission_mode') {
+                        appliedPermissionMode = request.mode;
+                    }
+                    if (msg?.response?.subtype === 'success' && request?.subtype === 'set_model') {
+                        appliedModel = request.model;
+                    }
+                    // These are internal acknowledgements; do not forward to Go.
+                    return;
+                }
             }
 
             // Normalize Claude stream-json "message"/"assistant"/"user" events into the raw record
@@ -611,9 +669,9 @@ async function main() {
 
             applyMeta(msg.meta);
 
-            // If configuration changed (model/permission settings), restart the
-            // Claude process before sending the next message so the new args
-            // take effect immediately.
+            // If configuration changed in a way that requires new CLI args,
+            // restart the Claude process before sending the next message so the
+            // new args take effect immediately.
             if (configDirty && currentChild) {
                 debugLog('Config changed; restarting Claude Code to apply new args');
                 try { currentChild.kill('SIGTERM'); } catch { }
@@ -623,6 +681,11 @@ async function main() {
             if (!currentChild) {
                 await spawnClaude(true);
             }
+
+            // Apply model + permission selection via stream-json control_request.
+            // This is required when resuming a session: `--model` does not always
+            // override the model for the existing conversation.
+            maybeApplyRuntimeConfigToClaude();
 
             sendUserToClaude(msg.content);
         } catch (err) {
