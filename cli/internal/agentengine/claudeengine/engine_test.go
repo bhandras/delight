@@ -130,6 +130,21 @@ func TestHandleRemotePermissionRequest_DeniesOnTimeoutCtx(t *testing.T) {
 	}
 }
 
+func TestCanonicalClaudeModelMapsAliases(t *testing.T) {
+	if got := canonicalClaudeModel("haiku"); got != claudeModelHaiku {
+		t.Fatalf("canonicalClaudeModel(haiku)=%q, want %q", got, claudeModelHaiku)
+	}
+	if got := canonicalClaudeModel("sonnet"); got != claudeModelSonnet {
+		t.Fatalf("canonicalClaudeModel(sonnet)=%q, want %q", got, claudeModelSonnet)
+	}
+	if got := canonicalClaudeModel("opus"); got != claudeModelOpus {
+		t.Fatalf("canonicalClaudeModel(opus)=%q, want %q", got, claudeModelOpus)
+	}
+	if got := canonicalClaudeModel("default"); got != "default" {
+		t.Fatalf("canonicalClaudeModel(default)=%q, want %q", got, "default")
+	}
+}
+
 func TestHandleRemoteBridgeMessageEmitsSessionIdentified(t *testing.T) {
 	e := New(".", nil, false)
 	if err := e.handleRemoteBridgeMessage(&claude.RemoteMessage{

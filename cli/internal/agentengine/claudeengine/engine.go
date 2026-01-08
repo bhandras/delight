@@ -50,6 +50,15 @@ const (
 )
 
 const (
+	// claudeModelHaiku is the canonical Claude Code model identifier for Haiku.
+	claudeModelHaiku = "claude-haiku-4-5"
+	// claudeModelOpus is the canonical Claude Code model identifier for Opus.
+	claudeModelOpus = "claude-opus-4-5"
+	// claudeModelSonnet is the canonical Claude Code model identifier for Sonnet.
+	claudeModelSonnet = "claude-sonnet-4-5"
+)
+
+const (
 	// claudePermissionModeDefault is Claude Code's default permission mode.
 	claudePermissionModeDefault = "default"
 	// claudePermissionModePlan is Claude Code's plan-only permission mode.
@@ -79,7 +88,7 @@ func normalizeClaudeConfig(cfg agentengine.AgentConfig) agentengine.AgentConfig 
 	}
 
 	out := agentengine.AgentConfig{
-		Model:          strings.TrimSpace(cfg.Model),
+		Model:          canonicalClaudeModel(cfg.Model),
 		PermissionMode: permissionMode,
 	}
 	// "default" means "no explicit override" (do not pass --model to upstream).
@@ -87,6 +96,31 @@ func normalizeClaudeConfig(cfg agentengine.AgentConfig) agentengine.AgentConfig 
 		out.Model = ""
 	}
 	return out
+}
+
+// canonicalClaudeModel normalizes user-facing model selections to the model
+// identifiers Claude Code expects on the command line.
+func canonicalClaudeModel(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
+	}
+
+	switch strings.ToLower(model) {
+	case "default":
+		// Default means "no explicit override".
+		return "default"
+	case "haiku":
+		return claudeModelHaiku
+	case "sonnet":
+		return claudeModelSonnet
+	case "opus":
+		return claudeModelOpus
+	default:
+		// Assume the user supplied a full model identifier Claude Code can
+		// validate (e.g. "claude-sonnet-4-5").
+		return model
+	}
 }
 
 // mergeClaudeMessageMeta returns a meta object that includes stable engine
@@ -284,9 +318,9 @@ func (e *Engine) Capabilities() agentengine.AgentCapabilities {
 	return agentengine.AgentCapabilities{
 		Models: []string{
 			"default",
-			"sonnet",
-			"opus",
-			"haiku",
+			claudeModelOpus,
+			claudeModelSonnet,
+			claudeModelHaiku,
 		},
 		PermissionModes: []string{
 			claudePermissionModeDefault,
