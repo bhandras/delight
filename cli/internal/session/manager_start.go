@@ -13,6 +13,7 @@ import (
 	"time"
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
+	"github.com/bhandras/delight/cli/internal/agentengine/codexengine"
 	cliauth "github.com/bhandras/delight/cli/internal/cli"
 	"github.com/bhandras/delight/cli/internal/crypto"
 	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
@@ -298,16 +299,7 @@ func (m *Manager) initSessionActor() {
 	}
 
 	// Initialize agent state in a server-compatible shape (plaintext JSON).
-	agentState := types.AgentState{
-		AgentType:         m.agent,
-		ControlledByUser:  true,
-		Requests:          make(map[string]types.AgentPendingRequest),
-		CompletedRequests: make(map[string]types.AgentCompletedRequest),
-	}
-	if m.cfg != nil {
-		agentState.Model = strings.TrimSpace(m.cfg.Model)
-		agentState.ResumeToken = strings.TrimSpace(m.cfg.ResumeToken)
-	}
+	agentState := m.seedAgentStateFromServer()
 	stateData, _ := json.Marshal(agentState)
 	initial := sessionactor.State{
 		SessionID:             m.sessionID,
@@ -317,7 +309,7 @@ func (m *Manager) initSessionActor() {
 		AgentState:            agentState,
 		AgentStateJSON:        string(stateData),
 		PersistRetryRemaining: 0,
-		AgentStateVersion:     0,
+		AgentStateVersion:     m.sessionAgentStateVer,
 	}
 
 	m.sessionActorRuntime = rt
@@ -337,6 +329,59 @@ func (m *Manager) initSessionActor() {
 		framework.WithMailboxSize[sessionactor.State](sessionActorMailboxSize),
 	)
 	m.sessionActor.Start()
+}
+
+// seedAgentStateFromServer initializes the session's agent state based on the
+// server-provided value (when present), then overlays CLI-provided flags and
+// engine defaults.
+func (m *Manager) seedAgentStateFromServer() types.AgentState {
+	agentState := types.AgentState{
+		AgentType:         m.agent,
+		ControlledByUser:  true,
+		Requests:          make(map[string]types.AgentPendingRequest),
+		CompletedRequests: make(map[string]types.AgentCompletedRequest),
+	}
+
+	// Preserve durable config from the server when available (best-effort).
+	if strings.TrimSpace(m.sessionAgentStateJSON) != "" {
+		var decoded types.AgentState
+		if err := json.Unmarshal([]byte(m.sessionAgentStateJSON), &decoded); err == nil {
+			agentState = decoded
+			agentState.AgentType = m.agent
+			agentState.ControlledByUser = true
+			if agentState.Requests == nil {
+				agentState.Requests = make(map[string]types.AgentPendingRequest)
+			}
+			if agentState.CompletedRequests == nil {
+				agentState.CompletedRequests = make(map[string]types.AgentCompletedRequest)
+			}
+		}
+	}
+
+	// Overlay CLI-provided flags (highest precedence).
+	if m.cfg != nil {
+		if model := strings.TrimSpace(m.cfg.Model); model != "" {
+			agentState.Model = model
+		}
+		if resume := strings.TrimSpace(m.cfg.ResumeToken); resume != "" {
+			agentState.ResumeToken = resume
+		}
+	}
+
+	// Seed stable defaults for Codex sessions when not configured yet.
+	if m.agent == "codex" {
+		if strings.TrimSpace(agentState.Model) == "" {
+			agentState.Model = codexengine.DefaultModel()
+		}
+		if strings.TrimSpace(agentState.ReasoningEffort) == "" {
+			agentState.ReasoningEffort = codexengine.DefaultReasoningEffort()
+		}
+		if strings.TrimSpace(agentState.PermissionMode) == "" {
+			agentState.PermissionMode = "default"
+		}
+	}
+
+	return agentState
 }
 
 // createSession creates a new session on the server
@@ -365,35 +410,18 @@ func (m *Manager) createSession() error {
 	}
 	encodedMeta := base64.StdEncoding.EncodeToString(metaJSON)
 
-	// Include an initial agentState in the session create request so the server
-	// can refresh stale sessions (for example after restarting the CLI with a
-	// different agent) even before websocket agent-state persistence kicks in.
-	initialAgentState := types.AgentState{
-		AgentType:         m.agent,
-		ControlledByUser:  true,
-		Requests:          make(map[string]types.AgentPendingRequest),
-		CompletedRequests: make(map[string]types.AgentCompletedRequest),
-	}
-	if m.cfg != nil {
-		initialAgentState.Model = strings.TrimSpace(m.cfg.Model)
-		initialAgentState.ResumeToken = strings.TrimSpace(m.cfg.ResumeToken)
-	}
-	agentStateJSON, err := json.Marshal(initialAgentState)
-	if err != nil {
-		return fmt.Errorf("failed to marshal agent state: %w", err)
-	}
-	agentStateString := string(agentStateJSON)
-
 	// Create session request (encode metadata as base64 string)
 	dataKeyB64, err := crypto.EncryptDataEncryptionKey(m.dataKey, m.masterSecret)
 	if err != nil {
 		return fmt.Errorf("failed to wrap dataEncryptionKey: %w", err)
 	}
 	body, err := json.Marshal(wire.CreateSessionRequest{
-		Tag:               m.sessionTag,
-		TerminalID:        m.terminalID,
-		Metadata:          encodedMeta,
-		AgentState:        &agentStateString,
+		Tag:        m.sessionTag,
+		TerminalID: m.terminalID,
+		Metadata:   encodedMeta,
+		// Do not include AgentState here: the server overwrites agentState for
+		// existing sessions. We restore any existing durable config from the
+		// CreateSession response and then persist desired updates over websocket.
 		DataEncryptionKey: &dataKeyB64,
 	})
 	if err != nil {
@@ -434,6 +462,12 @@ func (m *Manager) createSession() error {
 		return fmt.Errorf("invalid response: missing session id")
 	}
 	m.sessionID = result.Session.ID
+	m.sessionAgentStateJSON = ""
+	m.sessionAgentStateVer = 0
+	if result.Session.AgentState != nil && strings.TrimSpace(*result.Session.AgentState) != "" {
+		m.sessionAgentStateJSON = *result.Session.AgentState
+		m.sessionAgentStateVer = result.Session.AgentStateVersion
+	}
 
 	// Extract data key if present
 	if result.Session.DataEncryptionKey != nil && *result.Session.DataEncryptionKey != "" {

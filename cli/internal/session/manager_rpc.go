@@ -3,7 +3,9 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
+	"github.com/bhandras/delight/cli/internal/agentengine/codexengine"
 	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
 	"github.com/bhandras/delight/shared/wire"
 )
@@ -102,6 +104,14 @@ func (m *Manager) registerRPCHandlers() {
 	m.rpcManager.RegisterHandler(prefix+"agent-capabilities", func(params json.RawMessage) (json.RawMessage, error) {
 		wire.DumpToTestdata("rpc_session_agent_capabilities", params)
 
+		var req wire.AgentCapabilitiesRequest
+		if len(params) > 0 {
+			// Treat malformed payloads as a request for the current snapshot; this
+			// handler is frequently invoked from UI refresh flows and should be
+			// resilient to version skew.
+			_ = json.Unmarshal(params, &req)
+		}
+
 		if m.sessionActor == nil {
 			return json.Marshal(wire.AgentCapabilitiesResponse{Success: false, Error: "session actor not initialized"})
 		}
@@ -134,6 +144,9 @@ func (m *Manager) registerRPCHandlers() {
 					ReasoningEffort: snapshot.EffectiveConfig.ReasoningEffort,
 					PermissionMode:  snapshot.EffectiveConfig.PermissionMode,
 				},
+			}
+			if strings.TrimSpace(req.Model) != "" && resp.AgentType == "codex" {
+				resp.Capabilities.ReasoningEfforts = codexengine.ReasoningEffortsForModel(req.Model)
 			}
 			if !resp.Success && resp.Error == "" {
 				resp.Error = "failed to fetch agent capabilities"

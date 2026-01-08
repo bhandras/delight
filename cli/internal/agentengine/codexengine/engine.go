@@ -34,6 +34,38 @@ const (
 )
 
 const (
+	// defaultRemoteReasoningEffort is the Codex reasoning effort we select when
+	// no explicit effort is configured. This keeps behavior stable across Codex
+	// config changes.
+	defaultRemoteReasoningEffort = "medium"
+)
+
+// DefaultModel returns the Codex model we select when no explicit model is
+// configured.
+func DefaultModel() string {
+	return defaultRemoteModel
+}
+
+// DefaultReasoningEffort returns the Codex reasoning effort we select when no
+// explicit effort is configured.
+func DefaultReasoningEffort() string {
+	return defaultRemoteReasoningEffort
+}
+
+const (
+	// codexMiniModel is the Codex model identifier that supports only a subset
+	// of reasoning effort presets.
+	codexMiniModel = "gpt-5.1-codex-mini"
+)
+
+const (
+	// codexApprovalOnRequest requires approval before executing tools.
+	codexApprovalOnRequest = "on-request"
+	// codexApprovalNever disables approval prompts.
+	codexApprovalNever = "never"
+)
+
+const (
 	// rolloutDiscoveryTimeout bounds how long we wait for Codex to create a rollout file.
 	rolloutDiscoveryTimeout = 8 * time.Second
 	// rolloutDiscoveryPollInterval bounds how often we poll for a new rollout file.
@@ -317,7 +349,11 @@ func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSp
 		model = defaultRemoteModel
 	}
 	e.remoteModel = model
-	e.remoteReasoningEffort = strings.TrimSpace(spec.Config.ReasoningEffort)
+	reasoningEffort := strings.TrimSpace(spec.Config.ReasoningEffort)
+	if reasoningEffort == "" {
+		reasoningEffort = defaultRemoteReasoningEffort
+	}
+	e.remoteReasoningEffort = reasoningEffort
 
 	e.remoteResumeToken = ""
 	e.remoteSessionActive = false
@@ -339,20 +375,7 @@ func (e *Engine) Capabilities() agentengine.AgentCapabilities {
 	e.mu.Lock()
 	model := strings.TrimSpace(e.remoteModel)
 	e.mu.Unlock()
-
-	reasoningEfforts := []string{
-		"low",
-		"medium",
-		"high",
-		"xhigh",
-	}
-	if model == "gpt-5.1-codex-mini" {
-		// Codex mini only supports medium/high.
-		reasoningEfforts = []string{
-			"medium",
-			"high",
-		}
-	}
+	reasoningEfforts := ReasoningEffortsForModel(model)
 
 	return agentengine.AgentCapabilities{
 		Models: []string{
@@ -390,8 +413,17 @@ func (e *Engine) ApplyConfig(ctx context.Context, cfg agentengine.AgentConfig) e
 	_ = ctx
 
 	model := strings.TrimSpace(cfg.Model)
+	if model == "" {
+		// Treat empty model as "engine default" so applying the current session
+		// config does not spuriously clear resume state after switching modes.
+		model = defaultRemoteModel
+	}
 	permissionMode := normalizePermissionMode(cfg.PermissionMode)
 	reasoningEffort := strings.TrimSpace(cfg.ReasoningEffort)
+	if reasoningEffort == "" {
+		// Treat empty effort as "engine default" so config application is stable.
+		reasoningEffort = defaultRemoteReasoningEffort
+	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -408,6 +440,23 @@ func (e *Engine) ApplyConfig(ctx context.Context, cfg agentengine.AgentConfig) e
 	e.remotePermissionMode = permissionMode
 	e.remoteReasoningEffort = reasoningEffort
 	return nil
+}
+
+// ReasoningEffortsForModel returns the supported reasoning effort presets for a
+// given Codex model identifier.
+func ReasoningEffortsForModel(model string) []string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = defaultRemoteModel
+	}
+
+	switch model {
+	case codexMiniModel:
+		// Codex mini only supports medium/high.
+		return []string{"medium", "high"}
+	default:
+		return []string{"low", "medium", "high", "xhigh"}
+	}
 }
 
 // normalizePermissionMode returns a stable permission mode value for Codex.
@@ -441,10 +490,10 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 	localCtx, cancel := context.WithCancel(context.Background())
 
 	var cmd *exec.Cmd
-	if resumeToken == "" {
-		cmd = exec.Command(codexBinary)
+	if resumeToken != "" {
+		cmd = buildLocalCodexCommand(resumeToken, spec.Config)
 	} else {
-		cmd = exec.Command(codexBinary, codexResumeSubcommand, resumeToken)
+		cmd = buildLocalCodexCommand("", spec.Config)
 	}
 	workDir := e.workDir
 	if spec.WorkDir != "" {
@@ -535,6 +584,58 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 	}()
 
 	return nil
+}
+
+// buildLocalCodexCommand builds the `codex` interactive command line for local
+// mode, including user-selected model/effort/permission settings.
+func buildLocalCodexCommand(resumeToken string, cfg agentengine.AgentConfig) *exec.Cmd {
+	model := strings.TrimSpace(cfg.Model)
+	if model == "" {
+		model = defaultRemoteModel
+	}
+
+	reasoningEffort := strings.TrimSpace(cfg.ReasoningEffort)
+	if reasoningEffort == "" {
+		reasoningEffort = defaultRemoteReasoningEffort
+	}
+	if !containsString(ReasoningEffortsForModel(model), reasoningEffort) {
+		reasoningEffort = defaultRemoteReasoningEffort
+	}
+
+	permissionMode := normalizePermissionMode(cfg.PermissionMode)
+	sandbox := sandboxPolicy(permissionMode)
+	approval := approvalPolicy(permissionMode)
+
+	args := []string{
+		"-a", approval,
+		"-s", sandbox,
+		"-m", model,
+		"-c", fmt.Sprintf("model_reasoning_effort=%q", reasoningEffort),
+	}
+	if token := strings.TrimSpace(resumeToken); token != "" {
+		args = append(args, codexResumeSubcommand, token)
+	}
+	return exec.Command(codexBinary, args...)
+}
+
+// approvalPolicy maps Delight's permissionMode value to a Codex approval policy.
+func approvalPolicy(permissionMode string) string {
+	switch permissionMode {
+	case "safe-yolo", "yolo":
+		return codexApprovalNever
+	default:
+		return codexApprovalOnRequest
+	}
+}
+
+// containsString reports whether items contains needle.
+func containsString(items []string, needle string) bool {
+	for _, item := range items {
+		if item == needle {
+			return true
+		}
+	}
+	return false
 }
 
 type localStopHandle struct {

@@ -31,6 +31,8 @@ type Manager struct {
 	terminalID            string
 	sessionID             string
 	sessionTag            string
+	sessionAgentStateJSON string
+	sessionAgentStateVer  int64
 	dataKey               []byte
 	masterSecret          []byte
 	wsClient              *websocket.Client
