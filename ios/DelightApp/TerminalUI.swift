@@ -395,8 +395,9 @@ private struct TerminalAgentConfigControls: View {
         .padding(.vertical, 6)
         .sheet(isPresented: $showModelSheet) {
             let fresh = model.agentEngineSettings[session.id]
-            let caps = fresh?.capabilities
             TerminalModelEffortSheet(
+                model: model,
+                sessionID: session.id,
                 currentModel: fresh?.desiredConfig.model?.trimmingCharacters(in: .whitespacesAndNewlines),
                 currentEffort: fresh?.desiredConfig.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines),
                 onApply: { modelSelection, effortSelection in
@@ -406,9 +407,7 @@ private struct TerminalAgentConfigControls: View {
                         reasoningEffort: effortSelection,
                         sessionID: session.id
                     )
-                },
-                models: caps?.models ?? [],
-                reasoningEfforts: caps?.reasoningEfforts ?? []
+                }
             )
         }
         .sheet(isPresented: $showPermissionsSheet) {
@@ -629,22 +628,31 @@ private struct SheetActionButton: View {
 }
 
 private struct TerminalModelEffortSheet: View {
+    @ObservedObject var model: HarnessViewModel
+    let sessionID: String
     let currentModel: String?
     let currentEffort: String?
     let onApply: (String?, String?) -> Void
-    let models: [String]
-    let reasoningEfforts: [String]
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedModel: String = ""
     @State private var selectedEffort: String = ""
+    @State private var isRefreshing = false
+
+    private var availableModels: [String] {
+        model.agentEngineSettings[sessionID]?.capabilities.models ?? []
+    }
+
+    private var availableReasoningEfforts: [String] {
+        model.agentEngineSettings[sessionID]?.capabilities.reasoningEfforts ?? []
+    }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Model") {
-                    if !models.isEmpty {
-                        ForEach(models, id: \.self) { item in
+                    if !availableModels.isEmpty {
+                        ForEach(availableModels, id: \.self) { item in
                             Button {
                                 selectedModel = item
                             } label: {
@@ -667,8 +675,8 @@ private struct TerminalModelEffortSheet: View {
                 }
 
                 Section("Reasoning effort") {
-                    if !reasoningEfforts.isEmpty {
-                        ForEach(reasoningEfforts, id: \.self) { effort in
+                    if !availableReasoningEfforts.isEmpty {
+                        ForEach(availableReasoningEfforts, id: \.self) { effort in
                             Button {
                                 selectedEffort = effort
                             } label: {
@@ -700,22 +708,39 @@ private struct TerminalModelEffortSheet: View {
                     Button("Apply") {
                         let nextModel: String? = selectedModel.isEmpty ? nil : selectedModel
                         let nextEffort: String? =
-                            reasoningEfforts.isEmpty ? nil : (selectedEffort.isEmpty ? nil : selectedEffort)
+                            availableReasoningEfforts.isEmpty ? nil : (selectedEffort.isEmpty ? nil : selectedEffort)
                         onApply(nextModel, nextEffort)
                         dismiss()
                     }
                     .disabled(
-                        (models.isEmpty && reasoningEfforts.isEmpty)
-                            || (!models.isEmpty && selectedModel.isEmpty)
+                        (availableModels.isEmpty && availableReasoningEfforts.isEmpty)
+                            || (!availableModels.isEmpty && selectedModel.isEmpty)
                     )
                 }
             }
             .onAppear {
                 if selectedModel.isEmpty {
-                    selectedModel = currentModel ?? models.first ?? ""
+                    selectedModel = currentModel ?? availableModels.first ?? ""
                 }
                 if selectedEffort.isEmpty {
-                    selectedEffort = currentEffort ?? reasoningEfforts.first ?? ""
+                    selectedEffort = currentEffort ?? availableReasoningEfforts.first ?? ""
+                }
+            }
+            .onChange(of: selectedModel) { newValue in
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                isRefreshing = true
+                model.fetchAgentCapabilities(sessionID: sessionID, desiredModel: trimmed, suppressErrors: true) {
+                    isRefreshing = false
+                }
+            }
+            .onChange(of: availableReasoningEfforts) { _ in
+                if selectedEffort.isEmpty {
+                    selectedEffort = availableReasoningEfforts.first ?? ""
+                    return
+                }
+                if !availableReasoningEfforts.contains(selectedEffort) {
+                    selectedEffort = availableReasoningEfforts.first ?? ""
                 }
             }
         }

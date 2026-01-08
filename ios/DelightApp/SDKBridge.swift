@@ -21,6 +21,12 @@ private struct AgentConfigParams: Encodable {
     let reasoningEffort: String?
 }
 
+/// AgentCapabilitiesParams is the payload sent to `sessionID:agent-capabilities`
+/// RPC calls.
+private struct AgentCapabilitiesParams: Encodable {
+    let model: String?
+}
+
 /// AgentConfigRPCResponse is the best-effort response schema for agent-config RPC calls.
 private struct AgentConfigRPCResponse: Decodable {
     struct Result: Decodable {
@@ -800,7 +806,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     /// fetchAgentCapabilities queries the CLI for the agent engine's supported
     /// settings and current configuration snapshot.
-    func fetchAgentCapabilities(sessionID: String? = nil, suppressErrors: Bool = true, onDone: (() -> Void)? = nil) {
+    func fetchAgentCapabilities(
+        sessionID: String? = nil,
+        desiredModel: String? = nil,
+        suppressErrors: Bool = true,
+        onDone: (() -> Void)? = nil
+    ) {
         let targetID = sessionID ?? self.sessionID
         guard !targetID.isEmpty else {
             DispatchQueue.main.async { onDone?() }
@@ -812,8 +823,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 DispatchQueue.main.async { onDone?() }
             }
             do {
-                // `callRPCBuffer` always expects a JSON payload; use an empty object.
-                let paramsJSON = try JSONCoding.encode([String: String]())
+                // `callRPCBuffer` always expects a JSON payload.
+                let paramsJSON = try JSONCoding.encode(AgentCapabilitiesParams(model: desiredModel))
                 let method = targetID + ":agent-capabilities"
                 let responseBuf = try self.sdkCallSync {
                     try self.client.callRPCBuffer(method, paramsJSON: paramsJSON)
