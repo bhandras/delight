@@ -3220,6 +3220,56 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private func splitMarkdownBlocks(_ text: String) -> [MessageBlock] {
         var blocks: [MessageBlock] = []
         var remaining = text[...]
+
+        func extractLeadingToolCall(from remaining: inout Substring) -> ToolCallSummary? {
+            // Tool UI events are authored in Markdown (e.g. "Tool: `ls`"), but
+            // we want to render them as a chip with an icon rather than plain
+            // text.
+            let whitespaceAndNewlines = CharacterSet.whitespacesAndNewlines
+
+            while let first = remaining.first, first.unicodeScalars.allSatisfy(whitespaceAndNewlines.contains) {
+                remaining = remaining.dropFirst()
+            }
+
+            let lower = remaining.lowercased()
+            guard lower.hasPrefix("tool:") else { return nil }
+
+            let lineEnd = remaining.firstIndex(of: "\n") ?? remaining.endIndex
+            let line = String(remaining[..<lineEnd])
+            remaining = lineEnd == remaining.endIndex ? "" : remaining[remaining.index(after: lineEnd)...]
+
+            var payload = line
+            if payload.lowercased().hasPrefix("tool:") {
+                payload = String(payload.dropFirst("tool:".count))
+            }
+            payload = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // Prefer inline code for tool titles ("Tool: `ls`").
+            let title: String
+            if let firstTick = payload.firstIndex(of: "`"),
+               let secondTick = payload[payload.index(after: firstTick)...].firstIndex(of: "`"),
+               firstTick < secondTick {
+                title = String(payload[payload.index(after: firstTick)..<secondTick]).trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                title = payload
+            }
+
+            // Drop at most one "blank line" after the header so the chip and
+            // the following output have reasonable separation.
+            for _ in 0..<2 {
+                if remaining.first == "\n" { remaining = remaining.dropFirst() }
+            }
+
+            return ToolCallSummary(
+                title: title.isEmpty ? "Tool" : title,
+                icon: "wrench.and.screwdriver",
+                subtitle: nil
+            )
+        }
+
+        if let toolCall = extractLeadingToolCall(from: &remaining) {
+            blocks.append(.toolCall(toolCall))
+        }
         while let fenceRange = remaining.range(of: "```") {
             let before = String(remaining[..<fenceRange.lowerBound])
             if !before.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
