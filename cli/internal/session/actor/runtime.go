@@ -19,10 +19,11 @@ import (
 type Runtime struct {
 	mu sync.Mutex
 
-	sessionID string
-	workDir   string
-	debug     bool
-	agent     agentengine.AgentType
+	sessionID   string
+	workDir     string
+	debug       bool
+	agent       agentengine.AgentType
+	delightHome string
 
 	emitFn func(framework.Input)
 
@@ -108,6 +109,14 @@ func (r *Runtime) WithSessionID(sessionID string) *Runtime {
 	return r
 }
 
+// WithDelightHome configures the directory used for local state persistence.
+func (r *Runtime) WithDelightHome(delightHome string) *Runtime {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.delightHome = delightHome
+	return r
+}
+
 // WithStateUpdater configures the persistence adapter used for agent state updates.
 func (r *Runtime) WithStateUpdater(updater StateUpdater) *Runtime {
 	r.mu.Lock()
@@ -180,6 +189,8 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 			r.applyEngineConfig(ctx, e)
 		case effQueryAgentEngineSettings:
 			r.queryAgentEngineSettings(ctx, e, emit)
+		case effPersistLocalSessionInfo:
+			r.persistLocalSessionInfo(ctx, e, emit)
 		case effStartDesktopTakebackWatcher:
 			r.startDesktopTakebackWatcher(ctx, emit)
 		case effStopDesktopTakebackWatcher:

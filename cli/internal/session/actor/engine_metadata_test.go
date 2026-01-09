@@ -8,7 +8,7 @@ import (
 
 // TestReduceEngineSessionIdentifiedStoresResumeToken ensures evEngineSessionIdentified updates state.ResumeToken.
 func TestReduceEngineSessionIdentifiedStoresResumeToken(t *testing.T) {
-	state := State{RunnerGen: 2}
+	state := State{SessionID: "s1", RunnerGen: 2}
 
 	next, effects := Reduce(state, evEngineSessionIdentified{Gen: 2, Mode: ModeRemote, ResumeToken: "abc"})
 	require.NotNil(t, effects)
@@ -20,10 +20,10 @@ func TestReduceEngineSessionIdentifiedStoresResumeToken(t *testing.T) {
 
 // TestReduceEngineRolloutPathStoresPath ensures evEngineRolloutPath updates state.RolloutPath.
 func TestReduceEngineRolloutPathStoresPath(t *testing.T) {
-	state := State{RunnerGen: 2}
+	state := State{SessionID: "s1", RunnerGen: 2}
 
 	next, effects := Reduce(state, evEngineRolloutPath{Gen: 2, Path: "/tmp/rollout.jsonl"})
-	require.Nil(t, effects)
+	require.NotNil(t, effects)
 	require.Equal(t, "/tmp/rollout.jsonl", next.RolloutPath)
 }
 

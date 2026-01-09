@@ -508,6 +508,11 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 
 	rolloutPath := spec.RolloutPath
 	rolloutPath = strings.TrimSpace(rolloutPath)
+	if rolloutPath != "" {
+		if _, err := os.Stat(rolloutPath); err != nil {
+			rolloutPath = ""
+		}
+	}
 
 	localCtx, cancel := context.WithCancel(context.Background())
 

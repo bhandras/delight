@@ -72,6 +72,14 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 				state.AgentState.ResumeToken = strings.TrimSpace(in.ResumeToken)
 				state = refreshAgentStateJSON(state)
 				state, effects := schedulePersistDebounced(state)
+				if strings.TrimSpace(state.SessionID) != "" {
+					effects = append(effects, effPersistLocalSessionInfo{
+						SessionID:   state.SessionID,
+						AgentType:   state.AgentState.AgentType,
+						ResumeToken: state.ResumeToken,
+						RolloutPath: state.RolloutPath,
+					})
+				}
 				return state, effects
 			}
 		}
@@ -79,6 +87,14 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 	case evEngineRolloutPath:
 		if in.Gen == 0 || in.Gen == state.RunnerGen {
 			state.RolloutPath = in.Path
+			if strings.TrimSpace(state.SessionID) != "" {
+				return state, []actor.Effect{effPersistLocalSessionInfo{
+					SessionID:   state.SessionID,
+					AgentType:   state.AgentState.AgentType,
+					ResumeToken: state.ResumeToken,
+					RolloutPath: state.RolloutPath,
+				}}
+			}
 		}
 		return state, nil
 	case evEngineThinking:

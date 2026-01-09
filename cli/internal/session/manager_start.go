@@ -269,6 +269,9 @@ func (m *Manager) initSessionActor() {
 			if m.cfg != nil && m.cfg.ACPEnable {
 				m.sessionActorRuntime.WithACPConfig(m.cfg.ACPURL, m.acpAgent, m.acpSessionID)
 			}
+			if m.cfg != nil {
+				m.sessionActorRuntime.WithDelightHome(m.cfg.DelightHome)
+			}
 			m.sessionActorRuntime.WithEncryptFn(m.encrypt)
 		}
 		return
@@ -280,6 +283,7 @@ func (m *Manager) initSessionActor() {
 		WithSocketEmitter(m.wsClient).
 		WithAgent(m.agent).
 		WithACPConfig(m.cfg.ACPURL, m.acpAgent, m.acpSessionID).
+		WithDelightHome(m.cfg.DelightHome).
 		WithEncryptFn(m.encrypt)
 
 	hooks := framework.Hooks[sessionactor.State]{
@@ -310,6 +314,20 @@ func (m *Manager) initSessionActor() {
 		AgentStateJSON:        string(stateData),
 		PersistRetryRemaining: 0,
 		AgentStateVersion:     m.sessionAgentStateVer,
+	}
+	if m.cfg != nil {
+		if stored, ok, err := storage.LoadLocalSessionInfo(m.cfg.DelightHome, m.sessionID); err == nil && ok {
+			if strings.TrimSpace(initial.RolloutPath) == "" {
+				initial.RolloutPath = strings.TrimSpace(stored.RolloutPath)
+			}
+			if strings.TrimSpace(initial.ResumeToken) == "" {
+				initial.ResumeToken = strings.TrimSpace(stored.ResumeToken)
+				initial.AgentState.ResumeToken = strings.TrimSpace(stored.ResumeToken)
+				if refreshed, err := json.Marshal(initial.AgentState); err == nil {
+					initial.AgentStateJSON = string(refreshed)
+				}
+			}
+		}
 	}
 
 	m.sessionActorRuntime = rt

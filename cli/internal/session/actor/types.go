@@ -668,6 +668,22 @@ type effPersistAgentState struct {
 // isSessionEffect marks effPersistAgentState as a session effect.
 func (effPersistAgentState) isSessionEffect() {}
 
+// effPersistLocalSessionInfo persists machine-local session metadata under
+// DelightHome.
+//
+// This is intentionally separate from agent-state persistence because it can
+// contain machine-specific paths that should never be sent to the server.
+type effPersistLocalSessionInfo struct {
+	actor.EffectBase
+	SessionID   string
+	AgentType   string
+	ResumeToken string
+	RolloutPath string
+}
+
+// isSessionEffect marks effPersistLocalSessionInfo as a session effect.
+func (effPersistLocalSessionInfo) isSessionEffect() {}
+
 type effEmitEphemeral struct {
 	actor.EffectBase
 	Payload any
