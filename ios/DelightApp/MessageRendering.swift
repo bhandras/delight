@@ -25,6 +25,15 @@ struct MessageBubble: View {
         /// incomingLeadingTextInset provides a small left inset so incoming
         /// text doesn't hug the edge when not using a colored bubble.
         static let incomingLeadingTextInset: CGFloat = 0.5
+
+        /// eventCodeBlockVerticalPadding adds extra breathing room around event
+        /// messages that contain large code/tool outputs.
+        static let eventCodeBlockVerticalPadding: CGFloat = 6
+
+        /// eventTextVerticalPadding adds a smaller amount of breathing room
+        /// around non-code event messages so they don't visually stick to the
+        /// neighboring chat bubbles.
+        static let eventTextVerticalPadding: CGFloat = 4
     }
 
     var body: some View {
@@ -45,6 +54,18 @@ struct MessageBubble: View {
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
         .padding(.horizontal, Layout.bubbleHorizontalPadding)
+        .padding(.vertical, eventVerticalPadding(for: message))
+    }
+
+    /// eventVerticalPadding returns extra vertical spacing for tool/thinking
+    /// event rows so they are visually separated from normal messages.
+    private func eventVerticalPadding(for message: MessageItem) -> CGFloat {
+        guard message.role == .event else { return 0 }
+        let hasCodeBlock = message.blocks.contains { block in
+            if case .code = block { return true }
+            return false
+        }
+        return hasCodeBlock ? Layout.eventCodeBlockVerticalPadding : Layout.eventTextVerticalPadding
     }
 }
 
