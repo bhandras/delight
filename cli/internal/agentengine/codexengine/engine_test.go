@@ -2,6 +2,8 @@ package codexengine
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -192,6 +194,110 @@ func TestHandleRolloutEventEmitsReasoningUIEvents(t *testing.T) {
 	}
 	if ui.BriefMarkdown != "**Plan**" {
 		t.Fatalf("unexpected brief markdown: %q", ui.BriefMarkdown)
+	}
+}
+
+func TestDiscoverLatestRolloutPathForSessionIDPrefersMatchingSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	root := filepath.Join(home, ".codex", "sessions", "2026", "01", "09")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+
+	wantSession := "019ba209-ce56-7753-a01e-befe46f1d124"
+	otherSession := "019aa185-0cb4-7572-a018-e9aaafc8ceba"
+
+	wantPath := filepath.Join(root, "rollout-2026-01-09T10-15-10-"+wantSession+".jsonl")
+	otherPath := filepath.Join(root, "rollout-2026-01-09T10-15-11-"+otherSession+".jsonl")
+
+	if err := os.WriteFile(wantPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(want) returned error: %v", err)
+	}
+	if err := os.WriteFile(otherPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(other) returned error: %v", err)
+	}
+
+	// Even if another rollout is newer, session-specific discovery should ignore
+	// non-matching files entirely.
+	if err := os.Chtimes(wantPath, time.Unix(10, 0), time.Unix(10, 0)); err != nil {
+		t.Fatalf("Chtimes(want) returned error: %v", err)
+	}
+	if err := os.Chtimes(otherPath, time.Unix(20, 0), time.Unix(20, 0)); err != nil {
+		t.Fatalf("Chtimes(other) returned error: %v", err)
+	}
+
+	got, err := discoverLatestRolloutPathForSessionIDImpl(wantSession)
+	if err != nil {
+		t.Fatalf("discoverLatestRolloutPathForSessionIDImpl returned error: %v", err)
+	}
+	if got != wantPath {
+		t.Fatalf("expected path %q, got %q", wantPath, got)
+	}
+}
+
+func TestDiscoverLatestRolloutPathForSessionIDChoosesNewestMatch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	root := filepath.Join(home, ".codex", "sessions", "2026", "01", "09")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+
+	session := "019ba209-ce56-7753-a01e-befe46f1d124"
+	oldPath := filepath.Join(root, "rollout-2026-01-09T10-15-10-"+session+".jsonl")
+	newPath := filepath.Join(root, "rollout-2026-01-09T10-15-11-"+session+".jsonl")
+
+	if err := os.WriteFile(oldPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(old) returned error: %v", err)
+	}
+	if err := os.WriteFile(newPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(new) returned error: %v", err)
+	}
+	if err := os.Chtimes(oldPath, time.Unix(10, 0), time.Unix(10, 0)); err != nil {
+		t.Fatalf("Chtimes(old) returned error: %v", err)
+	}
+	if err := os.Chtimes(newPath, time.Unix(20, 0), time.Unix(20, 0)); err != nil {
+		t.Fatalf("Chtimes(new) returned error: %v", err)
+	}
+
+	got, err := discoverLatestRolloutPathForSessionIDImpl(session)
+	if err != nil {
+		t.Fatalf("discoverLatestRolloutPathForSessionIDImpl returned error: %v", err)
+	}
+	if got != newPath {
+		t.Fatalf("expected newest match %q, got %q", newPath, got)
+	}
+}
+
+func TestWaitForRolloutPathForSessionIDWaitsForMatch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	root := filepath.Join(home, ".codex", "sessions", "2026", "01", "09")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+
+	session := "019ba209-ce56-7753-a01e-befe46f1d124"
+	path := filepath.Join(root, "rollout-2026-01-09T10-15-10-"+session+".jsonl")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_ = os.WriteFile(path, []byte("{}\n"), 0o644)
+	}()
+
+	got, err := waitForRolloutPathForSessionID(ctx, session)
+	if err != nil {
+		t.Fatalf("waitForRolloutPathForSessionID returned error: %v", err)
+	}
+	if got != path {
+		t.Fatalf("expected path %q, got %q", path, got)
 	}
 }
 

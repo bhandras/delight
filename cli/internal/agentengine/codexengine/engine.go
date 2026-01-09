@@ -507,13 +507,7 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 	resumeToken := strings.TrimSpace(spec.ResumeToken)
 
 	rolloutPath := spec.RolloutPath
-	if strings.TrimSpace(rolloutPath) == "" && resumeToken != "" {
-		discovered, err := discoverLatestRolloutPath()
-		if err != nil {
-			return err
-		}
-		rolloutPath = discovered
-	}
+	rolloutPath = strings.TrimSpace(rolloutPath)
 
 	localCtx, cancel := context.WithCancel(context.Background())
 
@@ -564,7 +558,15 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 		rolloutPath = ""
 	}
 	if strings.TrimSpace(rolloutPath) == "" {
-		discovered, err := waitForRolloutPath(localCtx)
+		var (
+			discovered string
+			err        error
+		)
+		if resumeToken != "" {
+			discovered, err = waitForRolloutPathForSessionID(localCtx, resumeToken)
+		} else {
+			discovered, err = waitForRolloutPath(localCtx)
+		}
 		if err != nil {
 			_ = cmd.Process.Kill()
 			cancel()
@@ -572,6 +574,8 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 		}
 		rolloutPath = discovered
 	}
+
+	e.tryEmit(agentengine.EvRolloutPath{Mode: agentengine.ModeLocal, Path: rolloutPath})
 
 	tailer := rollout.NewTailer(rolloutPath, rollout.TailerOptions{StartAtEnd: startAtEnd})
 	if err := tailer.Start(localCtx); err != nil {
@@ -1222,6 +1226,12 @@ func discoverLatestRolloutPath() (string, error) {
 	return discoverLatestRolloutPathImpl()
 }
 
+// discoverLatestRolloutPathForSessionID returns the most recently modified
+// rollout JSONL for the given Codex session id.
+func discoverLatestRolloutPathForSessionID(sessionID string) (string, error) {
+	return discoverLatestRolloutPathForSessionIDImpl(sessionID)
+}
+
 // discoverLatestRolloutPathAfter returns the most recently modified rollout JSONL after since.
 // waitForRolloutPath waits for Codex to create a rollout JSONL and returns its path.
 func waitForRolloutPath(ctx context.Context) (string, error) {
@@ -1239,6 +1249,33 @@ func waitForRolloutPath(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("timed out waiting for codex rollout jsonl")
 		case <-ticker.C:
 			path, err := discoverLatestRolloutPathImpl()
+			if err != nil {
+				continue
+			}
+			if strings.TrimSpace(path) != "" {
+				return path, nil
+			}
+		}
+	}
+}
+
+// waitForRolloutPathForSessionID waits for Codex to create a rollout JSONL for
+// the given session id and returns its path.
+func waitForRolloutPathForSessionID(ctx context.Context, sessionID string) (string, error) {
+	deadline := time.NewTimer(rolloutDiscoveryTimeout)
+	defer deadline.Stop()
+
+	ticker := time.NewTicker(rolloutDiscoveryPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-deadline.C:
+			return "", fmt.Errorf("timed out waiting for codex rollout jsonl")
+		case <-ticker.C:
+			path, err := discoverLatestRolloutPathForSessionIDImpl(sessionID)
 			if err != nil {
 				continue
 			}
@@ -1290,6 +1327,59 @@ func discoverLatestRolloutPathImpl() (string, error) {
 
 	if bestPath == "" {
 		return "", fmt.Errorf("no codex rollout jsonl found under %s", root)
+	}
+	return bestPath, nil
+}
+
+// discoverLatestRolloutPathForSessionIDImpl finds the latest rollout JSONL for
+// the given Codex session id.
+func discoverLatestRolloutPathForSessionIDImpl(sessionID string) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", fmt.Errorf("session id is required")
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Join(home, rolloutRootRelative)
+
+	var bestPath string
+	var bestMod time.Time
+
+	wantSuffix := "-" + sessionID + ".jsonl"
+
+	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if !strings.HasPrefix(name, "rollout-") || !strings.HasSuffix(name, wantSuffix) {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		if info.ModTime().After(bestMod) {
+			bestMod = info.ModTime()
+			bestPath = path
+		}
+		return nil
+	})
+	if walkErr != nil {
+		if errors.Is(walkErr, os.ErrNotExist) {
+			return "", fmt.Errorf("codex rollout directory not found: %s", root)
+		}
+		return "", walkErr
+	}
+
+	if bestPath == "" {
+		return "", fmt.Errorf("no codex rollout jsonl found under %s for session %s", root, sessionID)
 	}
 	return bestPath, nil
 }
