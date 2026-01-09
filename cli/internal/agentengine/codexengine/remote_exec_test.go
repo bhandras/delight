@@ -2,6 +2,7 @@ package codexengine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -45,6 +46,9 @@ func TestBuildCodexExecCommandIncludesNonInteractiveFlags(t *testing.T) {
 	if !strings.Contains(args, " -a never ") {
 		t.Fatalf("expected -a never in args, got: %s", args)
 	}
+	if !strings.Contains(args, " exec --skip-git-repo-check ") {
+		t.Fatalf("expected exec --skip-git-repo-check in args, got: %s", args)
+	}
 	if !strings.Contains(args, " -s read-only ") {
 		t.Fatalf("expected -s read-only in args, got: %s", args)
 	}
@@ -73,7 +77,38 @@ func TestBuildCodexExecCommandResumeShape(t *testing.T) {
 	_ = stderr.Close()
 
 	args := strings.Join(cmd.Args, " ")
-	if !strings.Contains(args, " exec resume abc ping --json") {
+	if !strings.Contains(args, " exec --skip-git-repo-check ping resume abc --json") {
 		t.Fatalf("expected resume subcommand, got: %s", args)
+	}
+}
+
+func TestCaptureCodexExecStderrCapturesAndTruncates(t *testing.T) {
+	input := strings.Repeat("x", 64) + "\n"
+	got := captureCodexExecStderr(strings.NewReader(input), 16)
+	if got.Text == "" {
+		t.Fatalf("expected captured text, got empty")
+	}
+	if len(got.Text) > 16 {
+		t.Fatalf("expected captured text <= 16 bytes, got %d", len(got.Text))
+	}
+	if !got.Truncated {
+		t.Fatalf("expected truncated=true")
+	}
+}
+
+func TestFormatCodexExecExitErrorIncludesStderr(t *testing.T) {
+	waitErr := errors.New("exit status 1")
+	msg := formatCodexExecExitError(waitErr, codexExecStderrCapture{
+		Text:      "unknown flag: --whatever",
+		Truncated: false,
+	})
+	if !strings.Contains(msg, "Codex exec failed") {
+		t.Fatalf("expected base error message, got: %s", msg)
+	}
+	if !strings.Contains(msg, "stderr:") {
+		t.Fatalf("expected stderr label, got: %s", msg)
+	}
+	if !strings.Contains(msg, "unknown flag") {
+		t.Fatalf("expected stderr content, got: %s", msg)
 	}
 }

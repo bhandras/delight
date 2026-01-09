@@ -67,8 +67,6 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 			// resume via CLI).
 			if in.Mode == ModeRemote || strings.TrimSpace(state.ResumeToken) == "" {
 				state.ResumeToken = in.ResumeToken
-				// Preserve legacy ClaudeSessionID for bridging and best-effort resume.
-				state.ClaudeSessionID = in.ResumeToken
 				state.AgentState.ResumeToken = strings.TrimSpace(in.ResumeToken)
 				state = refreshAgentStateJSON(state)
 				state, effects := schedulePersistDebounced(state)

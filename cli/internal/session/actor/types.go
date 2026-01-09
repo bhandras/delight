@@ -58,10 +58,6 @@ type State struct {
 	// RemoteRunner summarizes the most recent remote runner lifecycle observation.
 	RemoteRunner runnerHandle
 
-	// ClaudeSessionID is the most recently observed Claude session id for the
-	// local runner. It is used as a best-effort resume id when starting remote.
-	ClaudeSessionID string
-
 	// ResumeToken is an agent-specific session identifier that can be used to
 	// resume a conversation (e.g. Claude session id, Codex session UUID).
 	ResumeToken string

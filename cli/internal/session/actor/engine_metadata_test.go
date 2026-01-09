@@ -14,7 +14,6 @@ func TestReduceEngineSessionIdentifiedStoresResumeToken(t *testing.T) {
 	require.NotNil(t, effects)
 	require.NotEmpty(t, effects)
 	require.Equal(t, "abc", next.ResumeToken)
-	require.Equal(t, "abc", next.ClaudeSessionID)
 	require.Equal(t, "abc", next.AgentState.ResumeToken)
 }
 

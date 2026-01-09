@@ -18,6 +18,8 @@ import (
 	"github.com/bhandras/delight/shared/logger"
 )
 
+const codexExecStderrCaptureMaxBytes = 16 * 1024
+
 // codexExecEvent is a JSONL event emitted by `codex exec --json`.
 type codexExecEvent struct {
 	Type     string          `json:"type"`
@@ -77,13 +79,12 @@ func (e *Engine) runCodexExecTurn(ctx context.Context, spec codexExecTurnSpec) e
 	// Read both streams; JSON events are on stdout, but we still want to drain
 	// stderr so the child cannot block on a full pipe.
 	stdoutCh := make(chan error, 1)
-	stderrCh := make(chan struct{})
+	stderrCh := make(chan codexExecStderrCapture, 1)
 	go func() {
 		stdoutCh <- e.consumeCodexExecJSON(ctx, stdout)
 	}()
 	go func() {
-		_, _ = io.Copy(io.Discard, stderr)
-		close(stderrCh)
+		stderrCh <- captureCodexExecStderr(stderr, codexExecStderrCaptureMaxBytes)
 	}()
 
 	var stdoutErr error
@@ -97,7 +98,7 @@ func (e *Engine) runCodexExecTurn(ctx context.Context, spec codexExecTurnSpec) e
 	}
 
 	waitErr := <-done
-	<-stderrCh
+	stderrCapture := <-stderrCh
 
 	e.mu.Lock()
 	if e.remoteExecCmd == cmd {
@@ -116,7 +117,7 @@ func (e *Engine) runCodexExecTurn(ctx context.Context, spec codexExecTurnSpec) e
 	// stopping the engine: the runtime can remain responsive and the user can
 	// retry.
 	if waitErr != nil {
-		e.emitRemoteAssistantError(fmt.Sprintf("Codex exec failed: %v", waitErr))
+		e.emitRemoteAssistantError(formatCodexExecExitError(waitErr, stderrCapture))
 		return nil
 	}
 	return nil
@@ -288,6 +289,14 @@ func buildCodexExecCommand(ctx context.Context, spec codexExecTurnSpec) (*exec.C
 
 	args = append(args, "exec")
 
+	// Delight remote sessions frequently run in arbitrary directories (including
+	// non-git repos). Codex enforces a git-repo check by default and refuses to
+	// run without an explicit override.
+	//
+	// This flag is scoped to the `exec` subcommand (not a global option), so it
+	// must appear after `exec` and before the prompt.
+	args = append(args, "--skip-git-repo-check")
+
 	prompt := strings.TrimSpace(spec.Prompt)
 	if prompt == "" {
 		return nil, nil, nil, fmt.Errorf("prompt is required")
@@ -295,7 +304,9 @@ func buildCodexExecCommand(ctx context.Context, spec codexExecTurnSpec) (*exec.C
 
 	resumeToken := strings.TrimSpace(spec.ResumeToken)
 	if resumeToken != "" {
-		args = append(args, "resume", resumeToken, prompt, "--json")
+		// Codex expects the prompt first, then the resume subcommand.
+		// Example: `codex exec "what's my name" resume <thread_id> --json`
+		args = append(args, prompt, "resume", resumeToken, "--json")
 	} else {
 		args = append(args, prompt, "--json")
 	}
@@ -376,4 +387,86 @@ func truncateOneLine(s string, maxRunes int) string {
 		return s
 	}
 	return string(r[:maxRunes-1]) + "…"
+}
+
+// codexExecStderrCapture is a bounded stderr snapshot collected while draining
+// the stderr stream for a single `codex exec` process.
+type codexExecStderrCapture struct {
+	Text      string
+	Truncated bool
+}
+
+// captureCodexExecStderr drains stderr entirely while capturing up to maxBytes
+// of its content for debugging and UI error display.
+func captureCodexExecStderr(r io.Reader, maxBytes int) codexExecStderrCapture {
+	w := newCappedBuffer(maxBytes)
+	_, _ = io.Copy(w, r)
+	return codexExecStderrCapture{
+		Text:      strings.TrimSpace(w.String()),
+		Truncated: w.Truncated(),
+	}
+}
+
+// formatCodexExecExitError builds an assistant-visible error string that
+// includes stderr when available, to make remote failures debuggable.
+func formatCodexExecExitError(waitErr error, stderr codexExecStderrCapture) string {
+	msg := fmt.Sprintf("Codex exec failed: %v", waitErr)
+
+	if strings.TrimSpace(stderr.Text) == "" {
+		return msg
+	}
+	if stderr.Truncated {
+		return fmt.Sprintf("%s\n\nstderr (truncated):\n%s", msg, stderr.Text)
+	}
+	return fmt.Sprintf("%s\n\nstderr:\n%s", msg, stderr.Text)
+}
+
+// cappedBuffer captures up to a fixed number of bytes while still reporting
+// successful writes so io.Copy continues draining the source.
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	maxBytes  int
+	truncated bool
+}
+
+// newCappedBuffer returns a buffer that captures up to maxBytes bytes.
+func newCappedBuffer(maxBytes int) *cappedBuffer {
+	return &cappedBuffer{maxBytes: maxBytes}
+}
+
+// Write implements io.Writer.
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if b.maxBytes <= 0 {
+		if len(p) > 0 {
+			b.truncated = true
+		}
+		return len(p), nil
+	}
+
+	remaining := b.maxBytes - b.buf.Len()
+	if remaining <= 0 {
+		if len(p) > 0 {
+			b.truncated = true
+		}
+		return len(p), nil
+	}
+
+	if len(p) > remaining {
+		_, _ = b.buf.Write(p[:remaining])
+		b.truncated = true
+		return len(p), nil
+	}
+
+	_, _ = b.buf.Write(p)
+	return len(p), nil
+}
+
+// String returns the captured bytes as a string.
+func (b *cappedBuffer) String() string {
+	return b.buf.String()
+}
+
+// Truncated reports whether any bytes were dropped due to maxBytes.
+func (b *cappedBuffer) Truncated() bool {
+	return b.truncated
 }

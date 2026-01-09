@@ -106,14 +106,6 @@ func NewManager(cfg *config.Config, token string, debug bool) (*Manager, error) 
 	}, nil
 }
 
-// GetClaudeSessionID returns the detected Claude session ID.
-func (m *Manager) GetClaudeSessionID() string {
-	if m.sessionActor == nil {
-		return ""
-	}
-	return m.sessionActor.State().ClaudeSessionID
-}
-
 // IsThinking returns whether an agent is currently thinking.
 func (m *Manager) IsThinking() bool {
 	return m.thinking

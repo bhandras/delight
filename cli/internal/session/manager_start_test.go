@@ -119,31 +119,35 @@ func TestSelectExistingSessionForAgentMatchesAgentAndDir(t *testing.T) {
 	require.NoError(t, err)
 	claudeJSON := string(claudeRaw)
 
+	// Sessions are returned ordered by updated_at DESC. We expect startup to pick
+	// the first matching entry for a given agent/directory.
 	sessions := []listSessionItem{
 		{
 			ID:         "s-claude",
 			TerminalID: "term-1",
 			Metadata:   metaEnc,
 			AgentState: &claudeJSON,
-			UpdatedAt:  100,
 		},
 		{
 			ID:         "s-codex",
 			TerminalID: "term-1",
 			Metadata:   metaEnc,
 			AgentState: &codexJSON,
-			UpdatedAt:  200,
 		},
 	}
 
-	got, ok := selectExistingSessionForAgent(sessions, "/tmp/proj", "term-1", "codex")
+	// Reuse the decoding helpers directly (these are the critical match rules).
+	metaPath, ok := decodeSessionMetadataPath(sessions[1].Metadata)
 	require.True(t, ok)
-	require.Equal(t, "s-codex", got.id)
-	require.Equal(t, codexJSON, got.agentStateJSON)
-	require.Equal(t, "term-1:codex", got.tag)
+	require.Equal(t, "/tmp/proj", metaPath)
+
+	agentType, agentStateJSON, ok := decodeSessionAgentType(sessions[1].AgentState, sessions[1].Metadata)
+	require.True(t, ok)
+	require.Equal(t, "codex", agentType)
+	require.Equal(t, codexJSON, agentStateJSON)
 }
 
-func TestSelectExistingSessionForAgentPrefersMostRecentActivity(t *testing.T) {
+func TestDecodeSessionAgentTypeRejectsMissingAgentType(t *testing.T) {
 	t.Parallel()
 
 	meta := types.Metadata{Path: "/tmp/proj", Flavor: "codex"}
@@ -151,31 +155,12 @@ func TestSelectExistingSessionForAgentPrefersMostRecentActivity(t *testing.T) {
 	require.NoError(t, err)
 	metaEnc := base64.StdEncoding.EncodeToString(metaRaw)
 
-	state := types.AgentState{AgentType: "codex", ResumeToken: "thread-1"}
+	state := types.AgentState{ResumeToken: "thread-1"}
 	stateRaw, err := json.Marshal(state)
 	require.NoError(t, err)
 	stateJSON := string(stateRaw)
 
-	sessions := []listSessionItem{
-		{
-			ID:         "old",
-			TerminalID: "term-1",
-			Metadata:   metaEnc,
-			AgentState: &stateJSON,
-			UpdatedAt:  10,
-			ActiveAt:   500,
-		},
-		{
-			ID:         "newer-but-inactive",
-			TerminalID: "term-1",
-			Metadata:   metaEnc,
-			AgentState: &stateJSON,
-			UpdatedAt:  600,
-			ActiveAt:   0,
-		},
-	}
-
-	got, ok := selectExistingSessionForAgent(sessions, "/tmp/proj", "term-1", "codex")
-	require.True(t, ok)
-	require.Equal(t, "newer-but-inactive", got.id)
+	agentType, _, ok := decodeSessionAgentType(&stateJSON, metaEnc)
+	require.False(t, ok)
+	require.Equal(t, "", agentType)
 }

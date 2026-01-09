@@ -540,8 +540,6 @@ type listSessionsResponse struct {
 
 type listSessionItem struct {
 	ID                string  `json:"id"`
-	UpdatedAt         int64   `json:"updatedAt"`
-	ActiveAt          int64   `json:"activeAt"`
 	TerminalID        string  `json:"terminalId"`
 	Metadata          string  `json:"metadata"`
 	AgentState        *string `json:"agentState"`
@@ -576,7 +574,17 @@ func (m *Manager) findExistingSessionForAgent() (existingSessionMatch, bool, err
 		return existingSessionMatch{}, false, fmt.Errorf("missing workdir")
 	}
 
-	url := fmt.Sprintf("%s/v1/sessions?limit=200", strings.TrimRight(m.cfg.ServerURL, "/"))
+	const (
+		sessionsListLimit = 50
+		// maxSessionsListBytes is a safety cap to prevent reading arbitrarily
+		// large session lists into memory during startup.
+		//
+		// A very large response can happen if the server has many sessions and
+		// metadata/agentState blobs grow unexpectedly.
+		maxSessionsListBytes = 8 << 20
+	)
+
+	url := fmt.Sprintf("%s/v1/sessions?limit=%d", strings.TrimRight(m.cfg.ServerURL, "/"), sessionsListLimit)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return existingSessionMatch{}, false, err
@@ -590,11 +598,8 @@ func (m *Manager) findExistingSessionForAgent() (existingSessionMatch, bool, err
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return existingSessionMatch{}, false, err
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
 		msg := strings.TrimSpace(string(body))
 		if msg == "" {
 			msg = resp.Status
@@ -602,70 +607,83 @@ func (m *Manager) findExistingSessionForAgent() (existingSessionMatch, bool, err
 		return existingSessionMatch{}, false, fmt.Errorf("list sessions failed: %s", msg)
 	}
 
-	var decoded listSessionsResponse
-	if err := json.Unmarshal(body, &decoded); err != nil {
+	limitedBody := io.LimitReader(resp.Body, maxSessionsListBytes)
+	decoder := json.NewDecoder(limitedBody)
+
+	// Decode the top-level object manually so we can scan sessions one-by-one
+	// and bail out early once we find a match. The server returns sessions
+	// ordered by updated_at DESC, so the first match is the best match.
+	tok, err := decoder.Token()
+	if err != nil {
 		return existingSessionMatch{}, false, err
 	}
-
-	match, ok := selectExistingSessionForAgent(decoded.Sessions, m.workDir, m.terminalID, m.agent)
-	if !ok {
-		return existingSessionMatch{}, false, nil
-	}
-	return match, true, nil
-}
-
-// selectExistingSessionForAgent finds the best session match for an agent in a
-// directory using only server-provided session list data.
-func selectExistingSessionForAgent(sessions []listSessionItem, workDir string, terminalID string, agent string) (existingSessionMatch, bool) {
-	workDir = strings.TrimSpace(workDir)
-	terminalID = strings.TrimSpace(terminalID)
-	agent = strings.TrimSpace(agent)
-	if workDir == "" || terminalID == "" || agent == "" {
-		return existingSessionMatch{}, false
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return existingSessionMatch{}, false, fmt.Errorf("invalid sessions response shape")
 	}
 
-	var best existingSessionMatch
-	var bestScore int64
-
-	for _, sess := range sessions {
-		if strings.TrimSpace(sess.ID) == "" || sess.TerminalID != terminalID {
+	for decoder.More() {
+		keyTok, err := decoder.Token()
+		if err != nil {
+			return existingSessionMatch{}, false, err
+		}
+		key, _ := keyTok.(string)
+		if key != "sessions" {
+			// Best-effort skip: decode into RawMessage to consume the value.
+			var discard json.RawMessage
+			if err := decoder.Decode(&discard); err != nil {
+				return existingSessionMatch{}, false, err
+			}
 			continue
 		}
 
-		meta, ok := decodeSessionMetadataPath(sess.Metadata)
-		if !ok || meta != workDir {
-			continue
+		// Expect an array of session objects.
+		tok, err := decoder.Token()
+		if err != nil {
+			return existingSessionMatch{}, false, err
+		}
+		if delim, ok := tok.(json.Delim); !ok || delim != '[' {
+			return existingSessionMatch{}, false, fmt.Errorf("invalid sessions response shape")
 		}
 
-		agentType, agentStateJSON, ok := decodeSessionAgentType(sess.AgentState, sess.Metadata)
-		if !ok || agentType != agent {
-			continue
+		for decoder.More() {
+			var sess listSessionItem
+			if err := decoder.Decode(&sess); err != nil {
+				return existingSessionMatch{}, false, err
+			}
+			if strings.TrimSpace(sess.ID) == "" || strings.TrimSpace(sess.TerminalID) != m.terminalID {
+				continue
+			}
+			metaPath, ok := decodeSessionMetadataPath(sess.Metadata)
+			if !ok || metaPath != m.workDir {
+				continue
+			}
+			agentType, agentStateJSON, ok := decodeSessionAgentType(sess.AgentState, sess.Metadata)
+			if !ok || agentType != m.agent {
+				continue
+			}
+
+			match := existingSessionMatch{
+				id:                strings.TrimSpace(sess.ID),
+				tag:               stableSessionTagForAgent(m.terminalID, m.agent),
+				agentStateJSON:    agentStateJSON,
+				agentStateVersion: sess.AgentStateVersion,
+			}
+			if sess.DataEncryptionKey != nil {
+				match.dataEncryptionKey = strings.TrimSpace(*sess.DataEncryptionKey)
+			}
+			_ = resp.Body.Close()
+			return match, true, nil
 		}
 
-		score := sess.UpdatedAt
-		if sess.ActiveAt > score {
-			score = sess.ActiveAt
-		}
-		if score <= bestScore {
-			continue
-		}
-
-		bestScore = score
-		best = existingSessionMatch{
-			id:                strings.TrimSpace(sess.ID),
-			tag:               stableSessionTagForAgent(terminalID, agent),
-			agentStateJSON:    agentStateJSON,
-			agentStateVersion: sess.AgentStateVersion,
-		}
-		if sess.DataEncryptionKey != nil {
-			best.dataEncryptionKey = strings.TrimSpace(*sess.DataEncryptionKey)
+		// Consume closing bracket.
+		if _, err := decoder.Token(); err != nil {
+			return existingSessionMatch{}, false, err
 		}
 	}
 
-	if best.id == "" {
-		return existingSessionMatch{}, false
-	}
-	return best, true
+	// Consume closing brace.
+	_, _ = decoder.Token()
+	return existingSessionMatch{}, false, nil
 }
 
 // decodeSessionMetadataPath extracts the session metadata path from the
@@ -701,17 +719,6 @@ func decodeSessionAgentType(agentState *string, encodedMetadata string) (agentTy
 		return "", "", false
 	}
 	agentType = strings.TrimSpace(state.AgentType)
-	if agentType == "" {
-		// Fall back to metadata flavor for backward-compatibility with older
-		// sessions that predate agentType in agent state.
-		raw, err := base64.StdEncoding.DecodeString(encodedMetadata)
-		if err == nil {
-			meta := types.Metadata{}
-			if err := json.Unmarshal(raw, &meta); err == nil {
-				agentType = strings.TrimSpace(meta.Flavor)
-			}
-		}
-	}
 	if agentType == "" {
 		return "", "", false
 	}
