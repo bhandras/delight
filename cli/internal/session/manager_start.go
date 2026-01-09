@@ -408,7 +408,21 @@ func (m *Manager) createSession() error {
 	if m.cfg.ForceNewSession {
 		m.sessionTag = fmt.Sprintf("%s-%d", m.terminalID, time.Now().Unix())
 	} else {
-		m.sessionTag = stableSessionTag(m.terminalID)
+		if sess, ok, err := m.findExistingSessionForAgent(); err == nil && ok {
+			m.sessionTag = sess.tag
+			m.sessionID = sess.id
+			m.sessionAgentStateJSON = sess.agentStateJSON
+			m.sessionAgentStateVer = sess.agentStateVersion
+
+			// Prefer the server-provided data key when available.
+			if sess.dataEncryptionKey != "" {
+				if err := m.setSessionDataEncryptionKey(sess.dataEncryptionKey); err != nil && m.debug {
+					logger.Warnf("Failed to load session dataEncryptionKey: %v", err)
+				}
+			}
+			return nil
+		}
+		m.sessionTag = stableSessionTagForAgent(m.terminalID, m.agent)
 	}
 
 	// Ensure the per-session dataEncryptionKey is available.
@@ -520,13 +534,206 @@ func (m *Manager) setSessionDataEncryptionKey(encoded string) error {
 	return nil
 }
 
-// stableSessionTag returns the stable tag used for the "primary" session for a
-// terminal.
+type listSessionsResponse struct {
+	Sessions []listSessionItem `json:"sessions"`
+}
+
+type listSessionItem struct {
+	ID                string  `json:"id"`
+	UpdatedAt         int64   `json:"updatedAt"`
+	ActiveAt          int64   `json:"activeAt"`
+	TerminalID        string  `json:"terminalId"`
+	Metadata          string  `json:"metadata"`
+	AgentState        *string `json:"agentState"`
+	AgentStateVersion int64   `json:"agentStateVersion"`
+	DataEncryptionKey *string `json:"dataEncryptionKey"`
+}
+
+type existingSessionMatch struct {
+	id                string
+	tag               string
+	agentStateJSON    string
+	agentStateVersion int64
+	dataEncryptionKey string
+}
+
+// findExistingSessionForAgent selects an existing session owned by this terminal
+// and directory that matches the current agent.
 //
-// Under the one-terminal-per-directory model, using the terminal id directly
-// avoids duplicate sessions for the same paired directory.
-func stableSessionTag(terminalID string) string {
-	return terminalID
+// This supports the "one session per agent per directory" model, and avoids
+// creating duplicate sessions after introducing agent-scoped session tags.
+func (m *Manager) findExistingSessionForAgent() (existingSessionMatch, bool, error) {
+	if m == nil || m.cfg == nil {
+		return existingSessionMatch{}, false, fmt.Errorf("missing manager config")
+	}
+	if strings.TrimSpace(m.token) == "" {
+		return existingSessionMatch{}, false, fmt.Errorf("missing auth token")
+	}
+	if strings.TrimSpace(m.terminalID) == "" {
+		return existingSessionMatch{}, false, fmt.Errorf("missing terminal id")
+	}
+	if strings.TrimSpace(m.workDir) == "" {
+		return existingSessionMatch{}, false, fmt.Errorf("missing workdir")
+	}
+
+	url := fmt.Sprintf("%s/v1/sessions?limit=200", strings.TrimRight(m.cfg.ServerURL, "/"))
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return existingSessionMatch{}, false, err
+	}
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", m.token))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return existingSessionMatch{}, false, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return existingSessionMatch{}, false, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return existingSessionMatch{}, false, fmt.Errorf("list sessions failed: %s", msg)
+	}
+
+	var decoded listSessionsResponse
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return existingSessionMatch{}, false, err
+	}
+
+	match, ok := selectExistingSessionForAgent(decoded.Sessions, m.workDir, m.terminalID, m.agent)
+	if !ok {
+		return existingSessionMatch{}, false, nil
+	}
+	return match, true, nil
+}
+
+// selectExistingSessionForAgent finds the best session match for an agent in a
+// directory using only server-provided session list data.
+func selectExistingSessionForAgent(sessions []listSessionItem, workDir string, terminalID string, agent string) (existingSessionMatch, bool) {
+	workDir = strings.TrimSpace(workDir)
+	terminalID = strings.TrimSpace(terminalID)
+	agent = strings.TrimSpace(agent)
+	if workDir == "" || terminalID == "" || agent == "" {
+		return existingSessionMatch{}, false
+	}
+
+	var best existingSessionMatch
+	var bestScore int64
+
+	for _, sess := range sessions {
+		if strings.TrimSpace(sess.ID) == "" || sess.TerminalID != terminalID {
+			continue
+		}
+
+		meta, ok := decodeSessionMetadataPath(sess.Metadata)
+		if !ok || meta != workDir {
+			continue
+		}
+
+		agentType, agentStateJSON, ok := decodeSessionAgentType(sess.AgentState, sess.Metadata)
+		if !ok || agentType != agent {
+			continue
+		}
+
+		score := sess.UpdatedAt
+		if sess.ActiveAt > score {
+			score = sess.ActiveAt
+		}
+		if score <= bestScore {
+			continue
+		}
+
+		bestScore = score
+		best = existingSessionMatch{
+			id:                strings.TrimSpace(sess.ID),
+			tag:               stableSessionTagForAgent(terminalID, agent),
+			agentStateJSON:    agentStateJSON,
+			agentStateVersion: sess.AgentStateVersion,
+		}
+		if sess.DataEncryptionKey != nil {
+			best.dataEncryptionKey = strings.TrimSpace(*sess.DataEncryptionKey)
+		}
+	}
+
+	if best.id == "" {
+		return existingSessionMatch{}, false
+	}
+	return best, true
+}
+
+// decodeSessionMetadataPath extracts the session metadata path from the
+// base64-encoded metadata payload.
+func decodeSessionMetadataPath(encoded string) (string, bool) {
+	if strings.TrimSpace(encoded) == "" {
+		return "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", false
+	}
+	meta := types.Metadata{}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return "", false
+	}
+	path := strings.TrimSpace(meta.Path)
+	if path == "" {
+		return "", false
+	}
+	return path, true
+}
+
+// decodeSessionAgentType determines the agent type for a session based on its
+// agent state JSON payload and metadata payload.
+func decodeSessionAgentType(agentState *string, encodedMetadata string) (agentType string, agentStateJSON string, ok bool) {
+	if agentState == nil || strings.TrimSpace(*agentState) == "" {
+		return "", "", false
+	}
+	stateJSON := strings.TrimSpace(*agentState)
+	state := types.AgentState{}
+	if err := json.Unmarshal([]byte(stateJSON), &state); err != nil {
+		return "", "", false
+	}
+	agentType = strings.TrimSpace(state.AgentType)
+	if agentType == "" {
+		// Fall back to metadata flavor for backward-compatibility with older
+		// sessions that predate agentType in agent state.
+		raw, err := base64.StdEncoding.DecodeString(encodedMetadata)
+		if err == nil {
+			meta := types.Metadata{}
+			if err := json.Unmarshal(raw, &meta); err == nil {
+				agentType = strings.TrimSpace(meta.Flavor)
+			}
+		}
+	}
+	if agentType == "" {
+		return "", "", false
+	}
+	return agentType, stateJSON, true
+}
+
+// stableSessionTagForAgent returns the stable tag used for the "primary" session
+// for a terminal+agent combination.
+//
+// Under the one-terminal-per-directory model, this is effectively one session
+// per agent per directory.
+func stableSessionTagForAgent(terminalID string, agent string) string {
+	terminalID = strings.TrimSpace(terminalID)
+	agent = strings.TrimSpace(agent)
+	if terminalID == "" {
+		return ""
+	}
+	if agent == "" {
+		return terminalID
+	}
+	// Use a simple join that stays stable and readable.
+	return terminalID + ":" + agent
 }
 
 // createTerminal creates or updates a terminal on the server.
