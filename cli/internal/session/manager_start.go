@@ -534,10 +534,6 @@ func (m *Manager) setSessionDataEncryptionKey(encoded string) error {
 	return nil
 }
 
-type listSessionsResponse struct {
-	Sessions []listSessionItem `json:"sessions"`
-}
-
 type listSessionItem struct {
 	ID                string  `json:"id"`
 	TerminalID        string  `json:"terminalId"`
@@ -657,7 +653,7 @@ func (m *Manager) findExistingSessionForAgent() (existingSessionMatch, bool, err
 			if !ok || metaPath != m.workDir {
 				continue
 			}
-			agentType, agentStateJSON, ok := decodeSessionAgentType(sess.AgentState, sess.Metadata)
+			agentType, agentStateJSON, ok := decodeSessionAgentType(sess.AgentState)
 			if !ok || agentType != m.agent {
 				continue
 			}
@@ -708,8 +704,8 @@ func decodeSessionMetadataPath(encoded string) (string, bool) {
 }
 
 // decodeSessionAgentType determines the agent type for a session based on its
-// agent state JSON payload and metadata payload.
-func decodeSessionAgentType(agentState *string, encodedMetadata string) (agentType string, agentStateJSON string, ok bool) {
+// agent state JSON payload.
+func decodeSessionAgentType(agentState *string) (agentType string, agentStateJSON string, ok bool) {
 	if agentState == nil || strings.TrimSpace(*agentState) == "" {
 		return "", "", false
 	}

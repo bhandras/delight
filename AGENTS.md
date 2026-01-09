@@ -92,6 +92,12 @@ These guidelines exist to keep the CLI/SDK architecture maintainable as the
 project grows, and to ensure behavior is understandable without running the UI
 or server.
 
+## Validation
+
+Before yielding back to the user after code changes, always run:
+
+`make lint`
+
 ### Go Documentation
 
 - All functions must have GoDoc comments, including unexported helpers.

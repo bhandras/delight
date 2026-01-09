@@ -83,7 +83,6 @@ func TestClaudeRemoteBridgeAppliesModelViaControlRequest(t *testing.T) {
 		t.Fatalf("write user: %v", err)
 	}
 
-	var sawRaw bool
 	var sawControlResponse bool
 	deadline, ok := ctx.Deadline()
 	if !ok {
@@ -101,7 +100,6 @@ func TestClaudeRemoteBridgeAppliesModelViaControlRequest(t *testing.T) {
 			if model == "" {
 				continue
 			}
-			sawRaw = true
 			if model != wantModel {
 				t.Fatalf("raw assistant model=%q, want %q", model, wantModel)
 			}
@@ -117,9 +115,7 @@ func TestClaudeRemoteBridgeAppliesModelViaControlRequest(t *testing.T) {
 		}
 	}
 
-	if !sawRaw {
-		t.Fatalf("expected a raw assistant message")
-	}
+	t.Fatalf("expected a raw assistant message")
 }
 
 // readJSONLines parses line-delimited JSON objects and forwards them to ch.

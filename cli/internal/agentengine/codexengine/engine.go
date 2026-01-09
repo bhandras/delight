@@ -367,6 +367,7 @@ func (e *Engine) Wait() error {
 
 // startRemote starts (or reuses) the Codex MCP client.
 func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSpec) error {
+	_ = ctx
 	resumeToken := strings.TrimSpace(spec.ResumeToken)
 
 	e.mu.Lock()
@@ -1224,17 +1225,6 @@ func sandboxPolicy(permissionMode string) string {
 // normalizeUserText normalizes user input text for echo suppression.
 func normalizeUserText(text string) string {
 	return strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
-}
-
-// discoverLatestRolloutPath scans ~/.codex/sessions for the most recently updated rollout JSONL.
-func discoverLatestRolloutPath() (string, error) {
-	return discoverLatestRolloutPathImpl()
-}
-
-// discoverLatestRolloutPathForSessionID returns the most recently modified
-// rollout JSONL for the given Codex session id.
-func discoverLatestRolloutPathForSessionID(sessionID string) (string, error) {
-	return discoverLatestRolloutPathForSessionIDImpl(sessionID)
 }
 
 // discoverLatestRolloutPathAfter returns the most recently modified rollout JSONL after since.

@@ -141,7 +141,7 @@ func TestSelectExistingSessionForAgentMatchesAgentAndDir(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "/tmp/proj", metaPath)
 
-	agentType, agentStateJSON, ok := decodeSessionAgentType(sessions[1].AgentState, sessions[1].Metadata)
+	agentType, agentStateJSON, ok := decodeSessionAgentType(sessions[1].AgentState)
 	require.True(t, ok)
 	require.Equal(t, "codex", agentType)
 	require.Equal(t, codexJSON, agentStateJSON)
@@ -160,7 +160,8 @@ func TestDecodeSessionAgentTypeRejectsMissingAgentType(t *testing.T) {
 	require.NoError(t, err)
 	stateJSON := string(stateRaw)
 
-	agentType, _, ok := decodeSessionAgentType(&stateJSON, metaEnc)
+	_ = metaEnc
+	agentType, _, ok := decodeSessionAgentType(&stateJSON)
 	require.False(t, ok)
 	require.Equal(t, "", agentType)
 }
