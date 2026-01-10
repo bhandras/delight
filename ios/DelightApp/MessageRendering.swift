@@ -81,6 +81,8 @@ private struct MessageBlockView: View {
             CodeBlockView(language: language, content: content, fontSize: fontSize)
         case .toolCall(let summary):
             ToolChipView(summary: summary, fontSize: fontSize)
+        case .callout(let summary):
+            CalloutView(summary: summary, fontSize: fontSize)
         }
     }
 }
@@ -88,6 +90,13 @@ private struct MessageBlockView: View {
 private struct MarkdownText: View {
     let text: String
     let fontSize: CGFloat
+    let textColor: Color
+
+    init(text: String, fontSize: CGFloat, textColor: Color = Theme.messageText) {
+        self.text = text
+        self.fontSize = fontSize
+        self.textColor = textColor
+    }
 
     /// Typography holds constants for Markdown rendering in the terminal
     /// transcript.
@@ -126,7 +135,7 @@ private struct MarkdownText: View {
             // applied consistently across paragraphs/headings.
             .markdownTextStyle {
                 FontSize(fontSize)
-                ForegroundColor(Theme.messageText)
+                ForegroundColor(textColor)
                 BackgroundColor(nil)
             }
             .markdownTextStyle(\.code) {
@@ -244,6 +253,47 @@ private struct MarkdownText: View {
         }
 
         return result
+    }
+}
+
+private struct CalloutView: View {
+    let summary: CalloutSummary
+    let fontSize: CGFloat
+
+    /// Layout holds display constants for callout blocks in the transcript.
+    enum Layout {
+        static let cornerRadius: CGFloat = 14
+        static let borderWidth: CGFloat = 1
+        static let padding: CGFloat = 12
+        static let headerSpacing: CGFloat = 6
+        static let bodySpacing: CGFloat = 6
+        static let iconWeight: Font.Weight = .semibold
+    }
+
+    var body: some View {
+        let bodyFontSize = max(fontSize * 0.95, 12)
+
+        VStack(alignment: .leading, spacing: Layout.bodySpacing) {
+            HStack(spacing: Layout.headerSpacing) {
+                Image(systemName: summary.icon)
+                    .font(.system(size: bodyFontSize, weight: Layout.iconWeight))
+                    .foregroundColor(Theme.mutedText)
+                Text(summary.title)
+                    .font(.custom("AvenirNext-DemiBold", size: bodyFontSize))
+                    .foregroundColor(Theme.mutedText)
+            }
+
+            if !summary.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                MarkdownText(text: summary.content, fontSize: bodyFontSize, textColor: Theme.muted)
+            }
+        }
+        .padding(Layout.padding)
+        .background(Theme.calloutBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: Layout.cornerRadius, style: .continuous)
+                .stroke(Theme.calloutBorder, lineWidth: Layout.borderWidth)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Layout.cornerRadius, style: .continuous))
     }
 }
 

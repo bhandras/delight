@@ -1109,4 +1109,7 @@ enum Theme {
     static let codeBackground = Color(uiColor: .secondarySystemBackground)
     static let codeBorder = Color(uiColor: .separator)
     static let codeText = Color.primary
+
+    static let calloutBackground = Color(uiColor: .tertiarySystemGroupedBackground)
+    static let calloutBorder = Color(uiColor: .separator).opacity(0.35)
 }

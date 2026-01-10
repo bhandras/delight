@@ -559,11 +559,19 @@ struct ToolCallSummary: Hashable {
     let subtitle: String?
 }
 
+/// CalloutSummary describes an informational callout block, such as agent reasoning.
+struct CalloutSummary: Hashable {
+    let title: String
+    let icon: String
+    let content: String
+}
+
 /// MessageBlock is a view-friendly parsed block for a message (text, code, or tool call).
 enum MessageBlock: Hashable {
     case text(String)
     case code(language: String?, content: String)
     case toolCall(ToolCallSummary)
+    case callout(CalloutSummary)
 }
 
 /// MessageItem is a rendered message row model used by the terminal detail view.

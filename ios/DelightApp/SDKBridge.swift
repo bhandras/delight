@@ -1848,15 +1848,47 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
-    private func applyUIEventMessage(_ payload: UIEventPayload, markdown: String) {
+    /// uiEventBlocks returns display-ready blocks for UI events.
+    ///
+    /// Reasoning events are rendered as a muted callout with a lightbulb icon
+    /// rather than raw Markdown headings. Other UI events use the Markdown
+    /// parser so tool updates and patches render with code fences.
+    private func uiEventBlocks(_ payload: UIEventPayload, markdown: String) -> [MessageBlock] {
+        if payload.kind == "reasoning" {
+            let content = stripReasoningHeading(markdown)
+            return [
+                .callout(CalloutSummary(title: "Reasoning", icon: "lightbulb", content: content))
+            ]
+        }
+
         let blocks = splitMarkdownBlocks(markdown)
+        return blocks.isEmpty ? [.text(markdown)] : blocks
+    }
+
+    /// stripReasoningHeading removes the leading "Reasoning" heading emitted by
+    /// the backend so the iOS transcript can render it as a callout title.
+    private func stripReasoningHeading(_ markdown: String) -> String {
+        var value = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value == "Reasoning" {
+            return ""
+        }
+        if value.hasPrefix("Reasoning\n\n") {
+            value = String(value.dropFirst("Reasoning\n\n".count))
+        } else if value.hasPrefix("Reasoning\n") {
+            value = String(value.dropFirst("Reasoning\n".count))
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func applyUIEventMessage(_ payload: UIEventPayload, markdown: String) {
+        let blocks = uiEventBlocks(payload, markdown: markdown)
         let item = MessageItem(
             id: "ui-\(payload.eventID)",
             seq: nil,
             localID: nil,
             uuid: nil,
             role: .event,
-            blocks: blocks.isEmpty ? [.text(markdown)] : blocks,
+            blocks: blocks,
             createdAt: payload.atMs
         )
 
@@ -1892,14 +1924,14 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 let key = self.uiEventKey(sessionID: current, eventID: eventID)
                 guard let payload = self.uiEventsByKey[key] else { continue }
                 let markdown = self.uiEventMarkdown(payload)
-                let blocks = self.splitMarkdownBlocks(markdown)
+                let blocks = self.uiEventBlocks(payload, markdown: markdown)
                 self.messages[idx] = MessageItem(
                     id: message.id,
                     seq: message.seq,
                     localID: message.localID,
                     uuid: message.uuid,
                     role: message.role,
-                    blocks: blocks.isEmpty ? [.text(markdown)] : blocks,
+                    blocks: blocks,
                     createdAt: message.createdAt
                 )
             }
@@ -2626,6 +2658,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 return "code(\(lang)):\(normalizeText(content))"
             case .toolCall(let summary):
                 return "tool:\(normalizeText(summary.title))"
+            case .callout(let summary):
+                return "callout:\(normalizeText(summary.title)):\(normalizeText(summary.content))"
             }
         }
         return pieces.joined(separator: "\n")
@@ -2730,14 +2764,14 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 let key = uiEventKey(sessionID: payload.sessionID, eventID: payload.eventID)
                 uiEvents[key] = payload
                 let markdown = uiEventMarkdown(payload)
-                let blocks = splitMarkdownBlocks(markdown)
+                let blocks = uiEventBlocks(payload, markdown: markdown)
                 let uiItem = MessageItem(
                     id: "ui-\(payload.eventID)",
                     seq: seq,
                     localID: nil,
                     uuid: nil,
                     role: .event,
-                    blocks: blocks.isEmpty ? [.text(markdown)] : blocks,
+                    blocks: blocks,
                     createdAt: payload.atMs ?? createdAt
                 )
                 // A single logical UI event is emitted multiple times (start/update/end)
