@@ -102,7 +102,7 @@ struct TerminalTranscriptCollectionView: UIViewRepresentable {
     func updateUIView(_ uiView: UICollectionView, context: Context) {
         context.coordinator.parent = self
 
-        context.coordinator.updateItems(messages: messages)
+        let changedMessageIDs = context.coordinator.updateItems(messages: messages)
 
         // Build the list of rendered ids. We intentionally include a stable
         // bottom anchor so scroll-to-bottom doesn't depend on the last message
@@ -128,6 +128,16 @@ struct TerminalTranscriptCollectionView: UIViewRepresentable {
         let oldCount = context.coordinator.lastRenderedCount
         let newCount = ids.count
         let fontSizeChanged = Int(context.coordinator.lastFontSize) != Int(fontSize)
+        let isLoadingHistoryChanged = context.coordinator.lastIsLoadingHistory != isLoadingHistory
+        let isLoadingLatestChanged = context.coordinator.lastIsLoadingLatest != isLoadingLatest
+
+        var reconfigureIDs = changedMessageIDs
+        if isLoadingHistoryChanged, ids.contains(Layout.historyHintID) {
+            reconfigureIDs.append(Layout.historyHintID)
+        }
+        if isLoadingLatestChanged, ids.contains(Layout.loadingID) {
+            reconfigureIDs.append(Layout.loadingID)
+        }
 
         // When we prepend older history (pull-to-refresh), preserve the visible
         // scroll position so the list extends upward without "jumping" the user
@@ -147,6 +157,7 @@ struct TerminalTranscriptCollectionView: UIViewRepresentable {
 
         context.coordinator.applySnapshot(
             ids: ids,
+            reconfigureIDs: reconfigureIDs,
             collectionView: uiView,
             reload: fontSizeChanged || oldCount == 0
         ) { [weak uiView] in
@@ -180,6 +191,8 @@ struct TerminalTranscriptCollectionView: UIViewRepresentable {
         context.coordinator.lastFirstID = newFirstID
         context.coordinator.lastMessageCount = newMessageCount
         context.coordinator.lastFontSize = fontSize
+        context.coordinator.lastIsLoadingHistory = isLoadingHistory
+        context.coordinator.lastIsLoadingLatest = isLoadingLatest
 
         // Initial scroll to bottom once we have content.
         if !context.coordinator.didInitialScrollToBottom,
@@ -223,6 +236,8 @@ struct TerminalTranscriptCollectionView: UIViewRepresentable {
         var lastMessageCount: Int = 0
         var lastRenderedCount: Int = 0
         var lastFontSize: CGFloat = 0
+        var lastIsLoadingHistory: Bool = false
+        var lastIsLoadingLatest: Bool = false
         var wasNearBottomBeforeUpdate: Bool = true
 
         private var itemsByID: [String: MessageItem] = [:]
@@ -280,17 +295,32 @@ struct TerminalTranscriptCollectionView: UIViewRepresentable {
             }
         }
 
-        func updateItems(messages: [MessageItem]) {
+        /// updateItems replaces the backing map used by the cell provider and
+        /// returns any message ids whose content changed in-place.
+        ///
+        /// Rationale:
+        /// `UICollectionViewDiffableDataSource` is keyed on ids. When a message
+        /// is updated without changing its id (e.g. a tool UI event transitions
+        /// from "start" to "end" with the same event id), we must explicitly
+        /// reconfigure the corresponding cell or the UI will remain stale.
+        func updateItems(messages: [MessageItem]) -> [String] {
             var dict: [String: MessageItem] = [:]
             dict.reserveCapacity(messages.count)
+            var changed: [String] = []
+            changed.reserveCapacity(4)
             for item in messages {
+                if let existing = itemsByID[item.id], existing != item {
+                    changed.append(item.id)
+                }
                 dict[item.id] = item
             }
             itemsByID = dict
+            return changed
         }
 
         func applySnapshot(
             ids: [String],
+            reconfigureIDs: [String],
             collectionView: UICollectionView,
             reload: Bool,
             completion: (() -> Void)? = nil
@@ -303,6 +333,9 @@ struct TerminalTranscriptCollectionView: UIViewRepresentable {
             if reload {
                 dataSource.applySnapshotUsingReloadData(snapshot, completion: completion)
             } else {
+                if !reconfigureIDs.isEmpty {
+                    snapshot.reconfigureItems(reconfigureIDs)
+                }
                 dataSource.apply(snapshot, animatingDifferences: false, completion: completion)
             }
         }
