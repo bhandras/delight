@@ -13,7 +13,6 @@ import (
 	"github.com/bhandras/delight/cli/internal/agentengine/claudeengine"
 	"github.com/bhandras/delight/cli/internal/agentengine/codexengine"
 	"github.com/bhandras/delight/cli/internal/agentengine/fakeengine"
-	"github.com/bhandras/delight/cli/internal/codex"
 	"github.com/bhandras/delight/cli/internal/termutil"
 	"github.com/bhandras/delight/shared/logger"
 )
@@ -152,15 +151,20 @@ func (r *Runtime) handleEngineEvent(ev agentengine.Event, emit func(framework.In
 		localActive := r.engineLocalInteractive
 		r.mu.Unlock()
 
-		if encryptFn == nil || len(v.Payload) == 0 {
-			return
-		}
 		if mode == ModeRemote && !localActive {
 			r.printRemoteRecordIfApplicable(v.Payload)
+		}
+		if len(v.Payload) == 0 {
+			return
+		}
+		if encryptFn == nil {
+			logger.Errorf("runtime: encryptFn not configured; dropping outbound record (mode=%s bytes=%d)", mode, len(v.Payload))
+			return
 		}
 
 		ciphertext, err := encryptFn(append([]byte(nil), v.Payload...))
 		if err != nil {
+			logger.Errorf("runtime: failed to encrypt outbound record (mode=%s bytes=%d): %v", mode, len(v.Payload), err)
 			return
 		}
 
@@ -396,9 +400,11 @@ func (r *Runtime) engineRemoteSend(ctx context.Context, eff effRemoteSend) {
 		}
 		// Aborts are best-effort and should not destabilize the runtime by
 		// forcing a runner exit.
-		if errors.Is(err, context.Canceled) || errors.Is(err, codex.ErrClientClosed) {
+		if errors.Is(err, context.Canceled) {
 			return
 		}
+
+		logger.Errorf("runtime: remote send failed: %v", err)
 
 		// Fail loud: if remote sends consistently fail, the user experiences a
 		// "stuck" remote mode. Emit a runner exit so the FSM can recover (fall

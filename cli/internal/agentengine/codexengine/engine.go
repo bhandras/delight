@@ -13,10 +13,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/bhandras/delight/cli/internal/agentengine"
+	"github.com/bhandras/delight/cli/internal/codex/appserver"
 	"github.com/bhandras/delight/cli/internal/codex/rollout"
 	"github.com/bhandras/delight/cli/pkg/types"
 	"github.com/bhandras/delight/shared/wire"
@@ -138,13 +138,13 @@ type Engine struct {
 	remoteReasoningEffort string
 	remoteResumeToken     string
 	remoteThinking        bool
+	remoteThreadID        string
+	remoteActiveTurnID    string
 	remoteTurnID          string
-	remoteThinkingSteps   []string
-	remoteCancel          context.CancelFunc
-	remoteCancelID        int64
-	remoteCancelNextID    int64
-	remoteExecCmd         *exec.Cmd
-	remoteExecDone        chan error
+
+	remoteAppServer *appserver.Client
+
+	remoteAgentMessageItems map[string]string
 
 	localCmd               *exec.Cmd
 	localCancel            context.CancelFunc
@@ -242,13 +242,8 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 	}
 
 	e.mu.Lock()
-	active := e.remoteSessionActive
 	enabled := e.remoteEnabled
-	permissionMode := e.remotePermissionMode
-	model := e.remoteModel
-	reasoningEffort := e.remoteReasoningEffort
-	resumeToken := e.remoteResumeToken
-	busy := e.remoteExecCmd != nil
+	busy := strings.TrimSpace(e.remoteActiveTurnID) != ""
 	e.mu.Unlock()
 	if !enabled {
 		return fmt.Errorf("codex remote mode not active")
@@ -257,60 +252,16 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 		e.emitRemoteAssistantError("Codex is still working on the previous request. Press Stop to abort, then retry.")
 		return nil
 	}
-
-	turnCtx, cancel := context.WithCancel(ctx)
-	cancelID := atomic.AddInt64(&e.remoteCancelNextID, 1)
-	e.mu.Lock()
-	e.remoteCancel = cancel
-	e.remoteCancelID = cancelID
-	e.mu.Unlock()
-	defer func() {
-		cancel()
-		e.mu.Lock()
-		if e.remoteCancelID == cancelID {
-			e.remoteCancel = nil
-			e.remoteCancelID = 0
-		}
-		e.mu.Unlock()
-	}()
-
-	e.startRemoteTurn()
-
-	permissionMode = normalizePermissionMode(permissionMode)
-	model = strings.TrimSpace(model)
-	if model == "" {
-		model = defaultRemoteModel
-	}
-	reasoningEffort = strings.TrimSpace(reasoningEffort)
-
-	sandbox := sandboxPolicy(permissionMode)
-
-	spec := codexExecTurnSpec{
-		WorkDir:         e.workDir,
-		Prompt:          msg.Text,
-		Model:           model,
-		ReasoningEffort: reasoningEffort,
-		Sandbox:         sandbox,
-	}
-	if active {
-		spec.ResumeToken = resumeToken
-	}
-
-	if err := e.runCodexExecTurn(turnCtx, spec); err != nil {
-		// Cancellation should still propagate so the runtime can stop waiting.
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return err
-		}
-
-		// Remote mode should remain available even if Codex fails to complete a
-		// single `codex exec` turn. Returning an error would cause the session FSM
-		// to treat the remote runner as exited and auto-switch into local mode,
-		// which is surprising for users driving the session from mobile.
-		e.setRemoteThinking(false, time.Now().UnixMilli())
-		e.emitRemoteAssistantError(fmt.Sprintf("Codex remote error: %v", err))
+	err := e.startRemoteTurnViaAppServer(ctx, msg)
+	if err == nil {
 		return nil
 	}
-	return nil
+	// Make failures visible to the user even if the runtime decides to fall back
+	// to local mode to recover.
+	if !errors.Is(err, context.Canceled) {
+		e.emitRemoteAssistantError(fmt.Sprintf("Remote Codex request failed: %v", err))
+	}
+	return err
 }
 
 // Abort implements agentengine.AgentEngine.
@@ -318,32 +269,7 @@ func (e *Engine) Abort(ctx context.Context) error {
 	if e == nil {
 		return nil
 	}
-
-	e.mu.Lock()
-	wasThinking := e.remoteThinking
-	cancel := e.remoteCancel
-	cmd := e.remoteExecCmd
-	e.remoteCancel = nil
-	e.remoteCancelID = 0
-	e.remoteThinking = false
-	e.remoteTurnID = ""
-	e.remoteThinkingSteps = nil
-	e.mu.Unlock()
-
-	if cancel != nil {
-		cancel()
-	}
-	e.stopRemoteExec(cmd)
-
-	if wasThinking {
-		e.tryEmit(agentengine.EvThinking{
-			Mode:     agentengine.ModeRemote,
-			Thinking: false,
-			AtMs:     time.Now().UnixMilli(),
-		})
-	}
-
-	return nil
+	return e.interruptRemoteTurn(ctx)
 }
 
 // Wait implements agentengine.AgentEngine.
@@ -367,36 +293,7 @@ func (e *Engine) Wait() error {
 
 // startRemote starts (or reuses) the Codex MCP client.
 func (e *Engine) startRemote(ctx context.Context, spec agentengine.EngineStartSpec) error {
-	_ = ctx
-	resumeToken := strings.TrimSpace(spec.ResumeToken)
-
-	e.mu.Lock()
-	e.remoteEnabled = true
-	e.remotePermissionMode = normalizePermissionMode(spec.Config.PermissionMode)
-	model := strings.TrimSpace(spec.Config.Model)
-	if model == "" {
-		model = defaultRemoteModel
-	}
-	e.remoteModel = model
-	reasoningEffort := strings.TrimSpace(spec.Config.ReasoningEffort)
-	if reasoningEffort == "" {
-		reasoningEffort = defaultRemoteReasoningEffort
-	}
-	e.remoteReasoningEffort = reasoningEffort
-
-	e.remoteResumeToken = ""
-	e.remoteSessionActive = false
-	if resumeToken != "" {
-		e.remoteResumeToken = resumeToken
-		e.remoteSessionActive = true
-	}
-	e.mu.Unlock()
-
-	if resumeToken != "" {
-		e.tryEmit(agentengine.EvSessionIdentified{Mode: agentengine.ModeRemote, ResumeToken: resumeToken})
-	}
-	e.tryEmit(agentengine.EvReady{Mode: agentengine.ModeRemote})
-	return nil
+	return e.startRemoteAppServer(ctx, spec)
 }
 
 // Capabilities implements agentengine.AgentEngine.
@@ -462,9 +359,8 @@ func (e *Engine) ApplyConfig(ctx context.Context, cfg agentengine.AgentConfig) e
 	}
 
 	// Best-effort: Codex applies model/effort/sandbox policy at turn start.
-	// Clearing the session ensures subsequent turns use the updated config.
-	e.remoteSessionActive = false
-	e.remoteResumeToken = ""
+	// For app-server remote mode, the resume token is the thread id and must
+	// remain stable across configuration updates.
 	e.remoteModel = model
 	e.remotePermissionMode = permissionMode
 	e.remoteReasoningEffort = reasoningEffort
@@ -754,19 +650,13 @@ func (e *Engine) stopRemoteAndWait(ctx context.Context) error {
 	e.remoteSessionActive = false
 	e.remoteResumeToken = ""
 	e.remoteThinking = false
-	cancel := e.remoteCancel
-	cmd := e.remoteExecCmd
-	done := e.remoteExecDone
-	e.remoteCancel = nil
-	e.remoteCancelID = 0
-	e.remoteExecCmd = nil
-	e.remoteExecDone = nil
+	e.remoteThreadID = ""
+	e.remoteActiveTurnID = ""
+	e.remoteTurnID = ""
+	app := e.remoteAppServer
+	e.remoteAppServer = nil
+	e.remoteAgentMessageItems = nil
 	e.mu.Unlock()
-
-	if cancel != nil {
-		cancel()
-	}
-	e.stopRemoteExec(cmd)
 
 	if wasThinking {
 		e.tryEmit(agentengine.EvThinking{
@@ -776,9 +666,11 @@ func (e *Engine) stopRemoteAndWait(ctx context.Context) error {
 		})
 	}
 
-	if done == nil {
+	if app == nil {
 		return nil
 	}
+
+	_ = app.Close()
 
 	waitCtx := ctx
 	if waitCtx == nil {
@@ -789,6 +681,9 @@ func (e *Engine) stopRemoteAndWait(ctx context.Context) error {
 		waitCtx, cancel = context.WithTimeout(waitCtx, remoteShutdownTimeout)
 		defer cancel()
 	}
+
+	done := make(chan error, 1)
+	go func() { done <- app.Wait() }()
 
 	select {
 	case <-waitCtx.Done():
@@ -1038,15 +933,18 @@ func parseExitCode(output string) (int, bool) {
 	return value, true
 }
 
-// startRemoteTurn resets per-turn state used for UI events (thinking log).
-func (e *Engine) startRemoteTurn() {
+// startRemoteTurnLocked resets per-turn state used for UI events (thinking log).
+//
+// Caller must hold e.mu.
+func (e *Engine) startRemoteTurnLocked(turnID string) {
 	if e == nil {
 		return
 	}
-	e.mu.Lock()
-	e.remoteTurnID = types.NewCUID()
-	e.remoteThinkingSteps = nil
-	e.mu.Unlock()
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		turnID = types.NewCUID()
+	}
+	e.remoteTurnID = turnID
 }
 
 // setRemoteThinking updates the cached remote thinking state and emits a
@@ -1112,6 +1010,22 @@ func truncateText(text string, maxChars int) string {
 	}
 	omitted := len(text) - maxChars
 	return fmt.Sprintf("%s\n… (truncated; %d chars omitted)", text[:maxChars], omitted)
+}
+
+// firstMarkdownLine returns the first non-empty line from a Markdown string.
+func firstMarkdownLine(md string) string {
+	md = strings.TrimSpace(md)
+	if md == "" {
+		return ""
+	}
+	for _, line := range strings.Split(md, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		return line
+	}
+	return ""
 }
 
 // tryEmit enqueues an engine event without blocking.

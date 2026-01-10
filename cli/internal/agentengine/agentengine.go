@@ -119,6 +119,8 @@ const (
 	UIEventThinking UIEventKind = "thinking"
 	// UIEventTool indicates a tool lifecycle event.
 	UIEventTool UIEventKind = "tool"
+	// UIEventReasoning indicates a reasoning/log event.
+	UIEventReasoning UIEventKind = "reasoning"
 )
 
 // UIEventPhase indicates where in its lifecycle a UI event is.

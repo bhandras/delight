@@ -16,8 +16,3 @@ func stopLocalCmd(cmd *exec.Cmd) {
 	}
 	_ = cmd.Process.Kill()
 }
-
-// stopExecCmd kills the parent process on unsupported platforms.
-func stopExecCmd(cmd *exec.Cmd) {
-	stopLocalCmd(cmd)
-}
