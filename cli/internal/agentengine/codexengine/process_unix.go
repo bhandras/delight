@@ -16,12 +16,6 @@ const (
 	// localStopTerminateGrace is the best-effort wait after SIGTERM before
 	// escalating to SIGKILL.
 	localStopTerminateGrace = 500 * time.Millisecond
-
-	// remoteExecStopInterruptGrace is the best-effort wait after sending SIGINT
-	// to a `codex exec` process before escalating to SIGKILL. Remote exec is not
-	// a full-screen TUI, so we keep this window short to honor mobile "Stop"
-	// quickly while still allowing Codex to handle Ctrl+C semantics.
-	remoteExecStopInterruptGrace = 200 * time.Millisecond
 )
 
 // configureLocalCmdProcessGroup starts cmd in a new process group so stopLocalCmd
@@ -64,30 +58,6 @@ func stopLocalCmd(cmd *exec.Cmd) {
 		time.Sleep(localStopTerminateGrace)
 
 		// Escalate to SIGKILL for the whole process group.
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		_ = cmd.Process.Kill()
-	}()
-}
-
-// stopExecCmd terminates a `codex exec` process group.
-//
-// This mirrors stopLocalCmd but with much shorter escalation: remote exec turns
-// should stop promptly when a user presses Stop on mobile.
-func stopExecCmd(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-
-	pid := cmd.Process.Pid
-	if pid <= 0 {
-		_ = cmd.Process.Kill()
-		return
-	}
-
-	_ = syscall.Kill(-pid, syscall.SIGINT)
-
-	go func() {
-		time.Sleep(remoteExecStopInterruptGrace)
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
 		_ = cmd.Process.Kill()
 	}()

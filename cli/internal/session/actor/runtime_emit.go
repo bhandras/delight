@@ -179,16 +179,25 @@ func (r *Runtime) emitMessage(eff effEmitMessage) {
 	r.mu.Lock()
 	emitter := r.socketEmitter
 	sessionID := r.sessionID
+	debug := r.debug
 	r.mu.Unlock()
 	if emitter == nil {
+		if debug {
+			logger.Debugf("session: emit message skipped (no socket emitter)")
+		}
 		return
 	}
 	if sessionID == "" || eff.Ciphertext == "" {
+		if debug {
+			logger.Debugf("session: emit message skipped (sessionID=%t ciphertext=%t)", sessionID != "", eff.Ciphertext != "")
+		}
 		return
 	}
-	_ = emitter.EmitMessage(wire.OutboundMessagePayload{
+	if err := emitter.EmitMessage(wire.OutboundMessagePayload{
 		SID:     sessionID,
 		LocalID: eff.LocalID,
 		Message: eff.Ciphertext,
-	})
+	}); err != nil {
+		logger.Errorf("session: emit message failed: %v", err)
+	}
 }

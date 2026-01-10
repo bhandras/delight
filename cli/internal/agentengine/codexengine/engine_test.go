@@ -16,31 +16,15 @@ import (
 // empty model as "engine default" so resume state isn't lost after startup.
 func TestApplyConfigDoesNotClearRemoteResumeToken(t *testing.T) {
 	engine := New("/tmp", nil, false)
-	resume := "resume-123"
-
-	if err := engine.Start(context.Background(), agentengine.EngineStartSpec{
-		Mode:        agentengine.ModeRemote,
-		ResumeToken: resume,
-		Config:      agentengine.AgentConfig{},
-	}); err != nil {
-		t.Fatalf("Start(remote) returned error: %v", err)
-	}
+	resume := "thr_123"
 
 	engine.mu.Lock()
-	if engine.remoteSessionActive != true || engine.remoteResumeToken != resume {
-		engine.mu.Unlock()
-		t.Fatalf("expected remote session active with resume token %q", resume)
-	}
-	if engine.remoteModel != defaultRemoteModel {
-		got := engine.remoteModel
-		engine.mu.Unlock()
-		t.Fatalf("expected remote model %q, got %q", defaultRemoteModel, got)
-	}
-	if engine.remoteReasoningEffort != defaultRemoteReasoningEffort {
-		got := engine.remoteReasoningEffort
-		engine.mu.Unlock()
-		t.Fatalf("expected default reasoning effort %q, got %q", defaultRemoteReasoningEffort, got)
-	}
+	engine.remoteEnabled = true
+	engine.remoteSessionActive = true
+	engine.remoteResumeToken = resume
+	engine.remoteThreadID = resume
+	engine.remoteModel = defaultRemoteModel
+	engine.remoteReasoningEffort = defaultRemoteReasoningEffort
 	engine.mu.Unlock()
 
 	if err := engine.ApplyConfig(context.Background(), agentengine.AgentConfig{
@@ -56,6 +40,9 @@ func TestApplyConfigDoesNotClearRemoteResumeToken(t *testing.T) {
 	}
 	if engine.remoteResumeToken != resume {
 		t.Fatalf("expected resume token to remain %q, got %q", resume, engine.remoteResumeToken)
+	}
+	if engine.remoteThreadID != resume {
+		t.Fatalf("expected thread id to remain %q, got %q", resume, engine.remoteThreadID)
 	}
 	if engine.remoteModel != defaultRemoteModel {
 		t.Fatalf("expected model to remain %q, got %q", defaultRemoteModel, engine.remoteModel)
