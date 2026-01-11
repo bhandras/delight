@@ -1987,11 +1987,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             }
         }
 
-        // A "real" assistant message implies the model finished a turn; clear any
-        // stale thinking state even if we missed an ephemeral UI event.
-        if role == .assistant {
-            updateSessionThinking(false, sessionID: sessionID)
-        }
         return true
     }
 
