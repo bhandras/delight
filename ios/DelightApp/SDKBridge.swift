@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 import DelightSDK
 
 /// PermissionDecisionParams is the payload sent to `sessionID:permission` RPC calls.
@@ -258,6 +259,7 @@ private enum MessageFields {
 private enum UpdateTiming {
     static let millisecondsPerSecond: Double = 1000
     static let sessionRefreshDelaySeconds: TimeInterval = 0.35
+    static let foregroundRefreshMinIntervalSeconds: TimeInterval = 0.5
     static let sessionRefreshMinIntervalSeconds: TimeInterval = 1.0
 }
 
@@ -315,10 +317,22 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var appearanceMode: AppearanceMode = .system {
         didSet { persistSettings() }
     }
-    @Published var transcriptDetailLevel: TranscriptDetailLevel = .brief {
+    @Published var showToolUseInTranscript: Bool = true {
         didSet {
             persistSettings()
-            refreshUIEventMessages()
+            rebuildUIEventTranscript()
+        }
+    }
+    @Published var showToolOutputInTranscript: Bool = false {
+        didSet {
+            persistSettings()
+            rebuildUIEventTranscript()
+        }
+    }
+    @Published var showReasoningSummariesInTranscript: Bool = true {
+        didSet {
+            persistSettings()
+            rebuildUIEventTranscript()
         }
     }
     @Published var terminalFontSize: Double = TerminalAppearance.defaultFontSize {
@@ -379,6 +393,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private var messagesFetchGeneration: Int = 0
     private var scheduledSessionRefresh: DispatchWorkItem?
     private var lastSessionRefreshAt: Date = .distantPast
+    private var lastForegroundRefreshAt: Date = .distantPast
 
     private struct TranscriptCache {
         let messages: [MessageItem]
@@ -417,9 +432,20 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let loadedAppearanceMode =
             AppearanceMode(rawValue: defaults.string(forKey: Self.settingsKeyPrefix + "appearanceMode") ?? "")
             ?? .system
-        let loadedTranscriptDetailLevel =
-            TranscriptDetailLevel(rawValue: defaults.string(forKey: Self.settingsKeyPrefix + "transcriptDetailLevel") ?? "")
-            ?? .brief
+        let loadedShowToolUse = (defaults.object(forKey: Self.settingsKeyPrefix + "showToolUseInTranscript") as? Bool) ?? true
+        let loadedShowReasoning = (defaults.object(
+            forKey: Self.settingsKeyPrefix + "showReasoningSummariesInTranscript"
+        ) as? Bool) ?? true
+        let loadedShowToolOutput: Bool = {
+            if let stored = defaults.object(forKey: Self.settingsKeyPrefix + "showToolOutputInTranscript") as? Bool {
+                return stored
+            }
+            // Backwards compatibility: older builds stored a single transcript detail level.
+            // Treat `full` as "show tool output", since tool events were the primary
+            // verbose payload.
+            let legacy = defaults.string(forKey: Self.settingsKeyPrefix + "transcriptDetailLevel") ?? ""
+            return legacy == "full"
+        }()
         let loadedTerminalFontSizeRaw = defaults.object(forKey: Self.settingsKeyPrefix + "terminalFontSize") as? Double
         let loadedTerminalFontSize = TerminalAppearance.clampFontSize(
             loadedTerminalFontSizeRaw ?? TerminalAppearance.defaultFontSize
@@ -436,7 +462,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         serverURL = loadedServerURL
         token = loadedToken
         appearanceMode = loadedAppearanceMode
-        transcriptDetailLevel = loadedTranscriptDetailLevel
+        showToolUseInTranscript = loadedShowToolUse
+        showToolOutputInTranscript = loadedShowToolOutput
+        showReasoningSummariesInTranscript = loadedShowReasoning
         terminalFontSize = loadedTerminalFontSize
         masterKey = loadedMasterKey
         publicKey = loadedPublicKey
@@ -444,12 +472,49 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         configureLogDirectory()
         ensureKeys()
         sdkCallQueue.setSpecific(key: sdkCallQueueKey, value: ())
+
+        // When the phone app is backgrounded (sleep), the websocket may not deliver
+        // all update events, and we may not receive an explicit reconnect callback.
+        // Refresh the sessions list + the selected session transcript on wake so
+        // the terminal view does not require a manual back-out/re-enter.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onAppDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+
         // Register the Go→Swift listener for live updates.
         //
         // IMPORTANT: Never call into Go synchronously from within the listener
         // callback stack. All callbacks should schedule work asynchronously.
         sdkCallAsync {
             self.client.setListener(self)
+        }
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc func onAppDidBecomeActive() {
+        refreshAfterAppDidBecomeActive()
+    }
+
+    private func refreshAfterAppDidBecomeActive() {
+        DispatchQueue.main.async {
+            let now = Date()
+            if now.timeIntervalSince(self.lastForegroundRefreshAt) < UpdateTiming.foregroundRefreshMinIntervalSeconds {
+                return
+            }
+            self.lastForegroundRefreshAt = now
+
+            self.needsSessionRefresh = true
+            self.listSessions()
+
+            if !self.sessionID.isEmpty {
+                self.fetchLatestMessages(reset: true)
+            }
         }
     }
 
@@ -1825,6 +1890,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             return true
         }
 
+        // Respect transcript verbosity settings by hiding tool/reasoning UI event rows.
+        if !shouldDisplayUIEvent(payload) {
+            removeUIEventMessage(eventID: payload.eventID)
+            return true
+        }
+
         let markdown = uiEventMarkdown(payload)
         if markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return true
@@ -1840,11 +1911,29 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private func uiEventMarkdown(_ payload: UIEventPayload) -> String {
         let brief = payload.briefMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
         let full = payload.fullMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
-        switch transcriptDetailLevel {
-        case .brief:
+
+        if payload.kind == "tool" {
+            if showToolOutputInTranscript {
+                return full.isEmpty ? brief : full
+            }
             return brief.isEmpty ? full : brief
-        case .full:
-            return full.isEmpty ? brief : full
+        }
+        // Prefer the brief rendering for non-tool UI events (thinking/reasoning), since
+        // it's intended to be the summary. Fall back to full if the backend didn't
+        // populate brief.
+        return brief.isEmpty ? full : brief
+    }
+
+    /// shouldDisplayUIEvent returns true if a UI event payload should be surfaced as
+    /// a transcript entry given the user's verbosity preferences.
+    private func shouldDisplayUIEvent(_ payload: UIEventPayload) -> Bool {
+        switch payload.kind {
+        case "tool":
+            return showToolUseInTranscript
+        case "reasoning":
+            return showReasoningSummariesInTranscript
+        default:
+            return true
         }
     }
 
@@ -1912,29 +2001,60 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
-    private func refreshUIEventMessages() {
+    /// rebuildUIEventTranscript re-renders and filters all cached UI event messages
+    /// for the currently selected session.
+    ///
+    /// This is invoked when transcript verbosity preferences change so the transcript
+    /// immediately reflects toggles (e.g. hide reasoning summaries).
+    private func rebuildUIEventTranscript() {
         let current = sessionID
         guard !current.isEmpty else { return }
 
         DispatchQueue.main.async {
-            for idx in self.messages.indices {
-                let message = self.messages[idx]
-                guard message.id.hasPrefix("ui-") else { continue }
-                let eventID = String(message.id.dropFirst(3))
-                let key = self.uiEventKey(sessionID: current, eventID: eventID)
-                guard let payload = self.uiEventsByKey[key] else { continue }
+            let baseMessages = self.messages.filter { !$0.id.hasPrefix("ui-") }
+
+            var desired: [MessageItem] = []
+            for (key, payload) in self.uiEventsByKey {
+                guard key.hasPrefix("\(current)|") else { continue }
+                guard self.shouldDisplayUIEvent(payload) else { continue }
+
+                // Special-case "thinking end" events with empty bodies: treat them as
+                // state updates only and do not render a transcript entry.
+                if payload.kind == "thinking",
+                   payload.phase == "end",
+                   payload.briefMarkdown.isEmpty,
+                   payload.fullMarkdown.isEmpty {
+                    continue
+                }
+
                 let markdown = self.uiEventMarkdown(payload)
-                let blocks = self.uiEventBlocks(payload, markdown: markdown)
-                self.messages[idx] = MessageItem(
-                    id: message.id,
-                    seq: message.seq,
-                    localID: message.localID,
-                    uuid: message.uuid,
-                    role: message.role,
-                    blocks: blocks,
-                    createdAt: message.createdAt
+                if markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    continue
+                }
+
+                desired.append(
+                    MessageItem(
+                        id: "ui-\(payload.eventID)",
+                        seq: nil,
+                        localID: nil,
+                        uuid: nil,
+                        role: .event,
+                        blocks: self.uiEventBlocks(payload, markdown: markdown),
+                        createdAt: payload.atMs
+                    )
                 )
             }
+
+            var merged = baseMessages
+            merged.append(contentsOf: desired)
+            merged.sort(by: self.messageSortKey)
+            self.messages = merged
+
+            self.transcriptCacheBySessionID[current] = TranscriptCache(
+                messages: merged,
+                hasMoreHistory: self.hasMoreHistory,
+                oldestLoadedSeq: self.oldestLoadedSeq
+            )
         }
     }
 
@@ -2223,7 +2343,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         defaults.set(serverURL, forKey: Self.settingsKeyPrefix + "serverURL")
         defaults.set(token, forKey: Self.settingsKeyPrefix + "token")
         defaults.set(appearanceMode.rawValue, forKey: Self.settingsKeyPrefix + "appearanceMode")
-        defaults.set(transcriptDetailLevel.rawValue, forKey: Self.settingsKeyPrefix + "transcriptDetailLevel")
+        defaults.set(showToolUseInTranscript, forKey: Self.settingsKeyPrefix + "showToolUseInTranscript")
+        defaults.set(showToolOutputInTranscript, forKey: Self.settingsKeyPrefix + "showToolOutputInTranscript")
+        defaults.set(
+            showReasoningSummariesInTranscript,
+            forKey: Self.settingsKeyPrefix + "showReasoningSummariesInTranscript"
+        )
         defaults.set(terminalFontSize, forKey: Self.settingsKeyPrefix + "terminalFontSize")
     }
 
@@ -2252,6 +2377,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 let updatedAt: Int64
                 let active: Bool
                 let activeAt: Int64?
+                let thinking: Bool?
                 let metadata: String?
                 let agentState: String?
                 let terminalId: String?
@@ -2290,6 +2416,18 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 let title = metadata?.agent
                     ?? metadata?.summaryText
                     ?? terminalID
+                let serverThinking = session.thinking ?? false
+                // Server-reported thinking is derived from durable turn boundaries,
+                // so treat `thinking=false` as authoritative and clear stale
+                // client-side overrides.
+                let overrideThinking = self.thinkingOverrides[session.id]
+                let effectiveThinking: Bool
+                if !serverThinking {
+                    effectiveThinking = false
+                    self.thinkingOverrides[session.id] = false
+                } else {
+                    effectiveThinking = overrideThinking ?? serverThinking
+                }
                 return SessionSummary(
                     id: session.id,
                     terminalID: terminalID,
@@ -2302,7 +2440,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     metadata: metadata,
                     agentState: agentState,
                     uiState: uiState,
-                    thinking: false
+                    thinking: effectiveThinking
                 )
             }
             self.sessions = parsedSessions
@@ -2501,6 +2639,17 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     hasMoreHistory: self.hasMoreHistory,
                     oldestLoadedSeq: self.oldestLoadedSeq
                 )
+            }
+
+            // If we fetch the newest page (or reset the transcript) and the latest
+            // conversational message is from the assistant, clear any stale thinking
+            // state. This covers cases where the app was backgrounded (phone sleep)
+            // and missed the ephemeral "thinking end"/activity update.
+            let shouldInferThinkingFromTranscript = reset || scrollToBottom || clearLoadingLatest
+            if shouldInferThinkingFromTranscript,
+               let lastChat = self.messages.last(where: { $0.role == .user || $0.role == .assistant }),
+               lastChat.role == .assistant {
+                self.updateSessionThinking(false, sessionID: expectedSessionID ?? self.sessionID)
             }
 
             if scrollToBottom, !self.messages.isEmpty {
@@ -2763,6 +2912,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if let payload = extractDurableUIEventPayload(from: content) {
                 let key = uiEventKey(sessionID: payload.sessionID, eventID: payload.eventID)
                 uiEvents[key] = payload
+                if !shouldDisplayUIEvent(payload) {
+                    continue
+                }
                 let markdown = uiEventMarkdown(payload)
                 let blocks = uiEventBlocks(payload, markdown: markdown)
                 let uiItem = MessageItem(

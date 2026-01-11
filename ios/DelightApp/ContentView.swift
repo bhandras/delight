@@ -796,16 +796,6 @@ private struct AccountDetailView: View {
 private struct AppearanceDetailView: View {
     @ObservedObject var model: HarnessViewModel
 
-    /// verboseBinding maps the boolean toggle to the stored detail level enum.
-    private var verboseBinding: Binding<Bool> {
-        Binding(
-            get: { model.transcriptDetailLevel == .full },
-            set: { enabled in
-                model.transcriptDetailLevel = enabled ? .full : .brief
-            }
-        )
-    }
-
     var body: some View {
         ZStack {
             Theme.background.ignoresSafeArea()
@@ -837,11 +827,28 @@ private struct AppearanceDetailView: View {
                         }
                         Divider()
                         SettingToggleRow(
-                            title: "Verbose transcript",
-                            subtitle: "Show tool and thinking logs",
-                            systemImage: "text.bubble",
+                            title: "Show tool use",
+                            subtitle: "Show tool calls in the transcript",
+                            systemImage: "hammer",
                             tint: Theme.accent,
-                            isOn: verboseBinding
+                            isOn: $model.showToolUseInTranscript
+                        )
+                        Divider()
+                        SettingToggleRow(
+                            title: "Show tool output",
+                            subtitle: "Include detailed tool logs and outputs",
+                            systemImage: "terminal",
+                            tint: Theme.accent,
+                            isOn: $model.showToolOutputInTranscript
+                        )
+                        .disabled(!model.showToolUseInTranscript)
+                        Divider()
+                        SettingToggleRow(
+                            title: "Show reasoning summaries",
+                            subtitle: "Show reasoning callouts from the agent",
+                            systemImage: "lightbulb",
+                            tint: Theme.accent,
+                            isOn: $model.showReasoningSummariesInTranscript
                         )
                     }
                     .padding(.horizontal, 16)

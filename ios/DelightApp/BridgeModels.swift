@@ -26,22 +26,6 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
-/// TranscriptDetailLevel controls how much detail to show for transient tool
-/// and thinking UI events.
-enum TranscriptDetailLevel: String, CaseIterable, Identifiable {
-    case brief
-    case full
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .brief: return "Brief"
-        case .full: return "Full"
-        }
-    }
-}
-
 /// TerminalAppearance defines user-facing presentation defaults for terminal
 /// transcript rendering.
 enum TerminalAppearance {

@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import DelightApp
 
 final class SDKBridgeTests: XCTestCase {
@@ -430,6 +431,63 @@ final class SDKBridgeTests: XCTestCase {
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1.0)
+    }
+
+    func testParseMessagesClearsThinkingWhenLastMessageAssistant() {
+        let model = HarnessViewModel()
+        model.sessionID = "s1"
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 0,
+                active: true,
+                activeAt: nil,
+                title: "agent",
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: nil,
+                thinking: false
+            )
+        ]
+
+        // Simulate the phone marking the session as busy via an activity update.
+        let activityJSON = """
+        {"type":"activity","id":"s1","thinking":true}
+        """
+        model.onUpdate(nil, updateJSON: activityJSON)
+
+        // Now simulate fetching messages after reconnect/sleep, where the newest
+        // message is a completed assistant reply.
+        let messagesJSON = """
+        {"messages":[{"id":"m1","createdAt":123,"message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}]}
+        """
+
+        let expectation = expectation(description: "assistant last message clears thinking")
+        model.parseMessages(messagesJSON)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(model.sessions.first?.thinking, false)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
+
+    func testAppDidBecomeActiveRefreshesLatestMessages() {
+        let model = HarnessViewModel()
+        let expectation = expectation(description: "wake triggers fetch")
+        var cancellable: AnyCancellable?
+        DispatchQueue.main.async {
+            model.sessionID = "s1"
+            cancellable = model.$isLoadingLatest.sink { isLoading in
+                if isLoading {
+                    expectation.fulfill()
+                }
+            }
+            model.onAppDidBecomeActive()
+        }
+        waitForExpectations(timeout: 1.0)
+        cancellable?.cancel()
     }
 
     func testParseSessionsShowsQueuedPermissionWhenRemote() {
