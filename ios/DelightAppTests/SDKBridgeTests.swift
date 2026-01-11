@@ -676,4 +676,58 @@ final class SDKBridgeTests: XCTestCase {
         }
         waitForExpectations(timeout: 1.0)
     }
+
+    func testToolUIEventUsesFullCommandWithoutOutputWhenDisabled() {
+        let model = HarnessViewModel()
+        model.sessionID = "s1"
+        model.showToolUseInTranscript = true
+        model.showToolOutputInTranscript = false
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 0,
+                active: true,
+                activeAt: nil,
+                title: "agent",
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: nil,
+                thinking: false
+            )
+        ]
+
+        let fullCommand = "echo hello && echo world"
+        let json = """
+        {"type":"ui.event","id":"s1","eventId":"tool-1","kind":"tool","phase":"update","status":"running","briefMarkdown":"Tool: `echo hello`","fullMarkdown":"Tool: shell\\n\\n```sh\\n\(fullCommand)\\n```\\n\\nOutput:\\n\\n```\\nhello\\nworld\\n```","atMs":123}
+        """
+
+        let expectation = expectation(description: "tool event renders command but hides output")
+        model.onUpdate(nil, updateJSON: json)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            guard let item = model.messages.first(where: { $0.id == "ui-tool-1" }) else {
+                XCTFail("expected tool ui event to be present")
+                expectation.fulfill()
+                return
+            }
+
+            XCTAssertTrue(item.blocks.contains(where: { block in
+                if case let .code(_, content) = block {
+                    return content.contains(fullCommand)
+                }
+                return false
+            }))
+
+            let text = item.blocks.compactMap { block -> String? in
+                if case let .text(value) = block { return value }
+                return nil
+            }.joined(separator: "\n")
+            XCTAssertFalse(text.contains("Output:"))
+            XCTAssertFalse(text.contains("hello"))
+            XCTAssertFalse(text.contains("world"))
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
 }

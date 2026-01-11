@@ -622,8 +622,7 @@ func renderToolItem(item map[string]any) (string, string) {
 			return "", ""
 		}
 		out := strings.TrimSpace(stringValue(item["aggregatedOutput"]))
-		cmdBlock := "    " + strings.ReplaceAll(cmd, "\n", "\n    ")
-		brief := fmt.Sprintf("Tool: shell\n\n%s", cmdBlock)
+		brief := fmt.Sprintf("Tool: shell\n\n```sh\n%s\n```", cmd)
 		full := brief
 		if out != "" {
 			full = fmt.Sprintf("%s\n\nOutput:\n\n```\n%s\n```", full, truncateText(out, localToolOutputMaxChars))

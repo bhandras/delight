@@ -2034,8 +2034,21 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let full = payload.fullMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if payload.kind == "tool" {
+            // Patches (file diffs) should always render their full content, even
+            // when the user disables verbose tool logs. Users almost always want
+            // to see what changed.
+            if isPatchUIEvent(payload) {
+                return full.isEmpty ? brief : full
+            }
             if showToolOutputInTranscript {
                 return full.isEmpty ? brief : full
+            }
+            // When tool output is hidden, still show the full tool invocation.
+            // Some backends truncate `briefMarkdown` for compactness, while keeping
+            // the full command in `fullMarkdown` (alongside an output section).
+            let noOutputFull = stripToolOutputSection(full)
+            if !noOutputFull.isEmpty {
+                return noOutputFull
             }
             return brief.isEmpty ? full : brief
         }
@@ -2058,17 +2071,52 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return brief.isEmpty ? full : brief
     }
 
+    /// stripToolOutputSection removes the trailing tool output section from a tool
+    /// UI event Markdown rendering.
+    ///
+    /// This allows the transcript to show the full tool command (and args) when
+    /// "Show tool output" is disabled, while keeping the output hidden.
+    private func stripToolOutputSection(_ markdown: String) -> String {
+        let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        let patterns = [
+            "\n\nOutput:\n",
+            "\n\nOutput:\r\n",
+            "\nOutput:\n",
+            "\nOutput:\r\n",
+        ]
+        for pattern in patterns {
+            if let range = trimmed.range(of: pattern) {
+                return trimmed[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return trimmed
+    }
+
     /// shouldDisplayUIEvent returns true if a UI event payload should be surfaced as
     /// a transcript entry given the user's verbosity preferences.
     private func shouldDisplayUIEvent(_ payload: UIEventPayload) -> Bool {
         switch payload.kind {
         case "tool":
-            return showToolUseInTranscript
+            // File diffs are important enough to keep visible even if the user
+            // disables tool noise.
+            return showToolUseInTranscript || isPatchUIEvent(payload)
         case "reasoning":
             return showReasoningSummariesInTranscript
         default:
             return true
         }
+    }
+
+    /// isPatchUIEvent reports whether payload contains a patch/diff rendering.
+    private func isPatchUIEvent(_ payload: UIEventPayload) -> Bool {
+        let brief = payload.briefMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        if brief.hasPrefix("Patch") {
+            return true
+        }
+        // Prefer a cheap substring test; iOS code rendering handles the rest.
+        return payload.fullMarkdown.contains("```diff") || payload.briefMarkdown.contains("```diff")
     }
 
     /// uiEventBlocks returns display-ready blocks for UI events.

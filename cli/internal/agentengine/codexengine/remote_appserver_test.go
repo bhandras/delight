@@ -150,7 +150,7 @@ func TestRenderToolItemCommandExecutionShowsFullCommandInBrief(t *testing.T) {
 	if strings.Contains(brief, "Output:") {
 		t.Fatalf("expected brief to omit output, got %q", brief)
 	}
-	if !strings.Contains(brief, "\n    echo hello && echo world") {
+	if !strings.Contains(brief, "```sh") || !strings.Contains(brief, "echo hello && echo world") {
 		t.Fatalf("expected brief to include full command, got %q", brief)
 	}
 	if !strings.Contains(full, "Output:") {
@@ -187,7 +187,7 @@ func TestRenderToolItemCommandExecutionSplitsOutput(t *testing.T) {
 	if strings.Contains(brief, "Output:") {
 		t.Fatalf("expected brief to omit output, got: %q", brief)
 	}
-	if !strings.Contains(brief, "\n    echo hi\n    ls") {
+	if !strings.Contains(brief, "```sh") || !strings.Contains(brief, "echo hi\nls") {
 		t.Fatalf("expected command block in brief, got: %q", brief)
 	}
 	if !strings.Contains(full, "Output:") {

@@ -816,9 +816,8 @@ func (e *Engine) handleLocalFunctionCall(ev rollout.EvFunctionCall) {
 	// Try to show a concise command preview for shell_command.
 	if name == "shell_command" {
 		if cmd := extractShellCommand(ev.Arguments); cmd != "" {
-			cmdBlock := "    " + strings.ReplaceAll(cmd, "\n", "\n    ")
-			brief = fmt.Sprintf("Tool: `shell_command`\n\n%s", cmdBlock)
-			full = fmt.Sprintf("Tool: `shell_command`\n\n%s", cmdBlock)
+			brief = fmt.Sprintf("Tool: `shell_command`\n\n```sh\n%s\n```", cmd)
+			full = fmt.Sprintf("Tool: `shell_command`\n\n```sh\n%s\n```", cmd)
 			if strings.TrimSpace(argsText) != "" {
 				full = fmt.Sprintf("%s\n\nArgs:\n\n```json\n%s\n```", full, argsText)
 			}
@@ -884,9 +883,8 @@ func (e *Engine) handleLocalFunctionCallOutput(ev rollout.EvFunctionCallOutput) 
 
 	if name == "shell_command" {
 		if cmd := extractShellCommand(call.arguments); cmd != "" {
-			cmdBlock := "    " + strings.ReplaceAll(cmd, "\n", "\n    ")
-			brief = fmt.Sprintf("Tool: `shell_command`\n\n%s", cmdBlock)
-			full = fmt.Sprintf("Tool: `shell_command`\n\n%s", cmdBlock)
+			brief = fmt.Sprintf("Tool: `shell_command`\n\n```sh\n%s\n```", cmd)
+			full = fmt.Sprintf("Tool: `shell_command`\n\n```sh\n%s\n```", cmd)
 			if strings.TrimSpace(argsText) != "" {
 				full = fmt.Sprintf("%s\n\nArgs:\n\n```json\n%s\n```", full, argsText)
 			}

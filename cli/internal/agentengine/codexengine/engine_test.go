@@ -137,7 +137,7 @@ func TestHandleRolloutEventEmitsToolUIEvents(t *testing.T) {
 	if !strings.Contains(ui.BriefMarkdown, "Tool: `shell_command`") {
 		t.Fatalf("unexpected brief markdown: %q", ui.BriefMarkdown)
 	}
-	if !strings.Contains(ui.BriefMarkdown, "\n    ls") {
+	if !strings.Contains(ui.BriefMarkdown, "```sh") || !strings.Contains(ui.BriefMarkdown, "\nls\n") {
 		t.Fatalf("expected command block in brief markdown: %q", ui.BriefMarkdown)
 	}
 
@@ -160,7 +160,7 @@ func TestHandleRolloutEventEmitsToolUIEvents(t *testing.T) {
 	if ui.EventID != "call_1" {
 		t.Fatalf("expected event id call_1, got %q", ui.EventID)
 	}
-	if !strings.Contains(ui.BriefMarkdown, "\n    ls") {
+	if !strings.Contains(ui.BriefMarkdown, "```sh") || !strings.Contains(ui.BriefMarkdown, "\nls\n") {
 		t.Fatalf("expected command block in brief markdown: %q", ui.BriefMarkdown)
 	}
 	if !strings.Contains(ui.FullMarkdown, "Output:") {
