@@ -1722,12 +1722,14 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @objc func onConnected() {
         updateStatus("connected")
         clearThinkingState()
-        if needsSessionRefresh {
-            needsSessionRefresh = false
-            // Avoid calling back into Go synchronously from a Go→Swift callback stack.
-            DispatchQueue.main.async {
-                self.listSessions()
-            }
+        // Reconnects can happen without an app foreground transition (e.g. network
+        // blips, iOS suspending sockets). The SDK-derived `ui.connected` bit is
+        // computed during ListSessions, so always refresh sessions on connect to
+        // avoid showing stale "offline/disconnected" state until the user navigates.
+        needsSessionRefresh = false
+        // Avoid calling back into Go synchronously from a Go→Swift callback stack.
+        DispatchQueue.main.async {
+            self.listSessions()
         }
     }
 
