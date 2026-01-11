@@ -31,9 +31,19 @@ func (m *Manager) registerTerminalRPCHandlers() {
 		wire.DumpToTestdata("rpc_terminal_stop_daemon", params)
 		logger.Infof("Stop-daemon requested")
 		m.scheduleShutdown()
-		m.forceExitAfter(2 * time.Second)
+		m.forceExitAfter(2*time.Second, 0)
 		return json.Marshal(wire.StopDaemonResponse{
 			Message: "Daemon stop request acknowledged, starting shutdown sequence...",
+		})
+	})
+
+	m.terminalRPC.RegisterHandler(prefix+"restart-daemon", func(params json.RawMessage) (json.RawMessage, error) {
+		wire.DumpToTestdata("rpc_terminal_restart_daemon", params)
+		logger.Infof("Restart-daemon requested")
+		m.scheduleRestart()
+		m.forceExitAfter(2*time.Second, restartExitCode)
+		return json.Marshal(wire.RestartDaemonResponse{
+			Message: "Daemon restart request acknowledged, starting shutdown sequence...",
 		})
 	})
 

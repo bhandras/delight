@@ -47,6 +47,45 @@ func TestManager_ScheduleShutdown_ExitsOnce(t *testing.T) {
 	require.Equal(t, int32(1), exitCalls.Load())
 }
 
+func TestManager_ScheduleRestart_ExitsOnce(t *testing.T) {
+	// Do not run in parallel: mutates package-level test seams.
+
+	origSleep := managerSleep
+	origExit := managerExit
+	defer func() {
+		managerSleep = origSleep
+		managerExit = origExit
+	}()
+
+	managerSleep = func(time.Duration) {}
+
+	var exitCalls atomic.Int32
+	exitCh := make(chan int, 10)
+	managerExit = func(code int) {
+		exitCalls.Add(1)
+		select {
+		case exitCh <- code:
+		default:
+		}
+	}
+
+	m := &Manager{stopCh: make(chan struct{})}
+
+	m.scheduleRestart()
+	m.scheduleRestart()
+
+	select {
+	case code := <-exitCh:
+		require.Equal(t, restartExitCode, code)
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout waiting for exit")
+	}
+
+	// Give any unexpected additional goroutines a moment to run.
+	time.Sleep(50 * time.Millisecond)
+	require.Equal(t, int32(1), exitCalls.Load())
+}
+
 func TestManager_ForceExitAfter_InvokesExit(t *testing.T) {
 	// Do not run in parallel: mutates package-level test seams.
 
@@ -68,7 +107,7 @@ func TestManager_ForceExitAfter_InvokesExit(t *testing.T) {
 	}
 
 	m := &Manager{}
-	m.forceExitAfter(5 * time.Second)
+	m.forceExitAfter(5*time.Second, 0)
 
 	select {
 	case code := <-exitCh:

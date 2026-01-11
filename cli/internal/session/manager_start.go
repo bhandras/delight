@@ -28,6 +28,10 @@ import (
 const (
 	// dataEncryptionKeyBytes is the byte length for session/terminal data keys.
 	dataEncryptionKeyBytes = 32
+
+	// restartExitCode is the process exit code used to request a wrapper-managed
+	// restart. This mirrors sysexits(3) EX_TEMPFAIL (75) by convention.
+	restartExitCode = 75
 )
 
 // managerSleep is a test seam for time.Sleep calls used during shutdown.
@@ -1049,13 +1053,34 @@ func (m *Manager) scheduleShutdown() {
 	})
 }
 
+// scheduleRestart triggers a delayed manager shutdown and process exit with a
+// restart code, allowing wrapper scripts to re-launch the CLI automatically.
+func (m *Manager) scheduleRestart() {
+	m.shutdownOnce.Do(func() {
+		go func() {
+			managerSleep(200 * time.Millisecond)
+			if m.debug {
+				logger.Infof("Restart-daemon: shutting down")
+			}
+			go func() {
+				_ = m.Close()
+			}()
+			managerSleep(200 * time.Millisecond)
+			if m.debug {
+				logger.Infof("Restart-daemon: exiting")
+			}
+			managerExit(restartExitCode)
+		}()
+	})
+}
+
 // forceExitAfter terminates the process after the delay, regardless of cleanup.
-func (m *Manager) forceExitAfter(delay time.Duration) {
+func (m *Manager) forceExitAfter(delay time.Duration, exitCode int) {
 	go func() {
 		managerSleep(delay)
 		if m.debug {
 			logger.Warnf("Stop-daemon: forcing exit after %s", delay)
 		}
-		managerExit(0)
+		managerExit(exitCode)
 	}()
 }

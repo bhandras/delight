@@ -133,6 +133,7 @@ func TestManager_RegisterTerminalRPCHandlers_RegistersMethods(t *testing.T) {
 	keys := rpcManagerHandlerKeys(t, m.terminalRPC)
 	require.Contains(t, keys, "t1:ping")
 	require.Contains(t, keys, "t1:stop-daemon")
+	require.Contains(t, keys, "t1:restart-daemon")
 }
 
 // rpcManagerHandlerKeys extracts registered handler method names via reflection.
