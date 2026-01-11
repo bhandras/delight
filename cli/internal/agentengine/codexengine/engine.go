@@ -807,21 +807,17 @@ func (e *Engine) handleLocalFunctionCall(ev rollout.EvFunctionCall) {
 	brief := fmt.Sprintf("Tool: `%s`", name)
 	full := fmt.Sprintf("Tool: `%s`", name)
 
-	argsText := prettyJSON(ev.Arguments)
-	argsText = truncateText(argsText, localToolArgsMaxChars)
-	if strings.TrimSpace(argsText) != "" {
-		full = fmt.Sprintf("%s\n\nArgs:\n\n```json\n%s\n```", full, argsText)
-	}
-
 	// Try to show a concise command preview for shell_command.
 	if name == "shell_command" {
 		if cmd := extractShellCommand(ev.Arguments); cmd != "" {
 			brief = fmt.Sprintf("Tool: `shell_command`\n\n```sh\n%s\n```", cmd)
 			full = fmt.Sprintf("Tool: `shell_command`\n\n```sh\n%s\n```", cmd)
-			if strings.TrimSpace(argsText) != "" {
-				full = fmt.Sprintf("%s\n\nArgs:\n\n```json\n%s\n```", full, argsText)
-			}
 		}
+	}
+
+	if name == "update_plan" {
+		brief = "Tool: `update_plan`"
+		full = renderUpdatePlanMarkdownStart(ev.Arguments)
 	}
 
 	e.mu.Lock()
@@ -869,12 +865,6 @@ func (e *Engine) handleLocalFunctionCallOutput(ev rollout.EvFunctionCallOutput) 
 	brief := fmt.Sprintf("Tool: `%s`", name)
 	full := fmt.Sprintf("Tool: `%s`", name)
 
-	argsText := prettyJSON(call.arguments)
-	argsText = truncateText(argsText, localToolArgsMaxChars)
-	if strings.TrimSpace(argsText) != "" {
-		full = fmt.Sprintf("%s\n\nArgs:\n\n```json\n%s\n```", full, argsText)
-	}
-
 	output := strings.TrimSpace(ev.Output)
 	outputSnippet := truncateText(output, localToolOutputMaxChars)
 	if outputSnippet != "" {
@@ -885,13 +875,15 @@ func (e *Engine) handleLocalFunctionCallOutput(ev rollout.EvFunctionCallOutput) 
 		if cmd := extractShellCommand(call.arguments); cmd != "" {
 			brief = fmt.Sprintf("Tool: `shell_command`\n\n```sh\n%s\n```", cmd)
 			full = fmt.Sprintf("Tool: `shell_command`\n\n```sh\n%s\n```", cmd)
-			if strings.TrimSpace(argsText) != "" {
-				full = fmt.Sprintf("%s\n\nArgs:\n\n```json\n%s\n```", full, argsText)
-			}
 			if outputSnippet != "" {
 				full = fmt.Sprintf("%s\n\nOutput:\n\n```\n%s\n```", full, outputSnippet)
 			}
 		}
+	}
+
+	if name == "update_plan" {
+		brief = "Tool: `update_plan`"
+		full = renderUpdatePlanMarkdownEnd(call.arguments, outputSnippet)
 	}
 
 	status := agentengine.UIEventStatusOK
@@ -914,6 +906,81 @@ func (e *Engine) handleLocalFunctionCallOutput(ev rollout.EvFunctionCallOutput) 
 		FullMarkdown:  full,
 		AtMs:          atMs,
 	})
+}
+
+// updatePlanArguments is the structured payload expected by the `update_plan`
+// tool.
+type updatePlanArguments struct {
+	Explanation string `json:"explanation"`
+	Plan        []struct {
+		Status string `json:"status"`
+		Step   string `json:"step"`
+	} `json:"plan"`
+}
+
+// renderUpdatePlanMarkdownStart renders a compact, mobile-friendly preview for
+// a plan update tool call start event.
+func renderUpdatePlanMarkdownStart(arguments string) string {
+	return "Tool: `update_plan`\n\nUpdating plan…"
+}
+
+// renderUpdatePlanMarkdownEnd renders a markdown todo list for a plan update
+// tool call end event.
+func renderUpdatePlanMarkdownEnd(arguments string, output string) string {
+	args, ok := parseUpdatePlanArguments(arguments)
+	if !ok {
+		argsText := truncateText(prettyJSON(arguments), localToolArgsMaxChars)
+		if strings.TrimSpace(argsText) == "" {
+			return "Tool: `update_plan`"
+		}
+		return fmt.Sprintf("Tool: `update_plan`\n\n```json\n%s\n```", argsText)
+	}
+
+	var b strings.Builder
+	b.WriteString("Tool: `update_plan`\n\n")
+	if strings.TrimSpace(args.Explanation) != "" {
+		b.WriteString(strings.TrimSpace(args.Explanation))
+		b.WriteString("\n\n")
+	}
+
+	// Prefer a task list so the phone UI renders checkboxes.
+	b.WriteString("Plan:\n")
+	for _, item := range args.Plan {
+		step := strings.TrimSpace(item.Step)
+		if step == "" {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(item.Status))
+		switch status {
+		case "completed":
+			fmt.Fprintf(&b, "- [x] %s\n", step)
+		case "in_progress":
+			fmt.Fprintf(&b, "- [ ] %s (in progress)\n", step)
+		default:
+			fmt.Fprintf(&b, "- [ ] %s\n", step)
+		}
+	}
+
+	// If the tool emitted output, keep it as a separate block. This is not
+	// expected for update_plan, but supports future debugging.
+	if strings.TrimSpace(output) != "" {
+		fmt.Fprintf(&b, "\nOutput:\n\n```\n%s\n```", output)
+	}
+
+	return strings.TrimSpace(b.String())
+}
+
+// parseUpdatePlanArguments decodes a JSON `update_plan` tool invocation.
+func parseUpdatePlanArguments(arguments string) (updatePlanArguments, bool) {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		return updatePlanArguments{}, false
+	}
+	var v updatePlanArguments
+	if err := json.Unmarshal([]byte(arguments), &v); err != nil {
+		return updatePlanArguments{}, false
+	}
+	return v, true
 }
 
 func prettyJSON(raw string) string {

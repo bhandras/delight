@@ -166,6 +166,9 @@ func TestHandleRolloutEventEmitsToolUIEvents(t *testing.T) {
 	if !strings.Contains(ui.FullMarkdown, "Output:") {
 		t.Fatalf("expected full markdown output, got: %q", ui.FullMarkdown)
 	}
+	if strings.Contains(ui.FullMarkdown, "Args:") {
+		t.Fatalf("did not expect args block in full markdown: %q", ui.FullMarkdown)
+	}
 }
 
 func TestHandleRolloutEventEmitsReasoningUIEvents(t *testing.T) {
@@ -187,6 +190,48 @@ func TestHandleRolloutEventEmitsReasoningUIEvents(t *testing.T) {
 	}
 	if ui.BriefMarkdown != "**Plan**" {
 		t.Fatalf("unexpected brief markdown: %q", ui.BriefMarkdown)
+	}
+}
+
+func TestHandleRolloutEventRendersUpdatePlanAsTaskList(t *testing.T) {
+	engine := New("/tmp", nil, false)
+
+	engine.handleRolloutEvent(rollout.EvFunctionCall{
+		CallID: "call_plan",
+		Name:   "update_plan",
+		Arguments: `{"explanation":"why","plan":[{"step":"one","status":"pending"},` +
+			`{"step":"two","status":"in_progress"},{"step":"three","status":"completed"}]}`,
+		AtMs: 123,
+	})
+	_ = readEngineEvent(t, engine, 2*time.Second) // start event
+
+	engine.handleRolloutEvent(rollout.EvFunctionCallOutput{
+		CallID: "call_plan",
+		Output: "",
+		AtMs:   124,
+	})
+	ev := readEngineEvent(t, engine, 2*time.Second)
+	ui, ok := ev.(agentengine.EvUIEvent)
+	if !ok {
+		t.Fatalf("expected EvUIEvent, got %T", ev)
+	}
+	if ui.Phase != agentengine.UIEventPhaseEnd {
+		t.Fatalf("expected end phase, got %q", ui.Phase)
+	}
+	if !strings.Contains(ui.FullMarkdown, "Plan:") {
+		t.Fatalf("expected plan header, got: %q", ui.FullMarkdown)
+	}
+	if !strings.Contains(ui.FullMarkdown, "- [ ] one") {
+		t.Fatalf("expected pending task, got: %q", ui.FullMarkdown)
+	}
+	if !strings.Contains(ui.FullMarkdown, "two (in progress)") {
+		t.Fatalf("expected in-progress task, got: %q", ui.FullMarkdown)
+	}
+	if !strings.Contains(ui.FullMarkdown, "- [x] three") {
+		t.Fatalf("expected completed task, got: %q", ui.FullMarkdown)
+	}
+	if strings.Contains(ui.FullMarkdown, "Args:") {
+		t.Fatalf("did not expect args block in plan markdown: %q", ui.FullMarkdown)
 	}
 }
 
