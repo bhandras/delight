@@ -97,6 +97,43 @@ private struct RawUserMessageRecord: Encodable {
     let content: Content
 }
 
+/// UsageTokensPayload is the best-effort decoded tokens object in usage updates.
+private struct UsageTokensPayload: Decodable {
+    let total: Int?
+    let input: Int?
+    let output: Int?
+    let cacheCreation: Int?
+    let cacheRead: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case total
+        case input
+        case output
+        case cacheCreationSnake = "cache_creation"
+        case cacheCreationCamel = "cacheCreation"
+        case cacheReadSnake = "cache_read"
+        case cacheReadCamel = "cacheRead"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        total = try container.decodeIfPresent(Int.self, forKey: .total)
+        input = try container.decodeIfPresent(Int.self, forKey: .input)
+        output = try container.decodeIfPresent(Int.self, forKey: .output)
+        cacheCreation = try container.decodeIfPresent(Int.self, forKey: .cacheCreationSnake)
+            ?? container.decodeIfPresent(Int.self, forKey: .cacheCreationCamel)
+        cacheRead = try container.decodeIfPresent(Int.self, forKey: .cacheReadSnake)
+            ?? container.decodeIfPresent(Int.self, forKey: .cacheReadCamel)
+    }
+}
+
+/// UsageCostPayload is the best-effort decoded cost object in usage updates.
+private struct UsageCostPayload: Decodable {
+    let total: Double?
+    let input: Double?
+    let output: Double?
+}
+
 /// UpdateEnvelope is the outer JSON envelope delivered to `onUpdate`.
 ///
 /// The server/SDK emits multiple shapes:
@@ -134,6 +171,12 @@ private struct UpdateEnvelope: Decodable {
     let requestId: String?
     let toolName: String?
     let input: String?
+
+    // Root-level usage payload (best-effort).
+    let key: String?
+    let tokens: UsageTokensPayload?
+    let cost: UsageCostPayload?
+    let timestamp: Int64?
 }
 
 /// UpdateBody is the nested payload for many update messages.
@@ -170,12 +213,19 @@ private struct UpdateBody: Decodable {
     let briefMarkdown: String?
     let fullMarkdown: String?
     let atMs: Int64?
+
+    // Usage payload.
+    let key: String?
+    let tokens: UsageTokensPayload?
+    let cost: UsageCostPayload?
+    let timestamp: Int64?
 }
 
 /// UpdateKind enumerates the update event discriminants sent by the server/SDK.
 private enum UpdateKind: String {
     case activity = "activity"
     case uiEvent = "ui.event"
+    case usage = "usage"
     case newMessage = "new-message"
     case permissionRequest = "permission-request"
     case sessionAlive = "session-alive"
@@ -309,6 +359,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var isLoadingLatest: Bool = false
     @Published var isLoadingHistory: Bool = false
     @Published var scrollRequest: ScrollRequest?
+    @Published var usageBySessionID: [String: UsageSnapshot] = [:]
     @Published var terminals: [TerminalInfo] = []
     @Published var logServerURL: String = ""
     @Published var logServerRunning: Bool = false
@@ -1610,6 +1661,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if handleUIEventUpdate(updateJSON) {
                 return
             }
+            if handleUsageUpdate(updateJSON) {
+                return
+            }
             handleActivityUpdate(updateJSON)
             handlePermissionRequestUpdate(updateJSON)
             if let updateSessionID = extractUpdateSessionID(from: updateJSON) {
@@ -1639,6 +1693,68 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 self.fetchMessages()
             }
         }
+    }
+
+    /// handleUsageUpdate applies best-effort usage report ephemerals.
+    private func handleUsageUpdate(_ json: String) -> Bool {
+        guard let update = decodeUpdateEnvelope(json) else { return false }
+
+        if update.type == UpdateKind.usage.rawValue || update.t == UpdateKind.usage.rawValue {
+            let sessionID = update.id ?? update.sessionId ?? update.sid
+            return applyUsageUpdate(
+                sessionID: sessionID,
+                key: update.key,
+                tokens: update.tokens,
+                cost: update.cost,
+                timestamp: update.timestamp
+            )
+        }
+
+        guard let body = update.body else { return false }
+        let bodyType = body.t ?? body.type
+        guard bodyType == UpdateKind.usage.rawValue else { return false }
+
+        let sessionID = body.id ?? body.sessionId ?? body.sid
+        return applyUsageUpdate(
+            sessionID: sessionID,
+            key: body.key,
+            tokens: body.tokens,
+            cost: body.cost,
+            timestamp: body.timestamp
+        )
+    }
+
+    /// applyUsageUpdate stores a decoded usage snapshot for the given session.
+    private func applyUsageUpdate(
+        sessionID: String?,
+        key: String?,
+        tokens: UsageTokensPayload?,
+        cost: UsageCostPayload?,
+        timestamp: Int64?
+    ) -> Bool {
+        guard let rawSessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawSessionID.isEmpty else {
+            return false
+        }
+
+        let normalizedKey = key?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let snapshot = UsageSnapshot(
+            key: normalizedKey,
+            tokensTotal: tokens?.total,
+            tokensInput: tokens?.input,
+            tokensOutput: tokens?.output,
+            tokensCacheCreation: tokens?.cacheCreation,
+            tokensCacheRead: tokens?.cacheRead,
+            costTotal: cost?.total,
+            costInput: cost?.input,
+            costOutput: cost?.output,
+            timestampMs: timestamp
+        )
+
+        DispatchQueue.main.async {
+            self.usageBySessionID[rawSessionID] = snapshot
+        }
+        return true
     }
 
     /// handleSessionUIUpdate applies session UI updates to the cached summary list.

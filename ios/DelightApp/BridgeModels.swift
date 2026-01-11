@@ -222,6 +222,23 @@ struct SessionAgentEngineSettings: Equatable {
     let effectiveConfig: SessionAgentConfigSnapshot
 }
 
+/// UsageSnapshot is the latest per-session usage report received via ephemerals.
+///
+/// Usage payloads are intentionally best-effort: not every provider reports full
+/// token breakdowns or cost.
+struct UsageSnapshot: Equatable {
+    let key: String
+    let tokensTotal: Int?
+    let tokensInput: Int?
+    let tokensOutput: Int?
+    let tokensCacheCreation: Int?
+    let tokensCacheRead: Int?
+    let costTotal: Double?
+    let costInput: Double?
+    let costOutput: Double?
+    let timestampMs: Int64?
+}
+
 /// SessionUIState is the SDK-derived, view-friendly UI state injected into session summaries.
 struct SessionUIState: Decodable, Equatable {
     let state: String // disconnected|offline|local|remote
