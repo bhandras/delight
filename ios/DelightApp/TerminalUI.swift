@@ -170,9 +170,9 @@ struct TerminalDetailView: View {
     /// TerminalComposerState captures which parts of the composer should be
     /// interactive for the current session.
     ///
-    /// This intentionally treats a session as "busy" when either the SDK says
-    /// the turn is active (`ui.active`) or when an activity update marks the
-    /// session as thinking. The former is more durable across app sleep/wake.
+    /// Note: `SessionUIState.active` represents session activity/online-ness
+    /// (keep-alive), not whether a model turn is currently in progress. Busy UI
+    /// should be driven by thinking/turn state.
     struct TerminalComposerState: Equatable {
         let isInputEnabled: Bool
         let isHistoryEnabled: Bool
@@ -180,7 +180,7 @@ struct TerminalDetailView: View {
 
         static func make(ui: SessionUIState?, isThinking: Bool, controlledByDesktop: Bool) -> TerminalComposerState {
             let canSendFromPhone = (ui?.canSend ?? false) && !controlledByDesktop
-            let isTurnInFlight = (ui?.active ?? false) || isThinking
+            let isTurnInFlight = isThinking
 
             // Keep prompt history usable even while a turn is running.
             let isHistoryEnabled = canSendFromPhone

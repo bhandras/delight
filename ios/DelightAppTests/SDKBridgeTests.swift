@@ -731,7 +731,7 @@ final class SDKBridgeTests: XCTestCase {
         waitForExpectations(timeout: 1.0)
     }
 
-    func testTerminalComposerStateBusyFromUIActive() {
+    func testTerminalComposerStateIgnoresUIActiveForBusy() {
         let ui = SessionUIState(
             state: "remote",
             connected: true,
@@ -749,9 +749,9 @@ final class SDKBridgeTests: XCTestCase {
             controlledByDesktop: false
         )
 
-        XCTAssertFalse(state.isInputEnabled)
+        XCTAssertTrue(state.isInputEnabled)
         XCTAssertTrue(state.isHistoryEnabled)
-        XCTAssertTrue(state.isShowingStop)
+        XCTAssertFalse(state.isShowingStop)
     }
 
     func testTerminalComposerStateBusyFromThinkingOverride() {
