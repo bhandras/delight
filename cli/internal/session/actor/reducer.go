@@ -666,17 +666,25 @@ func reduceRemoteSend(state State, cmd cmdRemoteSend) (State, []actor.Effect) {
 }
 
 // reduceEngineThinking applies engine "thinking" signals to the session state
-// and emits an activity ephemeral so mobile clients can render status updates.
+// and emits an activity update so mobile clients can render status updates.
 func reduceEngineThinking(state State, ev evEngineThinking) (State, []actor.Effect) {
 	if ev.Gen != 0 && ev.Gen != state.RunnerGen {
 		return state, nil
 	}
-	// Only surface thinking updates while remote mode is running. This avoids
-	// toggling mobile UI while the desktop owns the session.
-	if ev.Mode != ModeRemote || state.FSM != StateRemoteRunning {
+	if state.SessionID == "" {
 		return state, nil
 	}
-	if state.SessionID == "" {
+
+	// Apply thinking updates only for the currently active runner mode.
+	//
+	// We support both local and remote here so reconnecting clients can recover
+	// correct busy state (turn boundaries are persisted server-side).
+	switch {
+	case ev.Mode == ModeRemote && state.FSM == StateRemoteRunning:
+		// ok
+	case ev.Mode == ModeLocal && state.FSM == StateLocalRunning:
+		// ok
+	default:
 		return state, nil
 	}
 	if state.Thinking == ev.Thinking {
@@ -721,6 +729,10 @@ func reduceEngineUIEvent(state State, ev evEngineUIEvent) (State, []actor.Effect
 	case StateLocalRunning:
 		if ev.Mode != ModeLocal {
 			return state, nil
+		}
+		if ev.Kind == string(agentengine.UIEventThinking) {
+			thinking := ev.Phase != string(agentengine.UIEventPhaseEnd)
+			state.Thinking = thinking
 		}
 	default:
 		return state, nil

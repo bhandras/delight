@@ -45,6 +45,14 @@ func (f fakeSessionQueries) UpdateSessionMetadata(ctx context.Context, arg model
 	return f.updateMetadata(ctx, arg)
 }
 
+func (f fakeSessionQueries) EnsureSessionTurnOpen(ctx context.Context, sessionID string, atMs int64) error {
+	return nil
+}
+
+func (f fakeSessionQueries) EnsureSessionTurnClosed(ctx context.Context, sessionID string, atMs int64) error {
+	return nil
+}
+
 func TestUpdateState_InvalidParams(t *testing.T) {
 	deps := NewDeps(nil, nil, nil, nil, time.Now, func() string { return "id" })
 	res := UpdateState(context.Background(), deps, NewAuthContext("u1", "user-scoped", "s1"), protocolwire.UpdateStatePayload{})

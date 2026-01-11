@@ -714,6 +714,11 @@ func (e *Engine) handleRolloutEvent(ev rollout.Event) {
 	case rollout.EvSessionMeta:
 		e.tryEmit(agentengine.EvSessionIdentified{Mode: agentengine.ModeLocal, ResumeToken: v.SessionID})
 	case rollout.EvUserMessage:
+		e.tryEmit(agentengine.EvThinking{
+			Mode:     agentengine.ModeLocal,
+			Thinking: true,
+			AtMs:     v.AtMs,
+		})
 		raw, err := marshalUserTextRecord(v.Text, nil)
 		if err != nil {
 			return
@@ -726,6 +731,11 @@ func (e *Engine) handleRolloutEvent(ev rollout.Event) {
 			AtMs:               v.AtMs,
 		})
 	case rollout.EvAssistantMessage:
+		e.tryEmit(agentengine.EvThinking{
+			Mode:     agentengine.ModeLocal,
+			Thinking: false,
+			AtMs:     v.AtMs,
+		})
 		raw, err := marshalAssistantTextRecord(v.Text, "unknown")
 		if err != nil {
 			return

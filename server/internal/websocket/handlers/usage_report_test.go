@@ -30,6 +30,14 @@ func (u usageSessionQueries) UpdateSessionMetadata(ctx context.Context, arg mode
 	return 0, nil
 }
 
+func (u usageSessionQueries) EnsureSessionTurnOpen(ctx context.Context, sessionID string, atMs int64) error {
+	return nil
+}
+
+func (u usageSessionQueries) EnsureSessionTurnClosed(ctx context.Context, sessionID string, atMs int64) error {
+	return nil
+}
+
 func TestUsageReport_EmitsEphemeral(t *testing.T) {
 	sessions := usageSessionQueries{
 		get: func(ctx context.Context, id string) (models.Session, error) {

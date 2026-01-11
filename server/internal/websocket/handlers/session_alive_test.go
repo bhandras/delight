@@ -13,6 +13,8 @@ import (
 type sessionAliveQueries struct {
 	getByID        func(ctx context.Context, id string) (models.Session, error)
 	updateActivity func(ctx context.Context, arg models.UpdateSessionActivityParams) error
+	ensureOpen     func(ctx context.Context, sessionID string, atMs int64) error
+	ensureClosed   func(ctx context.Context, sessionID string, atMs int64) error
 }
 
 func (s sessionAliveQueries) GetSessionByID(ctx context.Context, id string) (models.Session, error) {
@@ -29,6 +31,20 @@ func (s sessionAliveQueries) UpdateSessionActivity(ctx context.Context, arg mode
 
 func (s sessionAliveQueries) UpdateSessionMetadata(ctx context.Context, arg models.UpdateSessionMetadataParams) (int64, error) {
 	return 0, nil
+}
+
+func (s sessionAliveQueries) EnsureSessionTurnOpen(ctx context.Context, sessionID string, atMs int64) error {
+	if s.ensureOpen == nil {
+		return nil
+	}
+	return s.ensureOpen(ctx, sessionID, atMs)
+}
+
+func (s sessionAliveQueries) EnsureSessionTurnClosed(ctx context.Context, sessionID string, atMs int64) error {
+	if s.ensureClosed == nil {
+		return nil
+	}
+	return s.ensureClosed(ctx, sessionID, atMs)
 }
 
 func TestSessionAlive_IgnoresOldPings(t *testing.T) {
@@ -54,12 +70,19 @@ func TestSessionAlive_IgnoresOldPings(t *testing.T) {
 
 func TestSessionAlive_EmitsEphemeral(t *testing.T) {
 	var got models.UpdateSessionActivityParams
+	var opened bool
 	sessions := sessionAliveQueries{
 		getByID: func(ctx context.Context, id string) (models.Session, error) {
 			return models.Session{ID: id, AccountID: "u1"}, nil
 		},
 		updateActivity: func(ctx context.Context, arg models.UpdateSessionActivityParams) error {
 			got = arg
+			return nil
+		},
+		ensureOpen: func(ctx context.Context, sessionID string, atMs int64) error {
+			opened = true
+			require.Equal(t, "s1", sessionID)
+			require.Equal(t, int64(2000000), atMs)
 			return nil
 		},
 	}
@@ -83,4 +106,5 @@ func TestSessionAlive_EmitsEphemeral(t *testing.T) {
 	require.Equal(t, "s1", payload.ID)
 	require.True(t, payload.Active)
 	require.True(t, payload.Thinking)
+	require.True(t, opened)
 }

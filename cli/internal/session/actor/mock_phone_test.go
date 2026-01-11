@@ -119,9 +119,16 @@ type fakeSocketEmitter struct {
 
 	messages   []wire.OutboundMessagePayload
 	ephemerals []any
+	rawEvents  []rawEvent
 
 	messageCh   chan wire.OutboundMessagePayload
 	ephemeralCh chan any
+	rawCh       chan rawEvent
+}
+
+type rawEvent struct {
+	name string
+	data any
 }
 
 // newFakeSocketEmitter returns a new fake socket emitter.
@@ -129,6 +136,7 @@ func newFakeSocketEmitter() *fakeSocketEmitter {
 	return &fakeSocketEmitter{
 		messageCh:   make(chan wire.OutboundMessagePayload, 64),
 		ephemeralCh: make(chan any, 64),
+		rawCh:       make(chan rawEvent, 64),
 	}
 }
 
@@ -164,7 +172,17 @@ func (f *fakeSocketEmitter) EmitMessage(data any) error {
 }
 
 // EmitRaw implements actor.Runtime SocketEmitter.
-func (f *fakeSocketEmitter) EmitRaw(string, any) error { return nil }
+func (f *fakeSocketEmitter) EmitRaw(event string, data any) error {
+	f.mu.Lock()
+	f.rawEvents = append(f.rawEvents, rawEvent{name: event, data: data})
+	f.mu.Unlock()
+
+	select {
+	case f.rawCh <- rawEvent{name: event, data: data}:
+	default:
+	}
+	return nil
+}
 
 // Messages returns a snapshot of emitted messages.
 func (f *fakeSocketEmitter) Messages() []wire.OutboundMessagePayload {
@@ -181,6 +199,15 @@ func (f *fakeSocketEmitter) Ephemerals() []any {
 	defer f.mu.Unlock()
 	out := make([]any, len(f.ephemerals))
 	copy(out, f.ephemerals)
+	return out
+}
+
+// RawEvents returns a snapshot of emitted raw socket events.
+func (f *fakeSocketEmitter) RawEvents() []rawEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]rawEvent, len(f.rawEvents))
+	copy(out, f.rawEvents)
 	return out
 }
 
@@ -338,15 +365,22 @@ func TestMockPhone_FakeEngine_RemoteSendRoundTrip(t *testing.T) {
 	require.Equal(t, "fake-agent: ping", text)
 
 	// The fake engine emits thinking toggles; ensure we emitted at least one
-	// activity ephemeral.
-	foundActivity := false
-	for _, ep := range emitter.Ephemerals() {
-		if payload, ok := ep.(wire.EphemeralActivityPayload); ok && payload.Type == "activity" {
-			foundActivity = true
+	// session-alive (activity) update.
+	foundAlive := false
+	for _, ev := range emitter.RawEvents() {
+		if ev.name != "session-alive" {
+			continue
+		}
+		payload, ok := ev.data.(wire.SessionAlivePayload)
+		if !ok {
+			continue
+		}
+		if payload.SID == testSessionID {
+			foundAlive = true
 			break
 		}
 	}
-	require.True(t, foundActivity)
+	require.True(t, foundAlive)
 }
 
 // TestMockPhone_UIEventPersistsToMessage ensures that engine UI events are

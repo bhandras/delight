@@ -129,6 +129,28 @@ func (r *Runtime) emitEphemeral(eff effEmitEphemeral) {
 		r.persistUIEventMessage(emitter, encryptFn, sessionID, payload, debug)
 	}
 
+	// Activity ephemerals ("thinking"/busy) are transient and may be missed when
+	// clients are backgrounded. Instead of forwarding them as raw ephemerals, we
+	// route them through the server's durable `session-alive` path so the server
+	// can persist turn boundaries and clients can recover correct state after
+	// reconnect.
+	if payload, ok := eff.Payload.(wire.EphemeralActivityPayload); ok {
+		sid := sessionID
+		if sid == "" {
+			sid = payload.ID
+		}
+		if sid != "" {
+			if err := emitter.EmitRaw("session-alive", wire.SessionAlivePayload{
+				SID:      sid,
+				Time:     payload.ActiveAt,
+				Thinking: payload.Thinking,
+			}); err != nil && debug {
+				logger.Debugf("session: emit session-alive failed: %v", err)
+			}
+		}
+		return
+	}
+
 	if err := emitter.EmitEphemeral(eff.Payload); err != nil && debug {
 		logger.Debugf("session: emit ephemeral failed: %v", err)
 	}

@@ -18,6 +18,11 @@ type SessionQueries interface {
 	UpdateSessionAgentState(ctx context.Context, arg models.UpdateSessionAgentStateParams) (int64, error)
 	UpdateSessionActivity(ctx context.Context, arg models.UpdateSessionActivityParams) error
 	UpdateSessionMetadata(ctx context.Context, arg models.UpdateSessionMetadataParams) (int64, error)
+
+	// EnsureSessionTurnOpen records that the session has an in-flight turn.
+	EnsureSessionTurnOpen(ctx context.Context, sessionID string, atMs int64) error
+	// EnsureSessionTurnClosed records that the session has no in-flight turn.
+	EnsureSessionTurnClosed(ctx context.Context, sessionID string, atMs int64) error
 }
 
 // TerminalQueries is the subset of terminal queries used by websocket handlers.

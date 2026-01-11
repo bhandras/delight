@@ -23,6 +23,12 @@ func DisconnectEffects(ctx context.Context, deps Deps, auth AuthContext, session
 			logger.Warnf("Failed to update session activity: %v", err)
 		}
 
+		// If the CLI goes offline mid-turn, force-close any in-flight turn so
+		// reconnecting clients do not show stuck "thinking" state.
+		if err := deps.Sessions().EnsureSessionTurnClosed(ctx, sessionID, now.UnixMilli()); err != nil {
+			logger.Warnf("Failed to close session turn on disconnect: %v", err)
+		}
+
 		ephemerals = append(ephemerals, newEphemeralToUser(auth.UserID(), protocolwire.EphemeralActivityPayload{
 			Type:     "activity",
 			ID:       sessionID,

@@ -36,6 +36,18 @@ func SessionAlive(ctx context.Context, deps Deps, auth AuthContext, req protocol
 		logger.Warnf("Failed to update session activity: %v", err)
 	}
 
+	// Persist turn boundaries so reconnecting clients can recover accurate busy
+	// state even if they missed ephemeral events while backgrounded.
+	if req.Thinking {
+		if err := deps.Sessions().EnsureSessionTurnOpen(ctx, req.SID, t); err != nil {
+			logger.Warnf("Failed to persist session turn start: %v", err)
+		}
+	} else {
+		if err := deps.Sessions().EnsureSessionTurnClosed(ctx, req.SID, t); err != nil {
+			logger.Warnf("Failed to persist session turn end: %v", err)
+		}
+	}
+
 	return NewEventResultWithEphemerals(nil, nil, []EphemeralInstruction{
 		newEphemeralToUser(auth.UserID(), protocolwire.EphemeralActivityPayload{
 			Type:     "activity",
