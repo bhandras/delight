@@ -452,7 +452,15 @@ private struct TerminalPropertiesSheet: View {
     let onDeletedTerminal: () -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var showDeleteConfirm: Bool = false
+    @State private var activeAlert: ActiveAlert?
+
+    private enum ActiveAlert: String, Identifiable {
+        case deleteTerminal
+        case stopCLI
+        case restartCLI
+
+        var id: String { rawValue }
+    }
 
     private enum UsageFormat {
         static let costDecimals: Int = 4
@@ -534,6 +542,34 @@ private struct TerminalPropertiesSheet: View {
                         }
                     }
 
+                    if terminalID != "unknown" {
+                        Section {
+                            SheetActionButton(
+                                title: "Restart CLI",
+                                systemImage: "arrow.clockwise",
+                                tint: Theme.accent
+                            ) {
+                                activeAlert = .restartCLI
+                            }
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+
+                            SheetActionButton(
+                                title: "Stop CLI",
+                                systemImage: "power",
+                                tint: Theme.warning
+                            ) {
+                                activeAlert = .stopCLI
+                            }
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                        } footer: {
+                            Text("Restart exits the CLI with a special restart code. If you run the CLI under a wrapper script, it can automatically re-launch in the same directory.")
+                                .font(Theme.caption)
+                                .foregroundColor(Theme.mutedText)
+                        }
+                    }
+
                     Section("Terminal") {
                         HStack {
                             Text("Host")
@@ -611,7 +647,7 @@ private struct TerminalPropertiesSheet: View {
                                 systemImage: model.isDeletingTerminal ? "hourglass" : "trash",
                                 tint: Theme.warning
                             ) {
-                                showDeleteConfirm = true
+                                activeAlert = .deleteTerminal
                             }
                             .listRowBackground(Color.clear)
                             .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
@@ -633,18 +669,43 @@ private struct TerminalPropertiesSheet: View {
                     Button("Close") { dismiss() }
                 }
             }
-            .alert("Delete Terminal?", isPresented: $showDeleteConfirm) {
-                Button("Cancel", role: .cancel) {}
-                Button("Delete", role: .destructive) {
-                    model.deleteTerminal(terminalID) {
-                        dismiss()
-                        DispatchQueue.main.async {
-                            onDeletedTerminal()
-                        }
-                    }
+            .alert(item: $activeAlert) { alert in
+                switch alert {
+                case .deleteTerminal:
+                    return Alert(
+                        title: Text("Delete Terminal?"),
+                        message: Text("This will remove the terminal and its sessions from the server."),
+                        primaryButton: .destructive(Text("Delete")) {
+                            model.deleteTerminal(terminalID) {
+                                dismiss()
+                                DispatchQueue.main.async {
+                                    onDeletedTerminal()
+                                }
+                            }
+                        },
+                        secondaryButton: .cancel()
+                    )
+                case .restartCLI:
+                    return Alert(
+                        title: Text("Restart CLI?"),
+                        message: Text("This requests the CLI shut down and (optionally) restart if it is running under a wrapper."),
+                        primaryButton: .destructive(Text("Restart")) {
+                            model.restartDaemon(terminalID: terminalID)
+                            dismiss()
+                        },
+                        secondaryButton: .cancel()
+                    )
+                case .stopCLI:
+                    return Alert(
+                        title: Text("Stop CLI?"),
+                        message: Text("This requests the CLI shut down. You can start it again from your terminal."),
+                        primaryButton: .destructive(Text("Stop")) {
+                            model.stopDaemon(terminalID: terminalID)
+                            dismiss()
+                        },
+                        secondaryButton: .cancel()
+                    )
                 }
-            } message: {
-                Text("This will remove the terminal and its sessions from the server.")
             }
         }
     }

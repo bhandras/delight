@@ -1543,6 +1543,77 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
+    /// stopDaemon requests that the CLI process shut down gracefully.
+    ///
+    /// This calls the terminal-scoped `terminalID:stop-daemon` RPC handler in the CLI.
+    /// The handler schedules a clean shutdown and then exits the process.
+    func stopDaemon(terminalID: String) {
+        let trimmed = terminalID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            log("Terminal ID required")
+            return
+        }
+
+        sdkCallAsync {
+            do {
+                let method = trimmed + ":stop-daemon"
+                let responseBuf = try self.sdkCallSync {
+                    try self.client.callRPCBuffer(method, paramsJSON: "{}")
+                }
+                guard let responseJSON = self.stringFromBuffer(responseBuf) else {
+                    self.log("Stop error: unable to decode response")
+                    return
+                }
+                if let decoded = try? JSONCoding.decode(MessageOnlyRPCResponse.self, from: responseJSON),
+                   let message = decoded.message?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !message.isEmpty {
+                    self.log(message)
+                } else {
+                    self.log("Stop requested")
+                }
+                self.scheduleSessionRefresh(reason: "daemon stop requested")
+            } catch {
+                self.log("Stop error: \(error)")
+            }
+        }
+    }
+
+    /// restartDaemon requests that the CLI process shut down with a restart exit
+    /// code so wrapper scripts can re-launch it automatically.
+    ///
+    /// This calls the terminal-scoped `terminalID:restart-daemon` RPC handler in the
+    /// CLI. If the CLI is not wrapped, this behaves like a stop.
+    func restartDaemon(terminalID: String) {
+        let trimmed = terminalID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            log("Terminal ID required")
+            return
+        }
+
+        sdkCallAsync {
+            do {
+                let method = trimmed + ":restart-daemon"
+                let responseBuf = try self.sdkCallSync {
+                    try self.client.callRPCBuffer(method, paramsJSON: "{}")
+                }
+                guard let responseJSON = self.stringFromBuffer(responseBuf) else {
+                    self.log("Restart error: unable to decode response")
+                    return
+                }
+                if let decoded = try? JSONCoding.decode(MessageOnlyRPCResponse.self, from: responseJSON),
+                   let message = decoded.message?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !message.isEmpty {
+                    self.log(message)
+                } else {
+                    self.log("Restart requested")
+                }
+                self.scheduleSessionRefresh(reason: "daemon restart requested")
+            } catch {
+                self.log("Restart error: \(error)")
+            }
+        }
+    }
+
     /// hasPromptHistory returns true when the current session has at least one prompt.
     func hasPromptHistory(sessionID: String? = nil) -> Bool {
         let targetID = (sessionID ?? self.sessionID).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1617,6 +1688,14 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         var draft: String? = nil
     }
 
+    /// MessageOnlyRPCResponse is a best-effort response payload containing a `message`.
+    ///
+    /// Several terminal/session RPC handlers return a human-readable `message`
+    /// without a structured success boolean.
+    private struct MessageOnlyRPCResponse: Decodable {
+        let message: String?
+    }
+
     /// recordPromptHistory appends a sent prompt to the per-session history.
     private func recordPromptHistory(_ text: String, sessionID: String) {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1628,6 +1707,15 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         state.cursor = nil
         state.draft = nil
         promptHistoryBySession[sessionID] = state
+    }
+
+    /// scheduleSessionRefresh triggers a best-effort refresh shortly after a control
+    /// action that is expected to change session state (for example daemon stop).
+    private func scheduleSessionRefresh(reason: String) {
+        logSwiftOnly("Scheduling session refresh: \(reason)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + UpdateTiming.sessionRefreshDelaySeconds) {
+            self.listSessions()
+        }
     }
 
     // MARK: - SdkListener
