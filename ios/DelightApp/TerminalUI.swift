@@ -180,7 +180,7 @@ struct TerminalDetailView: View {
 
         static func make(ui: SessionUIState?, isThinking: Bool, controlledByDesktop: Bool) -> TerminalComposerState {
             let canSendFromPhone = (ui?.canSend ?? false) && !controlledByDesktop
-            let isTurnInFlight = isThinking
+            let isTurnInFlight = (ui?.working ?? false) || isThinking
 
             // Keep prompt history usable even while a turn is running.
             let isHistoryEnabled = canSendFromPhone
@@ -376,10 +376,9 @@ private struct TerminalAgentConfigControls: View {
         let ui = session.uiState
         let isOnline = (ui?.connected ?? false) && ((ui?.state ?? "") != "offline") && ((ui?.state ?? "") != "disconnected")
         let isThinking = model.isThinking(sessionID: session.id)
-        // Disable model/permission changes while the agent is active, even if we
-        // didn't receive a "thinking" UI event. This keeps controls stable while
-        // a turn is in-flight and avoids accidental mid-turn config toggles.
-        let isLocked = isThinking || (ui?.active ?? false)
+        // Disable model/permission changes while the agent is actively working.
+        // SessionUIState.active reflects keep-alive/online-ness, not turn state.
+        let isLocked = (ui?.working ?? false) || isThinking
         let vibe: String? = {
             // If the CLI goes offline, hide the activity chip entirely. Otherwise,
             // stale "thinking" state can linger visually after disconnects.

@@ -777,6 +777,30 @@ final class SDKBridgeTests: XCTestCase {
         XCTAssertTrue(state.isShowingStop)
     }
 
+    func testTerminalComposerStateBusyFromUIWorking() {
+        let ui = SessionUIState(
+            state: "remote",
+            connected: true,
+            active: true,
+            working: true,
+            controlledByUser: false,
+            switching: false,
+            transition: "",
+            canTakeControl: false,
+            canSend: true
+        )
+
+        let state = TerminalDetailView.TerminalComposerState.make(
+            ui: ui,
+            isThinking: false,
+            controlledByDesktop: false
+        )
+
+        XCTAssertFalse(state.isInputEnabled)
+        XCTAssertTrue(state.isHistoryEnabled)
+        XCTAssertTrue(state.isShowingStop)
+    }
+
     func testTerminalComposerStateDesktopControlledDisablesStop() {
         let ui = SessionUIState(
             state: "local",

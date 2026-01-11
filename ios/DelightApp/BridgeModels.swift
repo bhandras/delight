@@ -244,6 +244,8 @@ struct SessionUIState: Decodable, Equatable {
     let state: String // disconnected|offline|local|remote
     let connected: Bool
     let active: Bool
+    let working: Bool
+    let mode: String?
     let controlledByUser: Bool
     let switching: Bool
     let transition: String
@@ -254,6 +256,8 @@ struct SessionUIState: Decodable, Equatable {
         case state
         case connected
         case active
+        case working
+        case mode
         case controlledByUser
         case switching
         case transition
@@ -265,6 +269,8 @@ struct SessionUIState: Decodable, Equatable {
         state: String,
         connected: Bool,
         active: Bool,
+        working: Bool = false,
+        mode: String? = nil,
         controlledByUser: Bool,
         switching: Bool,
         transition: String,
@@ -274,6 +280,8 @@ struct SessionUIState: Decodable, Equatable {
         self.state = state
         self.connected = connected
         self.active = active
+        self.working = working
+        self.mode = mode
         self.controlledByUser = controlledByUser
         self.switching = switching
         self.transition = transition
@@ -286,6 +294,9 @@ struct SessionUIState: Decodable, Equatable {
         let state = try container.decodeIfPresent(String.self, forKey: .state) ?? "disconnected"
         let connected = try container.decodeIfPresent(Bool.self, forKey: .connected) ?? false
         let active = try container.decodeIfPresent(Bool.self, forKey: .active) ?? false
+        let working = try container.decodeIfPresent(Bool.self, forKey: .working) ?? false
+        let mode = try container.decodeIfPresent(String.self, forKey: .mode)
+            ?? (state == "local" || state == "remote" ? state : nil)
         let controlledByUser = try container.decodeIfPresent(Bool.self, forKey: .controlledByUser) ?? true
         let switching = try container.decodeIfPresent(Bool.self, forKey: .switching) ?? false
         let transition = try container.decodeIfPresent(String.self, forKey: .transition) ?? ""
@@ -295,6 +306,8 @@ struct SessionUIState: Decodable, Equatable {
             state: state,
             connected: connected,
             active: active,
+            working: working,
+            mode: mode,
             controlledByUser: controlledByUser,
             switching: switching,
             transition: transition,
