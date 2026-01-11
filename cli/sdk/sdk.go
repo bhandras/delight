@@ -596,6 +596,7 @@ func (c *Client) sendMessageWithLocalID(sessionID string, localID string, rawRec
 
 	// Enforce phone-send rules:
 	// - phone can only send while the session is online and phone-controlled (remote mode)
+	// - phone cannot send while a turn is already in-flight
 	if state.state != "remote" {
 		// Refresh state once if we don't have a current snapshot.
 		refreshed, ok, err := c.ensureSessionFSM(sessionID)
@@ -608,6 +609,9 @@ func (c *Client) sendMessageWithLocalID(sessionID string, localID string, rawRec
 		if !ok {
 			return fmt.Errorf("cannot send: unknown session")
 		}
+	}
+	if state.working {
+		return fmt.Errorf("cannot send: session working")
 	}
 
 	encrypted, err := c.encryptPayload(sessionID, []byte(rawRecordJSON))

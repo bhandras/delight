@@ -560,12 +560,14 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             }
             self.lastForegroundRefreshAt = now
 
+            // iOS can suspend networking while the app is backgrounded. When returning
+            // to foreground, the websocket may appear "connected" locally while the
+            // server no longer delivers updates. Force a reconnect and then refresh
+            // sessions/messages so the UI state machine can converge without manual
+            // navigation.
             self.needsSessionRefresh = true
-            self.listSessions()
-
-            if !self.sessionID.isEmpty {
-                self.fetchLatestMessages(reset: true)
-            }
+            self.disconnect()
+            self.connect()
         }
     }
 
@@ -1428,12 +1430,17 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             return
         }
 
-        // Require explicit "Take Control" before sending from phone.
+        // Require explicit "Take Control" before sending from phone, and block
+        // sending while a turn is in-flight to avoid queued prompts.
         if let session = sessions.first(where: { $0.id == sessionID }) {
             let ui = session.uiState
             let controlledByDesktop = (ui?.mode ?? "") != "remote"
             if controlledByDesktop {
                 log("Desktop controls this session. Tap “Take Control” first.")
+                return
+            }
+            if ui?.working == true || isThinking(sessionID: sessionID) {
+                log("Agent is busy. Wait or tap Stop.")
                 return
             }
         }
@@ -1730,6 +1737,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         // Avoid calling back into Go synchronously from a Go→Swift callback stack.
         DispatchQueue.main.async {
             self.listSessions()
+            if !self.sessionID.isEmpty {
+                self.fetchLatestMessages(reset: true)
+            }
         }
     }
 
@@ -2924,16 +2934,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 )
             }
 
-            // If we fetch the newest page (or reset the transcript) and the latest
-            // conversational message is from the assistant, clear any stale thinking
-            // state. This covers cases where the app was backgrounded (phone sleep)
-            // and missed the ephemeral "thinking end"/activity update.
-            let shouldInferThinkingFromTranscript = reset || scrollToBottom || clearLoadingLatest
-            if shouldInferThinkingFromTranscript,
-               let lastChat = self.messages.last(where: { $0.role == .user || $0.role == .assistant }),
-               lastChat.role == .assistant {
-                self.updateSessionThinking(false, sessionID: expectedSessionID ?? self.sessionID)
-            }
+            // Thinking/busy state should be driven by durable server state
+            // (ListSessions `thinking` → ui.working) and explicit thinking UI events,
+            // not inferred from transcript ordering. Inference can clear "busy"
+            // incorrectly when the app refreshes during an in-flight turn.
 
             if scrollToBottom, !self.messages.isEmpty {
                 self.scrollRequest = ScrollRequest(target: .bottom)

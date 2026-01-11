@@ -471,7 +471,7 @@ final class SDKBridgeTests: XCTestCase {
         waitForExpectations(timeout: 1.0)
     }
 
-    func testParseMessagesClearsThinkingWhenLastMessageAssistant() {
+    func testParseMessagesDoesNotInferThinkingFromTranscript() {
         let model = HarnessViewModel()
         model.sessionID = "s1"
         model.sessions = [
@@ -502,10 +502,10 @@ final class SDKBridgeTests: XCTestCase {
         {"messages":[{"id":"m1","createdAt":123,"message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}]}
         """
 
-        let expectation = expectation(description: "assistant last message clears thinking")
+        let expectation = expectation(description: "messages fetch does not clear thinking")
         model.parseMessages(messagesJSON)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            XCTAssertEqual(model.sessions.first?.thinking, false)
+            XCTAssertEqual(model.sessions.first?.thinking, true)
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1.0)
