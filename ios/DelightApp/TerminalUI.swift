@@ -167,6 +167,34 @@ struct TerminalDetailView: View {
     @State private var showTextSizeSheet: Bool = false
     @Environment(\.dismiss) private var dismiss
 
+    /// TerminalComposerState captures which parts of the composer should be
+    /// interactive for the current session.
+    ///
+    /// This intentionally treats a session as "busy" when either the SDK says
+    /// the turn is active (`ui.active`) or when an activity update marks the
+    /// session as thinking. The former is more durable across app sleep/wake.
+    struct TerminalComposerState: Equatable {
+        let isInputEnabled: Bool
+        let isHistoryEnabled: Bool
+        let isShowingStop: Bool
+
+        static func make(ui: SessionUIState?, isThinking: Bool, controlledByDesktop: Bool) -> TerminalComposerState {
+            let canSendFromPhone = (ui?.canSend ?? false) && !controlledByDesktop
+            let isTurnInFlight = (ui?.active ?? false) || isThinking
+
+            // Keep prompt history usable even while a turn is running.
+            let isHistoryEnabled = canSendFromPhone
+            let isInputEnabled = canSendFromPhone && !isTurnInFlight
+            let isShowingStop = canSendFromPhone && isTurnInFlight
+
+            return TerminalComposerState(
+                isInputEnabled: isInputEnabled,
+                isHistoryEnabled: isHistoryEnabled,
+                isShowingStop: isShowingStop
+            )
+        }
+    }
+
     var body: some View {
         let currentSession = model.sessions.first(where: { $0.id == session.id }) ?? session
         let agentLabel = terminalAgentLabel(for: currentSession)
@@ -176,8 +204,12 @@ struct TerminalDetailView: View {
         // Even if the backend accidentally marks `canSend=true` while in local mode,
         // keep the UX consistent: user must tap "Take Control" first.
         let controlledByDesktop = ui?.controlledByUser ?? (currentSession.agentState?.controlledByUser ?? true)
-        let isComposerEnabled = (ui?.canSend ?? false) && !controlledByDesktop
         let isPhoneControlled = (uiState == "remote") && !controlledByDesktop
+        let composerState = TerminalComposerState.make(
+            ui: ui,
+            isThinking: model.isThinking(sessionID: currentSession.id),
+            controlledByDesktop: controlledByDesktop
+        )
         let placeholder: String = {
             switch ui?.state {
             case "disconnected":
@@ -219,7 +251,13 @@ struct TerminalDetailView: View {
                 .id("collection-transcript-\(currentSession.id)-\(Int(model.terminalFontSize))")
                 TerminalAgentConfigControls(model: model, session: currentSession, isEnabled: isPhoneControlled)
                     .background(Theme.cardBackground)
-                MessageComposer(model: model, isEnabled: isComposerEnabled, placeholder: placeholder)
+                MessageComposer(
+                    model: model,
+                    isInputEnabled: composerState.isInputEnabled,
+                    isHistoryEnabled: composerState.isHistoryEnabled,
+                    isShowingStop: composerState.isShowingStop,
+                    placeholder: placeholder
+                )
                     .background(Theme.cardBackground)
             }
         }
@@ -1037,11 +1075,13 @@ private struct StatusDot: View {
 
 private struct MessageComposer: View {
     @ObservedObject var model: HarnessViewModel
-    let isEnabled: Bool
+    let isInputEnabled: Bool
+    let isHistoryEnabled: Bool
+    let isShowingStop: Bool
     let placeholder: String
 
     var body: some View {
-        let isThinking = model.isThinking(sessionID: model.sessionID)
+        let isThinking = isShowingStop
         let hasHistory = model.hasPromptHistory()
 
         HStack(spacing: 12) {
@@ -1056,7 +1096,7 @@ private struct MessageComposer: View {
                         .background(Color(uiColor: .tertiarySystemBackground))
                         .clipShape(Circle())
                 }
-                .disabled(!isEnabled || !hasHistory)
+                .disabled(!isHistoryEnabled || !hasHistory)
 
                 Button {
                     model.stepPromptHistory(direction: 1)
@@ -1068,7 +1108,7 @@ private struct MessageComposer: View {
                         .background(Color(uiColor: .tertiarySystemBackground))
                         .clipShape(Circle())
                 }
-                .disabled(!isEnabled || !hasHistory)
+                .disabled(!isHistoryEnabled || !hasHistory)
             }
             TextField(text: $model.messageText, axis: .vertical) {
                 Text(placeholder)
@@ -1085,7 +1125,7 @@ private struct MessageComposer: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(Color(uiColor: .separator).opacity(0.7), lineWidth: 1)
             )
-            .disabled(!isEnabled)
+            .disabled(!isInputEnabled)
 
             if isThinking {
                 Button {
@@ -1098,7 +1138,7 @@ private struct MessageComposer: View {
                         .foregroundColor(.white)
                         .clipShape(Circle())
                 }
-                .disabled(!isEnabled || model.sessionID.isEmpty)
+                .disabled(!isHistoryEnabled || model.sessionID.isEmpty)
             } else {
                 Button {
                     model.sendMessage()
@@ -1111,8 +1151,16 @@ private struct MessageComposer: View {
                         .foregroundColor(.white)
                         .clipShape(Circle())
                 }
-                .disabled(!isEnabled || model.sessionID.isEmpty || model.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .opacity((!isEnabled || model.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ? 0.5 : 1.0)
+                .disabled(
+                    !isInputEnabled
+                        || model.sessionID.isEmpty
+                        || model.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+                .opacity(
+                    (!isInputEnabled || model.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        ? 0.5
+                        : 1.0
+                )
             }
         }
         .padding()

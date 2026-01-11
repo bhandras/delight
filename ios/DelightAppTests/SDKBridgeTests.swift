@@ -730,4 +730,73 @@ final class SDKBridgeTests: XCTestCase {
         }
         waitForExpectations(timeout: 1.0)
     }
+
+    func testTerminalComposerStateBusyFromUIActive() {
+        let ui = SessionUIState(
+            state: "remote",
+            connected: true,
+            active: true,
+            controlledByUser: false,
+            switching: false,
+            transition: "",
+            canTakeControl: false,
+            canSend: true
+        )
+
+        let state = TerminalDetailView.TerminalComposerState.make(
+            ui: ui,
+            isThinking: false,
+            controlledByDesktop: false
+        )
+
+        XCTAssertFalse(state.isInputEnabled)
+        XCTAssertTrue(state.isHistoryEnabled)
+        XCTAssertTrue(state.isShowingStop)
+    }
+
+    func testTerminalComposerStateBusyFromThinkingOverride() {
+        let ui = SessionUIState(
+            state: "remote",
+            connected: true,
+            active: false,
+            controlledByUser: false,
+            switching: false,
+            transition: "",
+            canTakeControl: false,
+            canSend: true
+        )
+
+        let state = TerminalDetailView.TerminalComposerState.make(
+            ui: ui,
+            isThinking: true,
+            controlledByDesktop: false
+        )
+
+        XCTAssertFalse(state.isInputEnabled)
+        XCTAssertTrue(state.isHistoryEnabled)
+        XCTAssertTrue(state.isShowingStop)
+    }
+
+    func testTerminalComposerStateDesktopControlledDisablesStop() {
+        let ui = SessionUIState(
+            state: "local",
+            connected: true,
+            active: true,
+            controlledByUser: true,
+            switching: false,
+            transition: "",
+            canTakeControl: true,
+            canSend: true
+        )
+
+        let state = TerminalDetailView.TerminalComposerState.make(
+            ui: ui,
+            isThinking: true,
+            controlledByDesktop: true
+        )
+
+        XCTAssertFalse(state.isInputEnabled)
+        XCTAssertFalse(state.isHistoryEnabled)
+        XCTAssertFalse(state.isShowingStop)
+    }
 }
