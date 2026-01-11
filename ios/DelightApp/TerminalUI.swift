@@ -337,6 +337,10 @@ private struct TerminalAgentConfigControls: View {
         let ui = session.uiState
         let isOnline = (ui?.connected ?? false) && ((ui?.state ?? "") != "offline") && ((ui?.state ?? "") != "disconnected")
         let isThinking = model.isThinking(sessionID: session.id)
+        // Disable model/permission changes while the agent is active, even if we
+        // didn't receive a "thinking" UI event. This keeps controls stable while
+        // a turn is in-flight and avoids accidental mid-turn config toggles.
+        let isLocked = isThinking || (ui?.active ?? false)
         let vibe: String? = {
             // If the CLI goes offline, hide the activity chip entirely. Otherwise,
             // stale "thinking" state can linger visually after disconnects.
@@ -369,7 +373,7 @@ private struct TerminalAgentConfigControls: View {
                     Image(systemName: "lightbulb")
                         .font(.system(size: 15, weight: .semibold))
                 }
-                .disabled(!isEnabled || !isOnline || isFetchingSettings || isThinking)
+                .disabled(!isEnabled || !isOnline || isFetchingSettings || isLocked)
 
                 Button {
                     pendingSheet = .permissions
@@ -382,7 +386,7 @@ private struct TerminalAgentConfigControls: View {
                     Image(systemName: "exclamationmark.circle")
                         .font(.system(size: 15, weight: .semibold))
                 }
-                .disabled(!isEnabled || !isOnline || isFetchingSettings || isThinking)
+                .disabled(!isEnabled || !isOnline || isFetchingSettings || isLocked)
 
                 Spacer()
 
@@ -401,7 +405,7 @@ private struct TerminalAgentConfigControls: View {
                 sessionID: session.id,
                 currentModel: fresh?.desiredConfig.model?.trimmingCharacters(in: .whitespacesAndNewlines),
                 currentEffort: fresh?.desiredConfig.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines),
-                isLocked: model.isThinking(sessionID: session.id),
+                isLocked: isLocked,
                 onApply: { modelSelection, effortSelection in
                     model.setAgentConfig(
                         model: modelSelection,
@@ -417,7 +421,7 @@ private struct TerminalAgentConfigControls: View {
             let caps = fresh?.capabilities
             TerminalPermissionsSheet(
                 currentPermissionMode: fresh?.desiredConfig.permissionMode?.trimmingCharacters(in: .whitespacesAndNewlines),
-                isLocked: model.isThinking(sessionID: session.id),
+                isLocked: isLocked,
                 onApply: { selected in
                     model.setAgentConfig(
                         model: nil,

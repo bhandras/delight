@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var showScanner = false
     @State private var selectedTab: Int = 0
     @State private var activeSheet: ActiveSheet?
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -30,6 +31,11 @@ struct ContentView: View {
         .preferredColorScheme(model.appearanceMode.preferredColorScheme)
         .onAppear {
             model.startup()
+        }
+        .onChange(of: scenePhase) { newValue in
+            if newValue == .active {
+                model.onAppDidBecomeActive()
+            }
         }
         .onChange(of: showScanner) { newValue in
             if newValue {
