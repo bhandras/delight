@@ -146,6 +146,12 @@ type StopDaemonResponse struct {
 	Message string `json:"message"`
 }
 
+// RestartDaemonResponse is the response payload for the "restart-daemon" RPC.
+type RestartDaemonResponse struct {
+	// Message is a human-readable status message.
+	Message string `json:"message"`
+}
+
 // PingResponse is the response payload for the "ping" RPC.
 type PingResponse struct {
 	// Success indicates whether the daemon is reachable.
