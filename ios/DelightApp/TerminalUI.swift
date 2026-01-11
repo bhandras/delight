@@ -273,6 +273,7 @@ struct TerminalDetailView: View {
         .onAppear {
             initialScrollDone = false
             model.selectSession(session.id)
+            model.requestSessionsRefresh(reason: "terminal detail opened")
         }
     }
 }
@@ -1137,7 +1138,25 @@ private func isSessionOnline(_ session: SessionSummary) -> Bool {
 
 private func statusInfo(for session: SessionSummary, thinkingOverride: Bool? = nil) -> SessionStatusInfo {
     let thinking = thinkingOverride ?? session.thinking
-    if !session.active {
+    if let ui = session.uiState {
+        if ui.state == "offline" || ui.state == "disconnected" {
+            return SessionStatusInfo(
+                text: "offline",
+                dotColor: Theme.muted,
+                textColor: Theme.mutedText,
+                isPulsing: false
+            )
+        }
+        if !ui.connected {
+            return SessionStatusInfo(
+                text: "connecting",
+                dotColor: Theme.muted,
+                textColor: Theme.mutedText,
+                isPulsing: true
+            )
+        }
+    }
+    if session.uiState == nil && !session.active {
         return SessionStatusInfo(
             text: "offline",
             dotColor: Theme.muted,

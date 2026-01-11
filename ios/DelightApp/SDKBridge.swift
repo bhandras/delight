@@ -1306,6 +1306,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
         isLoadingHistory = false
         fetchLatestMessages(reset: true)
+        requestSessionsRefresh(reason: "session selected")
     }
 
     func fetchMessages() {
@@ -2389,6 +2390,16 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             self.scheduledSessionRefresh = work
             DispatchQueue.main.asyncAfter(deadline: .now() + delaySeconds, execute: work)
         }
+    }
+
+    /// requestSessionsRefresh schedules a best-effort session refresh.
+    ///
+    /// This is useful for "navigation-driven" refreshes (opening a session detail
+    /// view) where the websocket might still be reconnecting after app sleep and
+    /// we want the latest mode (local/remote) without waiting for an update event.
+    func requestSessionsRefresh(reason: String) {
+        logSwiftOnly("Requesting sessions refresh: \(reason)")
+        scheduleSessionsRefreshDebounced(minIntervalSeconds: 0, delaySeconds: 0)
     }
 
     private func handlePermissionRequestUpdate(_ json: String) {
