@@ -454,6 +454,10 @@ private struct TerminalPropertiesSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showDeleteConfirm: Bool = false
 
+    private enum UsageFormat {
+        static let costDecimals: Int = 4
+    }
+
     var body: some View {
         let terminalID = session.terminalID ?? session.metadata?.terminalId ?? "unknown"
         let terminal = model.terminals.first(where: { $0.id == terminalID })
@@ -486,6 +490,7 @@ private struct TerminalPropertiesSheet: View {
             }
             return terminal?.active ?? session.active
         }()
+        let usage = model.usageBySessionID[session.id]
         let daemonStatus: String = {
             if !online {
                 return "offline"
@@ -554,6 +559,48 @@ private struct TerminalPropertiesSheet: View {
                             Text(terminalID)
                                 .foregroundColor(Theme.mutedText)
                                 .textSelection(.enabled)
+                        }
+                    }
+
+                    if let usage, usage.tokensTotal != nil || usage.costTotal != nil {
+                        Section("Usage") {
+                            if !usage.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                HStack {
+                                    Text("Source")
+                                    Spacer()
+                                    Text(usage.key)
+                                        .foregroundColor(Theme.mutedText)
+                                }
+                            }
+
+                            if let total = usage.tokensTotal {
+                                let detail: String = {
+                                    let parts: [String] = [
+                                        usage.tokensInput.map { "in \($0)" },
+                                        usage.tokensOutput.map { "out \($0)" },
+                                        usage.tokensCacheRead.map { "cache read \($0)" },
+                                        usage.tokensCacheCreation.map { "cache write \($0)" },
+                                    ].compactMap { $0 }
+                                    if parts.isEmpty { return "\(total)" }
+                                    return "\(total) (\(parts.joined(separator: ", ")))"
+                                }()
+                                HStack {
+                                    Text("Tokens")
+                                    Spacer()
+                                    Text(detail)
+                                        .foregroundColor(Theme.mutedText)
+                                }
+                            }
+
+                            if let total = usage.costTotal {
+                                let formatted = String(format: "$%.*f", UsageFormat.costDecimals, total)
+                                HStack {
+                                    Text("Cost")
+                                    Spacer()
+                                    Text(formatted)
+                                        .foregroundColor(Theme.mutedText)
+                                }
+                            }
                         }
                     }
 

@@ -635,4 +635,45 @@ final class SDKBridgeTests: XCTestCase {
         }
         waitForExpectations(timeout: 1.0)
     }
+
+    func testUsageUpdateStoresSnapshot() {
+        let model = HarnessViewModel()
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 0,
+                active: true,
+                activeAt: nil,
+                title: "agent",
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: nil,
+                thinking: false
+            )
+        ]
+
+        let json = """
+        {"type":"usage","id":"s1","key":"codex","tokens":{"total":10,"input":4,"output":6},"cost":{"total":0.01},"timestamp":123}
+        """
+
+        let expectation = expectation(description: "usage stored")
+        model.onUpdate(nil, updateJSON: json)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            guard let usage = model.usageBySessionID["s1"] else {
+                XCTFail("expected usage snapshot for session")
+                expectation.fulfill()
+                return
+            }
+            XCTAssertEqual(usage.key, "codex")
+            XCTAssertEqual(usage.tokensTotal, 10)
+            XCTAssertEqual(usage.tokensInput, 4)
+            XCTAssertEqual(usage.tokensOutput, 6)
+            XCTAssertEqual(usage.costTotal, 0.01)
+            XCTAssertEqual(usage.timestampMs, 123)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
 }
