@@ -1900,6 +1900,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         if markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return true
         }
+        if payload.kind == "reasoning",
+           stripReasoningHeading(markdown).isEmpty {
+            removeUIEventMessage(eventID: payload.eventID)
+            return true
+        }
         applyUIEventMessage(payload, markdown: markdown)
         return true
     }
@@ -1917,6 +1922,19 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 return full.isEmpty ? brief : full
             }
             return brief.isEmpty ? full : brief
+        }
+        if payload.kind == "reasoning" {
+            // Older backends may send briefMarkdown="Reasoning" and store the actual
+            // summary content in fullMarkdown.
+            let strippedBrief = stripReasoningHeading(brief)
+            let strippedFull = stripReasoningHeading(full)
+            if !strippedBrief.isEmpty {
+                return brief
+            }
+            if !strippedFull.isEmpty {
+                return full.isEmpty ? brief : full
+            }
+            return ""
         }
         // Prefer the brief rendering for non-tool UI events (thinking/reasoning), since
         // it's intended to be the summary. Fall back to full if the backend didn't
@@ -2029,6 +2047,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
                 let markdown = self.uiEventMarkdown(payload)
                 if markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    continue
+                }
+                if payload.kind == "reasoning",
+                   self.stripReasoningHeading(markdown).isEmpty {
                     continue
                 }
 

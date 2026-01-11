@@ -689,8 +689,29 @@ func (e *Engine) stopRemoteAndWait(ctx context.Context) error {
 	case <-waitCtx.Done():
 		return waitCtx.Err()
 	case err := <-done:
+		if isExpectedRemoteShutdownError(err) {
+			return nil
+		}
 		return err
 	}
+}
+
+// isExpectedRemoteShutdownError reports whether err is an expected error from
+// waiting on a remotely stopped Codex app-server subprocess (for example when
+// we kill it during shutdown).
+func isExpectedRemoteShutdownError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	// We currently stop `codex app-server` by killing the subprocess.
+	// In that case cmd.Wait() reports a signal exit that should not be treated
+	// as an actionable error for higher layers.
+	msg := err.Error()
+	return strings.Contains(msg, "signal: killed") || strings.Contains(msg, "signal: terminated")
 }
 
 // forwardRollout maps rollout events into outbound wire records.
@@ -795,8 +816,9 @@ func (e *Engine) handleLocalFunctionCall(ev rollout.EvFunctionCall) {
 	// Try to show a concise command preview for shell_command.
 	if name == "shell_command" {
 		if cmd := extractShellCommand(ev.Arguments); cmd != "" {
-			brief = fmt.Sprintf("Tool: `%s`", truncateOneLine(cmd, 64))
-			full = fmt.Sprintf("Tool: `shell_command`\n\n`%s`", cmd)
+			cmdBlock := "    " + strings.ReplaceAll(cmd, "\n", "\n    ")
+			brief = fmt.Sprintf("Tool: `shell_command`\n\n%s", cmdBlock)
+			full = fmt.Sprintf("Tool: `shell_command`\n\n%s", cmdBlock)
 			if strings.TrimSpace(argsText) != "" {
 				full = fmt.Sprintf("%s\n\nArgs:\n\n```json\n%s\n```", full, argsText)
 			}
@@ -862,8 +884,9 @@ func (e *Engine) handleLocalFunctionCallOutput(ev rollout.EvFunctionCallOutput) 
 
 	if name == "shell_command" {
 		if cmd := extractShellCommand(call.arguments); cmd != "" {
-			brief = fmt.Sprintf("Tool: `%s`", truncateOneLine(cmd, 64))
-			full = fmt.Sprintf("Tool: `shell_command`\n\n`%s`", cmd)
+			cmdBlock := "    " + strings.ReplaceAll(cmd, "\n", "\n    ")
+			brief = fmt.Sprintf("Tool: `shell_command`\n\n%s", cmdBlock)
+			full = fmt.Sprintf("Tool: `shell_command`\n\n%s", cmdBlock)
 			if strings.TrimSpace(argsText) != "" {
 				full = fmt.Sprintf("%s\n\nArgs:\n\n```json\n%s\n```", full, argsText)
 			}

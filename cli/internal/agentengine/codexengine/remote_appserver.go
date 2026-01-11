@@ -622,11 +622,13 @@ func renderToolItem(item map[string]any) (string, string) {
 			return "", ""
 		}
 		out := strings.TrimSpace(stringValue(item["aggregatedOutput"]))
-		full := fmt.Sprintf("Tool: shell\n\n`%s`", cmd)
+		cmdBlock := "    " + strings.ReplaceAll(cmd, "\n", "\n    ")
+		brief := fmt.Sprintf("Tool: shell\n\n%s", cmdBlock)
+		full := brief
 		if out != "" {
 			full = fmt.Sprintf("%s\n\nOutput:\n\n```\n%s\n```", full, truncateText(out, localToolOutputMaxChars))
 		}
-		return fmt.Sprintf("Tool: `%s`", truncateOneLine(cmd, 64)), full
+		return brief, full
 	case appserver.ItemTypeMCPToolCall:
 		server := strings.TrimSpace(stringValue(item["server"]))
 		tool := strings.TrimSpace(stringValue(item["tool"]))
@@ -702,8 +704,6 @@ func renderFileChangeItem(item map[string]any) (string, string) {
 
 // renderReasoningItem renders a reasoning item into brief/full Markdown.
 func renderReasoningItem(item map[string]any) (string, string) {
-	brief := "Reasoning"
-
 	var parts []string
 	if summary, ok := item["summary"].([]any); ok {
 		for _, entry := range summary {
@@ -722,7 +722,21 @@ func renderReasoningItem(item map[string]any) (string, string) {
 		return "", ""
 	}
 
-	full := "Reasoning\n\n" + strings.Join(parts, "\n")
+	var content []string
+	for _, part := range parts {
+		head := strings.TrimLeft(part, "#")
+		head = strings.TrimSpace(head)
+		if head == "Reasoning" {
+			continue
+		}
+		content = append(content, part)
+	}
+	if len(content) == 0 {
+		return "", ""
+	}
+
+	brief := truncateOneLine(content[0], 160)
+	full := "Reasoning\n\n" + strings.Join(content, "\n")
 	return brief, strings.TrimSpace(full)
 }
 

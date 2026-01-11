@@ -135,3 +135,90 @@ func TestRenderFileChangeItemIncludesDiff(t *testing.T) {
 		t.Fatalf("expected diff content, got: %q", full)
 	}
 }
+
+func TestRenderToolItemCommandExecutionShowsFullCommandInBrief(t *testing.T) {
+	item := map[string]any{
+		"type":             "commandExecution",
+		"command":          "echo hello && echo world",
+		"aggregatedOutput": "hello\nworld\n",
+	}
+
+	brief, full := renderToolItem(item)
+	if !strings.Contains(brief, "Tool: shell") {
+		t.Fatalf("expected brief to include tool label, got %q", brief)
+	}
+	if strings.Contains(brief, "Output:") {
+		t.Fatalf("expected brief to omit output, got %q", brief)
+	}
+	if !strings.Contains(brief, "\n    echo hello && echo world") {
+		t.Fatalf("expected brief to include full command, got %q", brief)
+	}
+	if !strings.Contains(full, "Output:") {
+		t.Fatalf("expected full to include output section, got %q", full)
+	}
+	if !strings.Contains(full, "hello") || !strings.Contains(full, "world") {
+		t.Fatalf("expected full to include output content, got %q", full)
+	}
+}
+
+func TestRenderReasoningItemUsesSummaryTextForBrief(t *testing.T) {
+	item := map[string]any{
+		"type":    "reasoning",
+		"summary": []any{"First line", "Second line"},
+	}
+
+	brief, full := renderReasoningItem(item)
+	if brief != "First line" {
+		t.Fatalf("expected brief to be first summary line, got %q", brief)
+	}
+	if strings.TrimSpace(full) != "Reasoning\n\nFirst line\nSecond line" {
+		t.Fatalf("unexpected full reasoning markdown: %q", full)
+	}
+}
+
+func TestRenderToolItemCommandExecutionSplitsOutput(t *testing.T) {
+	item := map[string]any{
+		"type":             "commandExecution",
+		"command":          "echo hi\nls",
+		"aggregatedOutput": "hi\n",
+	}
+
+	brief, full := renderToolItem(item)
+	if strings.Contains(brief, "Output:") {
+		t.Fatalf("expected brief to omit output, got: %q", brief)
+	}
+	if !strings.Contains(brief, "\n    echo hi\n    ls") {
+		t.Fatalf("expected command block in brief, got: %q", brief)
+	}
+	if !strings.Contains(full, "Output:") {
+		t.Fatalf("expected full to include output, got: %q", full)
+	}
+}
+
+func TestRenderReasoningItemSkipsHeadingOnly(t *testing.T) {
+	t.Run("heading only", func(t *testing.T) {
+		item := map[string]any{
+			"summary": []any{"Reasoning"},
+		}
+		brief, full := renderReasoningItem(item)
+		if brief != "" || full != "" {
+			t.Fatalf("expected empty markdown, got brief=%q full=%q", brief, full)
+		}
+	})
+
+	t.Run("heading then summary", func(t *testing.T) {
+		item := map[string]any{
+			"summary": []any{"Reasoning", "Check invariants"},
+		}
+		brief, full := renderReasoningItem(item)
+		if brief == "" || full == "" {
+			t.Fatalf("expected non-empty markdown, got brief=%q full=%q", brief, full)
+		}
+		if brief == "Reasoning" {
+			t.Fatalf("expected brief to contain summary, got: %q", brief)
+		}
+		if !strings.Contains(full, "Check invariants") {
+			t.Fatalf("expected full to include summary, got: %q", full)
+		}
+	})
+}

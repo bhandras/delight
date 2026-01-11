@@ -134,8 +134,11 @@ func TestHandleRolloutEventEmitsToolUIEvents(t *testing.T) {
 	if ui.Status != agentengine.UIEventStatusRunning {
 		t.Fatalf("expected running status, got %q", ui.Status)
 	}
-	if ui.BriefMarkdown != "Tool: `ls`" {
+	if !strings.Contains(ui.BriefMarkdown, "Tool: `shell_command`") {
 		t.Fatalf("unexpected brief markdown: %q", ui.BriefMarkdown)
+	}
+	if !strings.Contains(ui.BriefMarkdown, "\n    ls") {
+		t.Fatalf("expected command block in brief markdown: %q", ui.BriefMarkdown)
 	}
 
 	engine.handleRolloutEvent(rollout.EvFunctionCallOutput{
@@ -156,6 +159,9 @@ func TestHandleRolloutEventEmitsToolUIEvents(t *testing.T) {
 	}
 	if ui.EventID != "call_1" {
 		t.Fatalf("expected event id call_1, got %q", ui.EventID)
+	}
+	if !strings.Contains(ui.BriefMarkdown, "\n    ls") {
+		t.Fatalf("expected command block in brief markdown: %q", ui.BriefMarkdown)
 	}
 	if !strings.Contains(ui.FullMarkdown, "Output:") {
 		t.Fatalf("expected full markdown output, got: %q", ui.FullMarkdown)

@@ -561,4 +561,78 @@ final class SDKBridgeTests: XCTestCase {
         XCTAssertEqual(daemon?.pid, 42)
         XCTAssertEqual(daemon?.startedAt, 456)
     }
+
+    func testUIEventReasoningUsesFullMarkdownWhenBriefIsHeadingOnly() {
+        let model = HarnessViewModel()
+        model.sessionID = "s1"
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 0,
+                active: true,
+                activeAt: nil,
+                title: "agent",
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: nil,
+                thinking: false
+            )
+        ]
+
+        let json = """
+        {"type":"ui.event","id":"s1","eventId":"reasoning-1","kind":"reasoning","phase":"update","status":"ok","briefMarkdown":"Reasoning","fullMarkdown":"Reasoning\\n\\n- step 1","atMs":123}
+        """
+
+        let expectation = expectation(description: "reasoning callout includes content")
+        model.onUpdate(nil, updateJSON: json)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            guard let item = model.messages.first(where: { $0.id == "ui-reasoning-1" }) else {
+                XCTFail("expected ui event message to be present")
+                expectation.fulfill()
+                return
+            }
+            XCTAssertTrue(item.blocks.contains(where: { block in
+                if case let .callout(summary) = block {
+                    return summary.content.contains("- step 1")
+                }
+                return false
+            }))
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
+
+    func testUIEventReasoningSuppressesEmptyHeadingOnlyPayload() {
+        let model = HarnessViewModel()
+        model.sessionID = "s1"
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 0,
+                active: true,
+                activeAt: nil,
+                title: "agent",
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: nil,
+                thinking: false
+            )
+        ]
+
+        let json = """
+        {"type":"ui.event","id":"s1","eventId":"reasoning-2","kind":"reasoning","phase":"update","status":"ok","briefMarkdown":"Reasoning","fullMarkdown":"Reasoning","atMs":123}
+        """
+
+        let expectation = expectation(description: "heading-only reasoning omitted")
+        model.onUpdate(nil, updateJSON: json)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertFalse(model.messages.contains(where: { $0.id == "ui-reasoning-2" }))
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
 }
