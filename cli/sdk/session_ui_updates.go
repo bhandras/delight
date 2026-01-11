@@ -51,7 +51,7 @@ func (c *Client) clearSessionSwitching(sessionID string) {
 	prev.switching = false
 	prev.transition = ""
 	prev.switchingAt = 0
-	_, ui := deriveSessionUI(now, prev.connected, prev.active, "", &prev)
+	_, ui := deriveSessionUI(now, prev.connected, prev.active, prev.working, "", &prev)
 	prev.uiJSON = sessionUIJSON(ui)
 	c.sessionFSM[sessionID] = prev
 	c.mu.Unlock()

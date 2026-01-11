@@ -470,7 +470,7 @@ func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
 
 				// Emit a synthetic session-ui update so clients can re-render
 				// immediately without polling ListSessions.
-				fsm, ui := deriveSessionUI(time.Now().UnixMilli(), prev.connected, prev.active, "", &prev)
+				fsm, ui := deriveSessionUI(time.Now().UnixMilli(), prev.connected, prev.active, prev.working, "", &prev)
 				uiJSON := sessionUIJSON(ui)
 				c.mu.Lock()
 				prevCache := c.sessionFSM[sessionID]
@@ -551,6 +551,7 @@ func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
 			prev := c.sessionFSM[sessionID]
 			active := prev.active
 			connected := prev.connected
+			working := prev.working
 			if prev.state == "" {
 				active = true
 				connected = true
@@ -559,10 +560,11 @@ func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
 			next := computeSessionFSM(connected, active, controlledByUser)
 			next.updatedAt = prev.updatedAt
 			next.fetchedAt = time.Now().UnixMilli()
+			next.working = working
 			next.switching = false
 			next.transition = ""
 			next.switchingAt = 0
-			_, ui := deriveSessionUI(time.Now().UnixMilli(), connected, active, "", &next)
+			_, ui := deriveSessionUI(time.Now().UnixMilli(), connected, active, next.working, "", &next)
 			next.uiJSON = sessionUIJSON(ui)
 			c.sessionFSM[sessionID] = next
 			c.mu.Unlock()
@@ -686,6 +688,7 @@ func (c *Client) listSessions() (resp string, err error) {
 
 				agentState, _ := session["agentState"].(string)
 				active, _ := session["active"].(bool)
+				working, _ := session["thinking"].(bool)
 				updatedAt := int64(0)
 				switch v := session["updatedAt"].(type) {
 				case float64:
@@ -700,7 +703,7 @@ func (c *Client) listSessions() (resp string, err error) {
 					tmp := prev
 					cached = &tmp
 				}
-				fsm, ui := deriveSessionUI(now, connected, active, agentState, cached)
+				fsm, ui := deriveSessionUI(now, connected, active, working, agentState, cached)
 				fsm.updatedAt = updatedAt
 
 				// Inject a derived UI state so the iOS app can be a pure view layer.
@@ -1089,7 +1092,7 @@ func (c *Client) applyAgentStateToSessionFSM(sessionID string, agentState string
 		connected = true
 	}
 
-	fsm, ui := deriveSessionUI(now, connected, active, agentState, &prev)
+	fsm, ui := deriveSessionUI(now, connected, active, prev.working, agentState, &prev)
 	fsm.updatedAt = prev.updatedAt
 	fsm.switching = false
 	fsm.transition = ""

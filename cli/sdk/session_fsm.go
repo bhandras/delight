@@ -26,6 +26,7 @@ const (
 type sessionFSMState struct {
 	state            string
 	active           bool
+	working          bool
 	controlledByUser bool
 	connected        bool
 	switching        bool
@@ -76,6 +77,7 @@ func deriveSessionUI(
 	now int64,
 	connected bool,
 	active bool,
+	working bool,
 	agentState string,
 	cached *sessionFSMState,
 ) (sessionFSMState, map[string]any) {
@@ -86,6 +88,7 @@ func deriveSessionUI(
 
 	fsm := computeSessionFSM(connected, active, controlledByUser)
 	fsm.fetchedAt = now
+	fsm.working = working
 	if cached != nil {
 		fsm.updatedAt = cached.updatedAt
 		fsm.switching = cached.switching
@@ -116,6 +119,8 @@ func deriveSessionUI(
 		"state":            uiState, // disconnected|offline|local|remote
 		"connected":        fsm.connected,
 		"active":           fsm.active,
+		"working":          fsm.working,
+		"mode":             modeFromState(uiState),
 		"controlledByUser": fsm.controlledByUser,
 		"switching":        switching,
 		"transition":       transition,
@@ -124,4 +129,13 @@ func deriveSessionUI(
 	}
 
 	return fsm, ui
+}
+
+func modeFromState(state string) string {
+	switch state {
+	case "local", "remote":
+		return state
+	default:
+		return ""
+	}
 }
