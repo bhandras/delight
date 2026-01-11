@@ -318,6 +318,7 @@ private struct CodeBlockView: View {
     @State private var isShowingFull = false
 
     var body: some View {
+        let normalizedLanguage = language?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let codeFontSize = CGFloat(TerminalAppearance.codeFontSize(for: Double(fontSize)))
         let preview = codePreview(content, maxLines: PreviewLimits.maxInlineLines, maxChars: PreviewLimits.maxInlineCharacters)
         VStack(alignment: .leading, spacing: 8) {
@@ -326,9 +327,14 @@ private struct CodeBlockView: View {
                     .font(.system(size: max(codeFontSize - 3, 10), weight: .semibold, design: .monospaced))
                     .foregroundColor(Theme.accent)
             }
-            Text(preview.text)
-                .font(.system(size: codeFontSize, weight: .regular, design: .monospaced))
-                .foregroundColor(Theme.codeText)
+            if normalizedLanguage == "diff" {
+                DiffCodePreviewView(text: preview.text, fontSize: codeFontSize)
+            } else {
+                Text(preview.text)
+                    .font(.system(size: codeFontSize, weight: .regular, design: .monospaced))
+                    .foregroundColor(Theme.codeText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if preview.isTruncated {
                 HStack(spacing: 10) {
@@ -356,12 +362,22 @@ private struct CodeBlockView: View {
         )
         .sheet(isPresented: $isShowingFull) {
             NavigationStack {
-                CodeTextView(
-                    text: content,
-                    fontSize: codeFontSize,
-                    textColor: UIColor(Theme.codeText),
-                    backgroundColor: UIColor(Theme.codeBackground)
-                )
+                Group {
+                    if normalizedLanguage == "diff" {
+                        DiffTextView(
+                            text: content,
+                            fontSize: codeFontSize,
+                            backgroundColor: UIColor(Theme.codeBackground)
+                        )
+                    } else {
+                        CodeTextView(
+                            text: content,
+                            fontSize: codeFontSize,
+                            textColor: UIColor(Theme.codeText),
+                            backgroundColor: UIColor(Theme.codeBackground)
+                        )
+                    }
+                }
                 .navigationTitle(language ?? "Code")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -373,6 +389,138 @@ private struct CodeBlockView: View {
                 }
             }
         }
+    }
+}
+
+private struct DiffCodePreviewView: View {
+    let text: String
+    let fontSize: CGFloat
+
+    private enum DiffLayout {
+        static let lineSpacing: CGFloat = 1
+    }
+
+    private enum DiffColors {
+        static let addition = Theme.success
+        static let deletion = Theme.danger
+        static let hunk = Theme.accent
+        static let meta = Theme.mutedText
+        static let context = Theme.codeText
+    }
+
+    var body: some View {
+        let lines = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+            .map(String.init)
+
+        VStack(alignment: .leading, spacing: DiffLayout.lineSpacing) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.system(size: fontSize, weight: .regular, design: .monospaced))
+                    .foregroundColor(color(for: line))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func color(for line: String) -> Color {
+        if line.hasPrefix("@@") {
+            return DiffColors.hunk
+        }
+        if line.hasPrefix("diff ")
+            || line.hasPrefix("index ")
+            || line.hasPrefix("--- ")
+            || line.hasPrefix("+++ ") {
+            return DiffColors.meta
+        }
+        if line.hasPrefix("+"), !line.hasPrefix("+++") {
+            return DiffColors.addition
+        }
+        if line.hasPrefix("-"), !line.hasPrefix("---") {
+            return DiffColors.deletion
+        }
+        return DiffColors.context
+    }
+}
+
+/// DiffTextView is a UIKit-backed text view that highlights unified diffs.
+private struct DiffTextView: UIViewRepresentable {
+    let text: String
+    let fontSize: CGFloat
+    let backgroundColor: UIColor
+
+    private enum DiffColors {
+        static let addition = UIColor(Theme.success)
+        static let deletion = UIColor(Theme.danger)
+        static let hunk = UIColor(Theme.accent)
+        static let meta = UIColor(Theme.mutedText)
+        static let context = UIColor(Theme.codeText)
+    }
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.alwaysBounceVertical = true
+        view.backgroundColor = backgroundColor
+        view.textContainerInset = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        view.textContainer.lineFragmentPadding = 0
+        view.keyboardDismissMode = .interactive
+        view.showsVerticalScrollIndicator = true
+        view.showsHorizontalScrollIndicator = true
+        view.attributedText = makeAttributedString(text: text, fontSize: fontSize)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return view
+    }
+
+    func updateUIView(_ uiView: UITextView, context: Context) {
+        uiView.attributedText = makeAttributedString(text: text, fontSize: fontSize)
+        uiView.backgroundColor = backgroundColor
+    }
+
+    private func makeAttributedString(text: String, fontSize: CGFloat) -> NSAttributedString {
+        let font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+
+        let result = NSMutableAttributedString()
+        let lines = normalized.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        for (idx, raw) in lines.enumerated() {
+            let line = String(raw)
+            let color = color(for: line)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: color,
+            ]
+            result.append(NSAttributedString(string: line, attributes: attrs))
+            if idx != lines.count - 1 {
+                result.append(NSAttributedString(string: "\n", attributes: attrs))
+            }
+        }
+        return result
+    }
+
+    private func color(for line: String) -> UIColor {
+        if line.hasPrefix("@@") {
+            return DiffColors.hunk
+        }
+        if line.hasPrefix("diff ")
+            || line.hasPrefix("index ")
+            || line.hasPrefix("--- ")
+            || line.hasPrefix("+++ ") {
+            return DiffColors.meta
+        }
+        if line.hasPrefix("+"), !line.hasPrefix("+++") {
+            return DiffColors.addition
+        }
+        if line.hasPrefix("-"), !line.hasPrefix("---") {
+            return DiffColors.deletion
+        }
+        return DiffColors.context
     }
 }
 
