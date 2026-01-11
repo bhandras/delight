@@ -336,6 +336,7 @@ private struct TerminalAgentConfigControls: View {
         let settings = model.agentEngineSettings[session.id]
         let ui = session.uiState
         let isOnline = (ui?.connected ?? false) && ((ui?.state ?? "") != "offline") && ((ui?.state ?? "") != "disconnected")
+        let isThinking = model.isThinking(sessionID: session.id)
         let vibe: String? = {
             // If the CLI goes offline, hide the activity chip entirely. Otherwise,
             // stale "thinking" state can linger visually after disconnects.
@@ -343,7 +344,7 @@ private struct TerminalAgentConfigControls: View {
             if session.agentState?.hasPendingRequests == true {
                 return "permission required"
             }
-            if model.isThinking(sessionID: session.id) {
+            if isThinking {
                 return vibingMessage(for: session.id)
             }
             if isFetchingSettings {
@@ -368,7 +369,7 @@ private struct TerminalAgentConfigControls: View {
                     Image(systemName: "lightbulb")
                         .font(.system(size: 15, weight: .semibold))
                 }
-                .disabled(!isEnabled || !isOnline || isFetchingSettings)
+                .disabled(!isEnabled || !isOnline || isFetchingSettings || isThinking)
 
                 Button {
                     pendingSheet = .permissions
@@ -381,7 +382,7 @@ private struct TerminalAgentConfigControls: View {
                     Image(systemName: "exclamationmark.circle")
                         .font(.system(size: 15, weight: .semibold))
                 }
-                .disabled(!isEnabled || !isOnline || isFetchingSettings)
+                .disabled(!isEnabled || !isOnline || isFetchingSettings || isThinking)
 
                 Spacer()
 
@@ -400,6 +401,7 @@ private struct TerminalAgentConfigControls: View {
                 sessionID: session.id,
                 currentModel: fresh?.desiredConfig.model?.trimmingCharacters(in: .whitespacesAndNewlines),
                 currentEffort: fresh?.desiredConfig.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines),
+                isLocked: model.isThinking(sessionID: session.id),
                 onApply: { modelSelection, effortSelection in
                     model.setAgentConfig(
                         model: modelSelection,
@@ -415,6 +417,7 @@ private struct TerminalAgentConfigControls: View {
             let caps = fresh?.capabilities
             TerminalPermissionsSheet(
                 currentPermissionMode: fresh?.desiredConfig.permissionMode?.trimmingCharacters(in: .whitespacesAndNewlines),
+                isLocked: model.isThinking(sessionID: session.id),
                 onApply: { selected in
                     model.setAgentConfig(
                         model: nil,
@@ -632,6 +635,7 @@ private struct TerminalModelEffortSheet: View {
     let sessionID: String
     let currentModel: String?
     let currentEffort: String?
+    let isLocked: Bool
     let onApply: (String?, String?) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -650,6 +654,12 @@ private struct TerminalModelEffortSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                if isLocked {
+                    Section {
+                        Text("Agent is currently running. Model and permission settings are locked until the turn completes.")
+                            .foregroundColor(Theme.mutedText)
+                    }
+                }
                 Section("Model") {
                     if !availableModels.isEmpty {
                         ForEach(availableModels, id: \.self) { item in
@@ -667,6 +677,7 @@ private struct TerminalModelEffortSheet: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .disabled(isLocked)
                         }
                     } else {
                         Text("Model selection is not available for this agent.")
@@ -691,6 +702,7 @@ private struct TerminalModelEffortSheet: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .disabled(isLocked)
                         }
                     } else {
                         Text("Reasoning effort is not available for this agent.")
@@ -713,7 +725,8 @@ private struct TerminalModelEffortSheet: View {
                         dismiss()
                     }
                     .disabled(
-                        (availableModels.isEmpty && availableReasoningEfforts.isEmpty)
+                        isLocked
+                            || (availableModels.isEmpty && availableReasoningEfforts.isEmpty)
                             || (!availableModels.isEmpty && selectedModel.isEmpty)
                     )
                 }
@@ -727,6 +740,7 @@ private struct TerminalModelEffortSheet: View {
                 }
             }
             .onChange(of: selectedModel) { newValue in
+                guard !isLocked else { return }
                 let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }
                 isRefreshing = true
@@ -749,6 +763,7 @@ private struct TerminalModelEffortSheet: View {
 
 private struct TerminalPermissionsSheet: View {
     let currentPermissionMode: String?
+    let isLocked: Bool
     let onApply: (String) -> Void
     let permissionModes: [String]
 
@@ -758,6 +773,12 @@ private struct TerminalPermissionsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                if isLocked {
+                    Section {
+                        Text("Agent is currently running. Permission settings are locked until the turn completes.")
+                            .foregroundColor(Theme.mutedText)
+                    }
+                }
                 Section("Permission level") {
                     if permissionModes.isEmpty {
                         Text("Permission selection is not available for this agent.")
@@ -778,6 +799,7 @@ private struct TerminalPermissionsSheet: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .disabled(isLocked)
                         }
                     }
                 }
@@ -793,7 +815,7 @@ private struct TerminalPermissionsSheet: View {
                         onApply(selected)
                         dismiss()
                     }
-                    .disabled(permissionModes.isEmpty)
+                    .disabled(isLocked || permissionModes.isEmpty)
                 }
             }
             .onAppear {
