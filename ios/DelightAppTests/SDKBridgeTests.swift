@@ -86,14 +86,12 @@ final class SDKBridgeTests: XCTestCase {
                 metadata: nil,
                 agentState: nil,
                 uiState: SessionUIState(
-                    state: "remote",
                     connected: true,
-                    active: true,
-                    controlledByUser: false,
+                    online: true,
+                    working: false,
+                    mode: "remote",
                     switching: false,
-                    transition: "",
-                    canTakeControl: false,
-                    canSend: true
+                    transition: ""
                 ),
                 thinking: false
             )
@@ -101,7 +99,7 @@ final class SDKBridgeTests: XCTestCase {
 
         model.handleActivityUpdate("{\"type\":\"activity\",\"id\":\"s1\",\"thinking\":true}")
         let update = """
-        {"body":{"t":"session-ui","sid":"s1","ui":{"state":"offline","connected":false,"active":false,"controlledByUser":true,"switching":false,"transition":"","canTakeControl":false,"canSend":false}}}
+        {"body":{"t":"session-ui","sid":"s1","ui":{"connected":true,"online":false,"working":false,"mode":"","switching":false,"transition":""}}}
         """
 
         let expectation = expectation(description: "offline clears thinking")
@@ -135,7 +133,7 @@ final class SDKBridgeTests: XCTestCase {
 
         model.handleActivityUpdate("{\"type\":\"activity\",\"id\":\"s1\",\"thinking\":true}")
         let sessionsJSON = """
-        {"sessions":[{"id":"s1","updatedAt":1,"active":true,"activeAt":1,"metadata":"{\\"agent\\":\\"codex\\",\\"path\\":\\"/work/project\\",\\"host\\":\\"m2.local\\"}","ui":{"state":"offline","connected":false,"active":false,"controlledByUser":true,"switching":false,"transition":"","canTakeControl":false,"canSend":false}}]}
+        {"sessions":[{"id":"s1","updatedAt":1,"active":true,"activeAt":1,"metadata":"{\\"agent\\":\\"codex\\",\\"path\\":\\"/work/project\\",\\"host\\":\\"m2.local\\"}","ui":{"connected":true,"online":false,"working":false,"mode":"","switching":false,"transition":""}}]}
         """
 
         let expectation = expectation(description: "parse sessions clears thinking")
@@ -161,14 +159,12 @@ final class SDKBridgeTests: XCTestCase {
                 metadata: nil,
                 agentState: nil,
                 uiState: SessionUIState(
-                    state: "remote",
                     connected: true,
-                    active: true,
-                    controlledByUser: false,
+                    online: true,
+                    working: false,
+                    mode: "remote",
                     switching: false,
-                    transition: "",
-                    canTakeControl: false,
-                    canSend: true
+                    transition: ""
                 ),
                 thinking: false
             )
@@ -176,14 +172,14 @@ final class SDKBridgeTests: XCTestCase {
 
         model.handleActivityUpdate("{\"type\":\"activity\",\"id\":\"s1\",\"thinking\":true}")
         let update = """
-        {"body":{"t":"session-ui","sid":"s1","ui":{"state":"remote","connected":false,"active":false,"controlledByUser":true,"switching":false,"transition":"","canTakeControl":false,"canSend":false}}}
+        {"body":{"t":"session-ui","sid":"s1","ui":{"connected":false,"online":true,"working":false,"mode":"remote","switching":false,"transition":""}}}
         """
 
         let expectation = expectation(description: "connected=false clears thinking")
         model.onUpdate(nil, updateJSON: update)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             XCTAssertFalse(model.isThinking(sessionID: "s1"))
-            XCTAssertEqual(model.sessions.first?.uiState?.state, "remote")
+            XCTAssertEqual(model.sessions.first?.uiState?.state, "disconnected")
             XCTAssertEqual(model.sessions.first?.uiState?.connected, false)
             XCTAssertEqual(model.sessions.first?.thinking, false)
             expectation.fulfill()
@@ -211,7 +207,7 @@ final class SDKBridgeTests: XCTestCase {
 
         model.handleActivityUpdate("{\"type\":\"activity\",\"id\":\"s1\",\"thinking\":true}")
         let sessionsJSON = """
-        {"sessions":[{"id":"s1","updatedAt":1,"active":true,"activeAt":1,"metadata":"{\\"agent\\":\\"codex\\",\\"path\\":\\"/work/project\\",\\"host\\":\\"m2.local\\"}","ui":{"state":"remote","connected":false,"active":false,"controlledByUser":true,"switching":false,"transition":"","canTakeControl":false,"canSend":false}}]}
+        {"sessions":[{"id":"s1","updatedAt":1,"active":true,"activeAt":1,"metadata":"{\\"agent\\":\\"codex\\",\\"path\\":\\"/work/project\\",\\"host\\":\\"m2.local\\"}","ui":{"connected":false,"online":true,"working":false,"mode":"remote","switching":false,"transition":""}}]}
         """
 
         let expectation = expectation(description: "parse sessions clears thinking")
@@ -241,6 +237,28 @@ final class SDKBridgeTests: XCTestCase {
 
     func testHandlePermissionRequestUpdateBodyEnvelope() {
         let model = HarnessViewModel()
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 0,
+                active: true,
+                activeAt: nil,
+                title: nil,
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: SessionUIState(
+                    connected: true,
+                    online: true,
+                    working: false,
+                    mode: "remote",
+                    switching: false,
+                    transition: ""
+                ),
+                thinking: false
+            )
+        ]
         let json = """
         {"body":{"type":"permission-request","id":"s1","requestId":"r1","toolName":"bash","input":"{\\"command\\":\\"ls\\"}"}}
         """
@@ -261,6 +279,28 @@ final class SDKBridgeTests: XCTestCase {
 
     func testHandlePermissionRequestUpdateRootEnvelope() {
         let model = HarnessViewModel()
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 0,
+                active: true,
+                activeAt: nil,
+                title: nil,
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: SessionUIState(
+                    connected: true,
+                    online: true,
+                    working: false,
+                    mode: "remote",
+                    switching: false,
+                    transition: ""
+                ),
+                thinking: false
+            )
+        ]
         let json = """
         {"type":"permission-request","id":"s1","requestId":"r1","toolName":"bash","input":"{\\"command\\":\\"ls\\"}"}
         """
@@ -336,14 +376,12 @@ final class SDKBridgeTests: XCTestCase {
                     requests: [:]
                 ),
                 uiState: SessionUIState(
-                    state: "remote",
                     connected: true,
-                    active: true,
-                    controlledByUser: false,
+                    online: true,
+                    working: false,
+                    mode: "remote",
                     switching: false,
-                    transition: "",
-                    canTakeControl: false,
-                    canSend: true
+                    transition: ""
                 ),
                 thinking: false
             )
@@ -505,7 +543,7 @@ final class SDKBridgeTests: XCTestCase {
         model.showPermissionPrompt = false
 
         let sessionsJSON = """
-        {"sessions":[{"id":"s1","updatedAt":0,"active":true,"metadata":null,"agentState":"{\\"controlledByUser\\":false,\\"requests\\":{\\"r1\\":{\\"tool_name\\":\\"bash\\",\\"input\\":\\"{}\\",\\"created_at\\":1}}}"}],"version":1}
+        {"sessions":[{"id":"s1","updatedAt":0,"active":true,"metadata":null,"agentState":"{\\"controlledByUser\\":false,\\"requests\\":{\\"r1\\":{\\"tool_name\\":\\"bash\\",\\"input\\":\\"{}\\",\\"created_at\\":1}}}","ui":{"connected":true,"online":true,"working":false,"mode":"remote","switching":false,"transition":""}}],"version":1}
         """
 
         let expectation = expectation(description: "permission request becomes visible in remote UI")
@@ -731,16 +769,14 @@ final class SDKBridgeTests: XCTestCase {
         waitForExpectations(timeout: 1.0)
     }
 
-    func testTerminalComposerStateIgnoresUIActiveForBusy() {
+    func testTerminalComposerStateAllowsInputWhenNotWorking() {
         let ui = SessionUIState(
-            state: "remote",
             connected: true,
-            active: true,
-            controlledByUser: false,
+            online: true,
+            working: false,
+            mode: "remote",
             switching: false,
-            transition: "",
-            canTakeControl: false,
-            canSend: true
+            transition: ""
         )
 
         let state = TerminalDetailView.TerminalComposerState.make(
@@ -756,14 +792,12 @@ final class SDKBridgeTests: XCTestCase {
 
     func testTerminalComposerStateBusyFromThinkingOverride() {
         let ui = SessionUIState(
-            state: "remote",
             connected: true,
-            active: false,
-            controlledByUser: false,
+            online: true,
+            working: false,
+            mode: "remote",
             switching: false,
-            transition: "",
-            canTakeControl: false,
-            canSend: true
+            transition: ""
         )
 
         let state = TerminalDetailView.TerminalComposerState.make(
@@ -779,15 +813,12 @@ final class SDKBridgeTests: XCTestCase {
 
     func testTerminalComposerStateBusyFromUIWorking() {
         let ui = SessionUIState(
-            state: "remote",
             connected: true,
-            active: true,
+            online: true,
             working: true,
-            controlledByUser: false,
+            mode: "remote",
             switching: false,
-            transition: "",
-            canTakeControl: false,
-            canSend: true
+            transition: ""
         )
 
         let state = TerminalDetailView.TerminalComposerState.make(
@@ -803,14 +834,12 @@ final class SDKBridgeTests: XCTestCase {
 
     func testTerminalComposerStateDesktopControlledDisablesStop() {
         let ui = SessionUIState(
-            state: "local",
             connected: true,
-            active: true,
-            controlledByUser: true,
+            online: true,
+            working: false,
+            mode: "local",
             switching: false,
-            transition: "",
-            canTakeControl: true,
-            canSend: true
+            transition: ""
         )
 
         let state = TerminalDetailView.TerminalComposerState.make(
