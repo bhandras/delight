@@ -44,7 +44,7 @@ func TestDeriveSessionUI_UsesCachedWhenAgentStateInvalid(t *testing.T) {
 
 	cached := &sessionFSMState{
 		state:            "remote",
-		active:           true,
+		online:           true,
 		controlledByUser: false,
 		connected:        true,
 		updatedAt:        42,
@@ -55,9 +55,8 @@ func TestDeriveSessionUI_UsesCachedWhenAgentStateInvalid(t *testing.T) {
 
 	require.Equal(t, "remote", fsm.state)
 	require.False(t, fsm.controlledByUser)
-	require.Equal(t, "remote", ui["state"])
-	require.Equal(t, true, ui["canSend"])
-	require.Equal(t, false, ui["canTakeControl"])
+	require.Equal(t, true, ui["online"])
+	require.Equal(t, "remote", ui["mode"])
 }
 
 func TestDeriveSessionUI_DefaultsToLocalWhenUnknown(t *testing.T) {
@@ -71,7 +70,8 @@ func TestDeriveSessionUI_DefaultsToLocalWhenUnknown(t *testing.T) {
 
 	require.Equal(t, "local", fsm.state)
 	require.True(t, fsm.controlledByUser)
-	require.Equal(t, "local", ui["state"])
+	require.Equal(t, true, ui["online"])
+	require.Equal(t, "local", ui["mode"])
 }
 
 func TestDeriveSessionUI_ModeAndWorking(t *testing.T) {
@@ -80,12 +80,10 @@ func TestDeriveSessionUI_ModeAndWorking(t *testing.T) {
 	now := int64(1)
 
 	_, ui := deriveSessionUI(now, true, true, true, `{"controlledByUser":false}`, nil)
-	require.Equal(t, "remote", ui["state"])
 	require.Equal(t, "remote", ui["mode"])
 	require.Equal(t, true, ui["working"])
 
 	_, ui = deriveSessionUI(now, true, true, false, `{"controlledByUser":true}`, nil)
-	require.Equal(t, "local", ui["state"])
 	require.Equal(t, "local", ui["mode"])
 	require.Equal(t, false, ui["working"])
 }
@@ -99,13 +97,11 @@ func TestComputeSessionFSM_Table(t *testing.T) {
 		active           bool
 		controlledByUser bool
 		wantState        string
-		wantCanSend      bool
-		wantCanTake      bool
 	}{
-		{name: "disconnected", connected: false, active: true, controlledByUser: true, wantState: "disconnected", wantCanSend: false, wantCanTake: false},
-		{name: "offline", connected: true, active: false, controlledByUser: true, wantState: "offline", wantCanSend: false, wantCanTake: false},
-		{name: "local", connected: true, active: true, controlledByUser: true, wantState: "local", wantCanSend: false, wantCanTake: true},
-		{name: "remote", connected: true, active: true, controlledByUser: false, wantState: "remote", wantCanSend: true, wantCanTake: false},
+		{name: "disconnected", connected: false, active: true, controlledByUser: true, wantState: "disconnected"},
+		{name: "offline", connected: true, active: false, controlledByUser: true, wantState: "offline"},
+		{name: "local", connected: true, active: true, controlledByUser: true, wantState: "local"},
+		{name: "remote", connected: true, active: true, controlledByUser: false, wantState: "remote"},
 	}
 
 	for _, tt := range tests {
@@ -115,9 +111,13 @@ func TestComputeSessionFSM_Table(t *testing.T) {
 
 			fsm, ui := deriveSessionUI(123, tt.connected, tt.active, false, `{"controlledByUser":`+boolToJSON(tt.controlledByUser)+`}`, nil)
 			require.Equal(t, tt.wantState, fsm.state)
-			require.Equal(t, tt.wantState, ui["state"])
-			require.Equal(t, tt.wantCanSend, ui["canSend"])
-			require.Equal(t, tt.wantCanTake, ui["canTakeControl"])
+			require.Equal(t, tt.wantState != "disconnected", ui["connected"])
+			require.Equal(t, tt.active, ui["online"])
+			if tt.wantState == "local" || tt.wantState == "remote" {
+				require.Equal(t, tt.wantState, ui["mode"])
+			} else {
+				require.Equal(t, "", ui["mode"])
+			}
 			require.Equal(t, false, ui["switching"])
 			require.Equal(t, "", ui["transition"])
 		})
@@ -130,7 +130,7 @@ func TestDeriveSessionUI_SwitchingDisablesActions(t *testing.T) {
 	now := int64(1_000)
 	cached := &sessionFSMState{
 		state:       "local",
-		active:      true,
+		online:      true,
 		connected:   true,
 		switching:   true,
 		transition:  "to-remote",
@@ -140,11 +140,9 @@ func TestDeriveSessionUI_SwitchingDisablesActions(t *testing.T) {
 	fsm, ui := deriveSessionUI(now, true, true, false, `{"controlledByUser":true}`, cached)
 
 	require.Equal(t, "local", fsm.state)
-	require.Equal(t, "local", ui["state"])
+	require.Equal(t, "local", ui["mode"])
 	require.Equal(t, true, ui["switching"])
 	require.Equal(t, "to-remote", ui["transition"])
-	require.Equal(t, false, ui["canSend"])
-	require.Equal(t, false, ui["canTakeControl"])
 }
 
 func TestDeriveSessionUI_SwitchingTTLExpires(t *testing.T) {
@@ -153,7 +151,7 @@ func TestDeriveSessionUI_SwitchingTTLExpires(t *testing.T) {
 	now := int64(100_000)
 	cached := &sessionFSMState{
 		state:       "local",
-		active:      true,
+		online:      true,
 		connected:   true,
 		switching:   true,
 		transition:  "to-remote",
@@ -163,9 +161,7 @@ func TestDeriveSessionUI_SwitchingTTLExpires(t *testing.T) {
 	_, ui := deriveSessionUI(now, true, true, false, `{"controlledByUser":true}`, cached)
 	require.Equal(t, false, ui["switching"])
 	require.Equal(t, "", ui["transition"])
-	require.Equal(t, "local", ui["state"])
-	require.Equal(t, false, ui["canSend"])
-	require.Equal(t, true, ui["canTakeControl"])
+	require.Equal(t, "local", ui["mode"])
 }
 
 func TestDeriveSessionUI_SwitchingKeepsPreviousUIState(t *testing.T) {
@@ -174,7 +170,7 @@ func TestDeriveSessionUI_SwitchingKeepsPreviousUIState(t *testing.T) {
 	now := int64(10_000)
 	cached := &sessionFSMState{
 		state:       "remote",
-		active:      true,
+		online:      true,
 		connected:   true,
 		switching:   true,
 		transition:  "to-local",
@@ -182,11 +178,9 @@ func TestDeriveSessionUI_SwitchingKeepsPreviousUIState(t *testing.T) {
 	}
 
 	_, ui := deriveSessionUI(now, true, true, false, `{"controlledByUser":true}`, cached)
-	require.Equal(t, "remote", ui["state"])
+	require.Equal(t, "remote", ui["mode"])
 	require.Equal(t, true, ui["switching"])
 	require.Equal(t, "to-local", ui["transition"])
-	require.Equal(t, false, ui["canSend"])
-	require.Equal(t, false, ui["canTakeControl"])
 }
 
 func TestHandleUpdate_UpdateSession_AgentStateUpdatesFSM(t *testing.T) {
@@ -197,7 +191,7 @@ func TestHandleUpdate_UpdateSession_AgentStateUpdatesFSM(t *testing.T) {
 
 	c.sessionFSM[sessionID] = sessionFSMState{
 		state:            "remote",
-		active:           true,
+		online:           true,
 		connected:        true,
 		controlledByUser: false,
 		switching:        true,
@@ -218,7 +212,7 @@ func TestHandleUpdate_UpdateSession_AgentStateUpdatesFSM(t *testing.T) {
 	got := c.sessionFSM[sessionID]
 	require.Equal(t, "local", got.state)
 	require.True(t, got.controlledByUser)
-	require.True(t, got.active)
+	require.True(t, got.online)
 	require.True(t, got.connected)
 	require.False(t, got.switching)
 	require.Equal(t, "", got.transition)
@@ -234,7 +228,7 @@ func TestApplyAgentStateToSessionFSM_EmitsSessionUIUpdate(t *testing.T) {
 
 	c.sessionFSM[sessionID] = sessionFSMState{
 		state:            "remote",
-		active:           true,
+		online:           true,
 		connected:        true,
 		controlledByUser: false,
 		uiJSON:           "",
@@ -256,9 +250,8 @@ func TestApplyAgentStateToSessionFSM_EmitsSessionUIUpdate(t *testing.T) {
 
 	ui, _ := body["ui"].(map[string]any)
 	require.NotNil(t, ui)
-	require.Equal(t, "local", ui["state"])
-	require.Equal(t, false, ui["canSend"])
-	require.Equal(t, true, ui["canTakeControl"])
+	require.Equal(t, true, ui["online"])
+	require.Equal(t, "local", ui["mode"])
 }
 
 func boolToJSON(v bool) string {

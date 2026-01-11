@@ -240,79 +240,87 @@ struct UsageSnapshot: Equatable {
 }
 
 /// SessionUIState is the SDK-derived, view-friendly UI state injected into session summaries.
+///
+/// The control/busy/online fields are intentionally orthogonal:
+/// - online: whether the session (CLI) is online (keep-alive / server activity)
+/// - mode: who controls input (local=desktop, remote=phone)
+/// - working: whether a model turn is currently in-flight
 struct SessionUIState: Decodable, Equatable {
-    let state: String // disconnected|offline|local|remote
+    /// connected is true when the phone is currently connected to the server.
     let connected: Bool
-    let active: Bool
+    /// online is true when the server considers the session online (active).
+    let online: Bool
+    /// working is true when the session has an in-flight turn.
     let working: Bool
-    let mode: String?
-    let controlledByUser: Bool
+    /// mode identifies control ownership while online ("local" or "remote").
+    let mode: String
     let switching: Bool
     let transition: String
-    let canTakeControl: Bool
-    let canSend: Bool
+
+    var canSend: Bool {
+        connected && online && !switching && mode == "remote"
+    }
+
+    var canTakeControl: Bool {
+        connected && online && !switching && mode == "local"
+    }
+
+    var state: String {
+        if !connected {
+            return "disconnected"
+        }
+        if !online {
+            return "offline"
+        }
+        if mode == "local" {
+            return "local"
+        }
+        if mode == "remote" {
+            return "remote"
+        }
+        return "offline"
+    }
 
     enum CodingKeys: String, CodingKey {
-        case state
         case connected
-        case active
+        case online
         case working
         case mode
-        case controlledByUser
         case switching
         case transition
-        case canTakeControl
-        case canSend
     }
 
     init(
-        state: String,
         connected: Bool,
-        active: Bool,
+        online: Bool,
         working: Bool = false,
-        mode: String? = nil,
-        controlledByUser: Bool,
+        mode: String,
         switching: Bool,
-        transition: String,
-        canTakeControl: Bool,
-        canSend: Bool
+        transition: String
     ) {
-        self.state = state
         self.connected = connected
-        self.active = active
+        self.online = online
         self.working = working
         self.mode = mode
-        self.controlledByUser = controlledByUser
         self.switching = switching
         self.transition = transition
-        self.canTakeControl = canTakeControl
-        self.canSend = canSend
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let state = try container.decodeIfPresent(String.self, forKey: .state) ?? "disconnected"
         let connected = try container.decodeIfPresent(Bool.self, forKey: .connected) ?? false
-        let active = try container.decodeIfPresent(Bool.self, forKey: .active) ?? false
+        let online = try container.decodeIfPresent(Bool.self, forKey: .online) ?? false
         let working = try container.decodeIfPresent(Bool.self, forKey: .working) ?? false
-        let mode = try container.decodeIfPresent(String.self, forKey: .mode)
-            ?? (state == "local" || state == "remote" ? state : nil)
-        let controlledByUser = try container.decodeIfPresent(Bool.self, forKey: .controlledByUser) ?? true
+        let mode = (try container.decodeIfPresent(String.self, forKey: .mode) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let switching = try container.decodeIfPresent(Bool.self, forKey: .switching) ?? false
         let transition = try container.decodeIfPresent(String.self, forKey: .transition) ?? ""
-        let canTakeControl = try container.decodeIfPresent(Bool.self, forKey: .canTakeControl) ?? false
-        let canSend = try container.decodeIfPresent(Bool.self, forKey: .canSend) ?? false
         self.init(
-            state: state,
             connected: connected,
-            active: active,
+            online: online,
             working: working,
             mode: mode,
-            controlledByUser: controlledByUser,
             switching: switching,
-            transition: transition,
-            canTakeControl: canTakeControl,
-            canSend: canSend
+            transition: transition
         )
     }
 }

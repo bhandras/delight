@@ -470,7 +470,7 @@ func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
 
 				// Emit a synthetic session-ui update so clients can re-render
 				// immediately without polling ListSessions.
-				fsm, ui := deriveSessionUI(time.Now().UnixMilli(), prev.connected, prev.active, prev.working, "", &prev)
+				fsm, ui := deriveSessionUI(time.Now().UnixMilli(), prev.connected, prev.online, prev.working, "", &prev)
 				uiJSON := sessionUIJSON(ui)
 				c.mu.Lock()
 				prevCache := c.sessionFSM[sessionID]
@@ -549,7 +549,7 @@ func (c *Client) callRPC(method string, paramsJSON string) (string, error) {
 			// Preserve active/connected bits if we have them, defaulting to optimistic "online".
 			c.mu.Lock()
 			prev := c.sessionFSM[sessionID]
-			active := prev.active
+			active := prev.online
 			connected := prev.connected
 			working := prev.working
 			if prev.state == "" {
@@ -1084,7 +1084,7 @@ func (c *Client) applyAgentStateToSessionFSM(sessionID string, agentState string
 	if socket != nil {
 		connected = socket.IsConnected()
 	}
-	active := prev.active
+	active := prev.online
 	if prev.state == "" {
 		// If we don't have a previous snapshot, receiving an update implies the
 		// session is at least "online-ish".

@@ -25,7 +25,7 @@ const (
 // UI layers should treat this as the source of truth.
 type sessionFSMState struct {
 	state            string
-	active           bool
+	online           bool
 	working          bool
 	controlledByUser bool
 	connected        bool
@@ -58,13 +58,13 @@ func controlledByUserFromAgentStateJSON(agentState string) (value bool, ok bool)
 func computeSessionFSM(connected bool, active bool, controlledByUser bool) sessionFSMState {
 	switch {
 	case !connected:
-		return sessionFSMState{state: "disconnected", connected: false, active: active, controlledByUser: controlledByUser}
+		return sessionFSMState{state: "disconnected", connected: false, online: active, controlledByUser: controlledByUser}
 	case !active:
-		return sessionFSMState{state: "offline", connected: true, active: false, controlledByUser: controlledByUser}
+		return sessionFSMState{state: "offline", connected: true, online: false, controlledByUser: controlledByUser}
 	case controlledByUser:
-		return sessionFSMState{state: "local", connected: true, active: true, controlledByUser: true}
+		return sessionFSMState{state: "local", connected: true, online: true, controlledByUser: true}
 	default:
-		return sessionFSMState{state: "remote", connected: true, active: true, controlledByUser: false}
+		return sessionFSMState{state: "remote", connected: true, online: true, controlledByUser: false}
 	}
 }
 
@@ -96,7 +96,8 @@ func deriveSessionUI(
 		fsm.switchingAt = cached.switchingAt
 	}
 
-	uiState := fsm.state
+	// mode is the control owner; it is only defined while the session is online.
+	mode := modeFromState(fsm.state)
 
 	// Transition UX: keep a stable ui.state value (local/remote/offline/etc) and
 	// expose switching/transition flags orthogonally. This makes UI layers pure
@@ -109,23 +110,28 @@ func deriveSessionUI(
 		if cached.switchingAt <= 0 || time.UnixMilli(now).Sub(switchingAt) <= sessionSwitchingTTL {
 			switching = true
 			transition = cached.transition
+			// While switching, keep the last stable control mode so clients don't
+			// flicker between local/remote during network lag.
 			if cached.state != "" {
-				uiState = cached.state
+				mode = modeFromState(cached.state)
 			}
 		}
 	}
 
+	if !fsm.online {
+		mode = ""
+	}
+	if !fsm.online {
+		working = false
+	}
+
 	ui := map[string]any{
-		"state":            uiState, // disconnected|offline|local|remote
-		"connected":        fsm.connected,
-		"active":           fsm.active,
-		"working":          fsm.working,
-		"mode":             modeFromState(uiState),
-		"controlledByUser": fsm.controlledByUser,
-		"switching":        switching,
-		"transition":       transition,
-		"canTakeControl":   !switching && uiState == "local",
-		"canSend":          !switching && uiState == "remote",
+		"connected":  fsm.connected,
+		"online":     fsm.online,
+		"working":    working,
+		"mode":       mode,
+		"switching":  switching,
+		"transition": transition,
 	}
 
 	return fsm, ui

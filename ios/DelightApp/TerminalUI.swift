@@ -170,7 +170,7 @@ struct TerminalDetailView: View {
     /// TerminalComposerState captures which parts of the composer should be
     /// interactive for the current session.
     ///
-    /// Note: `SessionUIState.active` represents session activity/online-ness
+    /// Note: `SessionUIState.online` represents session activity/online-ness
     /// (keep-alive), not whether a model turn is currently in progress. Busy UI
     /// should be driven by thinking/turn state.
     struct TerminalComposerState: Equatable {
@@ -203,8 +203,8 @@ struct TerminalDetailView: View {
         // The phone should only send input when it controls the session.
         // Even if the backend accidentally marks `canSend=true` while in local mode,
         // keep the UX consistent: user must tap "Take Control" first.
-        let controlledByDesktop = ui?.controlledByUser ?? (currentSession.agentState?.controlledByUser ?? true)
-        let isPhoneControlled = (uiState == "remote") && !controlledByDesktop
+        let controlledByDesktop = ui?.mode != "remote"
+        let isPhoneControlled = (ui?.mode == "remote") && (ui?.connected ?? false) && (ui?.online ?? false)
         let composerState = TerminalComposerState.make(
             ui: ui,
             isThinking: model.isThinking(sessionID: currentSession.id),
@@ -374,10 +374,10 @@ private struct TerminalAgentConfigControls: View {
     var body: some View {
         let settings = model.agentEngineSettings[session.id]
         let ui = session.uiState
-        let isOnline = (ui?.connected ?? false) && ((ui?.state ?? "") != "offline") && ((ui?.state ?? "") != "disconnected")
+        let isOnline = (ui?.connected ?? false) && (ui?.online ?? false)
         let isThinking = model.isThinking(sessionID: session.id)
         // Disable model/permission changes while the agent is actively working.
-        // SessionUIState.active reflects keep-alive/online-ness, not turn state.
+        // SessionUIState.online reflects keep-alive/online-ness, not turn state.
         let isLocked = (ui?.working ?? false) || isThinking
         let vibe: String? = {
             // If the CLI goes offline, hide the activity chip entirely. Otherwise,
@@ -529,10 +529,7 @@ private struct TerminalPropertiesSheet: View {
         }()
         let online: Bool = {
             if let ui = session.uiState {
-                if ui.state == "offline" || ui.state == "disconnected" {
-                    return false
-                }
-                return ui.connected
+                return ui.connected && ui.online
             }
             return terminal?.active ?? session.active
         }()
@@ -989,9 +986,7 @@ private struct ControlStatusBanner: View {
         let switching = ui?.switching ?? false
         let transition = ui?.transition ?? ""
         let isConnectedAndActive = (state == "local" || state == "remote")
-        let controlledByDesktop = isConnectedAndActive
-            ? (ui?.controlledByUser ?? (session.agentState?.controlledByUser ?? true))
-            : true
+        let controlledByDesktop = ui?.mode != "remote"
         let controllerText = isConnectedAndActive ? (controlledByDesktop ? "Desktop" : "Phone") : "—"
         let subtitle: String = {
             switch ui?.state {
@@ -1175,10 +1170,7 @@ private struct SessionStatusInfo {
 
 private func isSessionOnline(_ session: SessionSummary) -> Bool {
     if let ui = session.uiState {
-        if ui.state == "offline" || ui.state == "disconnected" {
-            return false
-        }
-        return ui.connected
+        return ui.connected && ui.online
     }
     return session.active
 }
@@ -1186,7 +1178,7 @@ private func isSessionOnline(_ session: SessionSummary) -> Bool {
 private func statusInfo(for session: SessionSummary, thinkingOverride: Bool? = nil) -> SessionStatusInfo {
     let thinking = thinkingOverride ?? session.thinking
     if let ui = session.uiState {
-        if ui.state == "offline" || ui.state == "disconnected" {
+        if !ui.online {
             return SessionStatusInfo(
                 text: "offline",
                 dotColor: Theme.muted,

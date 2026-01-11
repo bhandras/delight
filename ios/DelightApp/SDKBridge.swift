@@ -1017,9 +1017,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         if let next = permissionQueue.first {
             activePermissionRequest = next
             let owningSession = sessions.first(where: { $0.id == next.sessionID })
-            let controlledByDesktop = owningSession?.uiState?.controlledByUser
-                ?? owningSession?.agentState?.controlledByUser
-                ?? false
+            let controlledByDesktop = (owningSession?.uiState?.mode ?? "") != "remote"
             showPermissionPrompt = !controlledByDesktop
         } else {
             activePermissionRequest = nil
@@ -1433,7 +1431,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         // Require explicit "Take Control" before sending from phone.
         if let session = sessions.first(where: { $0.id == sessionID }) {
             let ui = session.uiState
-            let controlledByDesktop = ui?.controlledByUser ?? (session.agentState?.controlledByUser ?? true)
+            let controlledByDesktop = (ui?.mode ?? "") != "remote"
             if controlledByDesktop {
                 log("Desktop controls this session. Tap “Take Control” first.")
                 return
@@ -1508,7 +1506,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         // Require explicit "Take Control" before aborting from phone.
         if let session = sessions.first(where: { $0.id == targetID }) {
             let ui = session.uiState
-            let controlledByDesktop = ui?.controlledByUser ?? (session.agentState?.controlledByUser ?? true)
+            let controlledByDesktop = (ui?.mode ?? "") != "remote"
             if controlledByDesktop {
                 log("Desktop controls this session. Tap “Take Control” first.")
                 return
@@ -2428,12 +2426,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             // during transitions, and we don't want to drop permission prompts.
             let controlledByDesktop: Bool = {
                 guard let session = self.sessions.first(where: { $0.id == request.sessionID }) else {
-                    return false
+                    return true
                 }
                 if let ui = session.uiState {
-                    return ui.controlledByUser
+                    return ui.mode != "remote"
                 }
-                return session.agentState?.controlledByUser ?? false
+                return true
             }()
 
             if self.activePermissionRequest == nil {
@@ -2775,9 +2773,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             }
             if let active = self.activePermissionRequest {
                 let owningSession = self.sessions.first(where: { $0.id == active.sessionID })
-                let controlledByDesktop = owningSession?.uiState?.controlledByUser
-                    ?? owningSession?.agentState?.controlledByUser
-                    ?? false
+                let controlledByDesktop = (owningSession?.uiState?.mode ?? "") != "remote"
                 self.showPermissionPrompt = !controlledByDesktop
             } else {
                 self.showPermissionPrompt = false
@@ -3576,12 +3572,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private func isUIOffline(_ ui: SessionUIState?) -> Bool {
         guard let ui else { return true }
         if !ui.connected { return true }
-        switch ui.state {
-        case "offline", "disconnected":
-            return true
-        default:
-            return false
-        }
+        return !ui.online
     }
 
     /// isThinking returns the best-effort thinking state for a session.
