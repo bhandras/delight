@@ -702,6 +702,15 @@ func (c *Client) listSessions() (resp string, err error) {
 				case int:
 					updatedAt = int64(v)
 				}
+				normalizeJSONInt64Fields(
+					session,
+					"seq",
+					"createdAt",
+					"updatedAt",
+					"activeAt",
+					"metadataVersion",
+					"agentStateVersion",
+				)
 				var cached *sessionFSMState
 				if prev, ok := cachedFSM[sessionID]; ok {
 					tmp := prev
@@ -727,6 +736,26 @@ func (c *Client) listSessions() (resp string, err error) {
 	}
 
 	return string(respBody), nil
+}
+
+// normalizeJSONInt64Fields rewrites the given JSON-decoded object in place so
+// that known numeric fields are stored as int64, avoiding scientific notation
+// floats when re-marshaling SDK-enriched payloads for Swift decoders.
+func normalizeJSONInt64Fields(obj map[string]interface{}, keys ...string) {
+	for _, key := range keys {
+		value, ok := obj[key]
+		if !ok || value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case float64:
+			obj[key] = int64(typed)
+		case int:
+			obj[key] = int64(typed)
+		case int64:
+			// Already normalized.
+		}
+	}
 }
 
 // ListTerminalsBuffer returns ListTerminals JSON as a gomobile-safe Buffer.
@@ -787,6 +816,7 @@ func (c *Client) listTerminals() (resp string, err error) {
 				terminal["daemonState"] = decryptedJSON
 			}
 		}
+		normalizeJSONInt64Fields(terminal, "activeAt", "daemonStateVersion")
 	}
 
 	encoded, err := json.Marshal(decoded)
