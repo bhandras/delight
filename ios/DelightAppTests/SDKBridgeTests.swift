@@ -727,19 +727,62 @@ final class SDKBridgeTests: XCTestCase {
             }
 
             XCTAssertTrue(item.blocks.contains(where: { block in
-                if case let .code(_, content) = block {
-                    return content.contains(fullCommand)
+                if case let .callout(summary) = block {
+                    return summary.content.contains(fullCommand)
                 }
                 return false
             }))
 
             let text = item.blocks.compactMap { block -> String? in
+                if case let .callout(summary) = block { return summary.content }
                 if case let .text(value) = block { return value }
                 return nil
             }.joined(separator: "\n")
             XCTAssertFalse(text.contains("Output:"))
-            XCTAssertFalse(text.contains("hello"))
-            XCTAssertFalse(text.contains("world"))
+            // The command itself contains "hello" and "world"; assert only that
+            // the output block isn't present.
+            XCTAssertFalse(text.contains("hello\nworld"))
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
+
+    func testUIEventReasoningPrefersFullMarkdownOverTruncatedBrief() {
+        let model = HarnessViewModel()
+        model.sessionID = "s1"
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 0,
+                active: true,
+                activeAt: nil,
+                title: "agent",
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: nil
+            )
+        ]
+
+        let json = """
+        {"type":"ui.event","id":"s1","eventId":"reasoning-3","kind":"reasoning","phase":"update","status":"ok","briefMarkdown":"Reasoning\\n\\n- step 1...","fullMarkdown":"Reasoning\\n\\n- step 1\\n- step 2","atMs":123}
+        """
+
+        let expectation = expectation(description: "reasoning uses full text")
+        model.onUpdate(nil, updateJSON: json)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            guard let item = model.messages.first(where: { $0.id == "ui-reasoning-3" }) else {
+                XCTFail("expected ui event message to be present")
+                expectation.fulfill()
+                return
+            }
+            XCTAssertTrue(item.blocks.contains(where: { block in
+                if case let .callout(summary) = block {
+                    return summary.content.contains("- step 2")
+                }
+                return false
+            }))
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1.0)

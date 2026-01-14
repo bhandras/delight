@@ -618,6 +618,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             self.needsSessionRefresh = true
             self.disconnect()
             self.connect()
+
+            // Proactively refresh the visible transcript so the UI shows a
+            // loading state immediately after wake (even if connect/reconnect
+            // takes a moment).
+            if !self.sessionID.isEmpty {
+                self.fetchLatestMessages(reset: true)
+            }
         }
     }
 
@@ -2241,11 +2248,14 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             // summary content in fullMarkdown.
             let strippedBrief = stripReasoningHeading(brief)
             let strippedFull = stripReasoningHeading(full)
+            // Prefer fullMarkdown when available so summaries are not cut off.
+            // Many backends truncate `briefMarkdown` for compactness (often
+            // ending in an ellipsis) and preserve the complete text in `fullMarkdown`.
+            if !strippedFull.isEmpty {
+                return full
+            }
             if !strippedBrief.isEmpty {
                 return brief
-            }
-            if !strippedFull.isEmpty {
-                return full.isEmpty ? brief : full
             }
             return ""
         }
@@ -2316,8 +2326,114 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             ]
         }
 
+        if payload.kind == "tool",
+           !isPatchUIEvent(payload),
+           let tool = extractToolCall(from: markdown) {
+            let body = stripToolCallTitle(from: tool.body)
+            let normalizedBody = stripLeadingFenceLanguage(body)
+            return [
+                .callout(
+                    CalloutSummary(
+                        title: tool.title,
+                        icon: iconForToolTitle(tool.title),
+                        content: normalizedBody
+                    )
+                )
+            ]
+        }
+
         let blocks = splitMarkdownBlocks(markdown)
         return blocks.isEmpty ? [.text(markdown)] : blocks
+    }
+
+    /// iconForToolTitle returns the symbol name used for a tool callout.
+    private func iconForToolTitle(_ title: String) -> String {
+        let normalized = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "shell", "bash", "sh", "zsh", "cmd", "powershell":
+            return "terminal"
+        default:
+            return "wrench.and.screwdriver"
+        }
+    }
+
+    private func extractToolCall(from markdown: String) -> (title: String, body: String)? {
+        var remaining = markdown[...]
+        let whitespaceAndNewlines = CharacterSet.whitespacesAndNewlines
+        while let first = remaining.first, first.unicodeScalars.allSatisfy(whitespaceAndNewlines.contains) {
+            remaining = remaining.dropFirst()
+        }
+
+        let lower = remaining.lowercased()
+        guard lower.hasPrefix("tool:") else { return nil }
+
+        let lineEnd = remaining.firstIndex(of: "\n") ?? remaining.endIndex
+        let line = String(remaining[..<lineEnd])
+        remaining = lineEnd == remaining.endIndex ? "" : remaining[remaining.index(after: lineEnd)...]
+
+        var payload = line
+        if payload.lowercased().hasPrefix("tool:") {
+            payload = String(payload.dropFirst("tool:".count))
+        }
+        payload = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Prefer inline code for tool titles ("Tool: `ls`").
+        let title: String
+        if let firstTick = payload.firstIndex(of: "`"),
+           let secondTick = payload[payload.index(after: firstTick)...].firstIndex(of: "`"),
+           firstTick < secondTick {
+            title = String(payload[payload.index(after: firstTick)..<secondTick])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            title = payload
+        }
+
+        // Drop at most one blank line after the header so the content reads naturally.
+        for _ in 0..<2 {
+            if remaining.first == "\n" { remaining = remaining.dropFirst() }
+        }
+
+        return (title: title.isEmpty ? "Tool" : title, body: String(remaining))
+    }
+
+    /// stripToolCallTitle drops an optional repeated title line from tool bodies.
+    ///
+    /// Some backends include both:
+    /// - the leading "Tool:" header line, and
+    /// - a second line like "Tool: shell" or "Tool: `shell`" in the body.
+    private func stripToolCallTitle(from markdown: String) -> String {
+        var remaining = markdown.trimmingCharacters(in: .whitespacesAndNewlines)[...]
+        let lower = remaining.lowercased()
+        guard lower.hasPrefix("tool:") else { return String(remaining) }
+
+        let lineEnd = remaining.firstIndex(of: "\n") ?? remaining.endIndex
+        remaining = lineEnd == remaining.endIndex ? "" : remaining[remaining.index(after: lineEnd)...]
+
+        for _ in 0..<2 {
+            if remaining.first == "\n" { remaining = remaining.dropFirst() }
+        }
+        return String(remaining)
+    }
+
+    /// stripLeadingFenceLanguage removes the language tag from the first fenced
+    /// code block, since the surrounding callout header already conveys context
+    /// (e.g. "shell") and we want to avoid a redundant "sh" badge.
+    private func stripLeadingFenceLanguage(_ markdown: String) -> String {
+        var remaining = markdown[...]
+        while remaining.first == "\n" { remaining = remaining.dropFirst() }
+
+        guard let fenceStart = remaining.range(of: "```") else { return markdown }
+        if fenceStart.lowerBound != remaining.startIndex { return markdown }
+
+        remaining = remaining[fenceStart.upperBound...]
+        guard let lineEnd = remaining.firstIndex(of: "\n") else { return markdown }
+
+        let language = remaining[..<lineEnd].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !language.isEmpty else { return markdown }
+
+        // Replace "```lang\n" with "```\n".
+        let afterLine = remaining[lineEnd...]
+        return "```\n" + afterLine.dropFirst(1)
     }
 
     /// stripReasoningHeading removes the leading "Reasoning" heading emitted by
