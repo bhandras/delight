@@ -248,6 +248,10 @@ struct TerminalDetailView: View {
                 )
                 // Re-host on font size changes to keep the transcript layout stable.
                 .id("collection-transcript-\(currentSession.id)-\(Int(model.terminalFontSize))")
+                // Keep "tap to dismiss keyboard" behavior scoped to the transcript
+                // so composer interactions (including paste) don't immediately
+                // resign first responder.
+                .dismissKeyboardOnTap()
                 TerminalAgentConfigControls(model: model, session: currentSession, isEnabled: isPhoneControlled)
                     .background(Theme.cardBackground)
                 MessageComposer(
@@ -260,7 +264,6 @@ struct TerminalDetailView: View {
                     .background(Theme.cardBackground)
             }
         }
-        .dismissKeyboardOnTap()
         .navigationTitle(session.title ?? "Terminal")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)

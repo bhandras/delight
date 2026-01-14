@@ -3082,6 +3082,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
 
         guard let decoded = try? JSONCoding.decode(SessionsResponse.self, from: json) else {
+            log("Parse sessions error: invalid JSON payload")
             return
         }
         // Decode UI state from the SDK-enriched JSON response.
