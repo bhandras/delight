@@ -23,7 +23,7 @@ func TestSessionInputMarkers(t *testing.T) {
 	(evRunnerReady{}).isSessionEvent()
 	(evRunnerExited{}).isSessionEvent()
 	(evEngineRolloutPath{}).isSessionEvent()
-	(evEngineThinking{}).isSessionEvent()
+	(evEngineWorking{}).isSessionEvent()
 	(evEngineUIEvent{}).isSessionEvent()
 	(evPermissionRequested{}).isSessionEvent()
 	(evDesktopTakeback{}).isSessionEvent()

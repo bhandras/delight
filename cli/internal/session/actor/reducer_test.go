@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"github.com/bhandras/delight/cli/internal/actor"
+	"github.com/bhandras/delight/cli/internal/agentengine"
 	"github.com/bhandras/delight/cli/pkg/types"
+	"github.com/bhandras/delight/shared/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -471,6 +473,7 @@ func TestReduceInboundUserMessage_LocalRunning_SwitchesAndBuffers(t *testing.T) 
 
 	nowMs := int64(1_000)
 	state := State{
+		SessionID: "s1",
 		FSM:       StateLocalRunning,
 		Mode:      ModeLocal,
 		RunnerGen: 10,
@@ -489,22 +492,129 @@ func TestReduceInboundUserMessage_LocalRunning_SwitchesAndBuffers(t *testing.T) 
 	require.Equal(t, StateRemoteStarting, next.FSM)
 	require.Equal(t, ModeRemote, next.Mode)
 	require.False(t, next.AgentState.ControlledByUser)
+	require.True(t, next.Working, "expected inbound user message to start a turn immediately")
 	require.Len(t, next.PendingRemoteSends, 1)
 	require.Equal(t, "hello from phone", next.PendingRemoteSends[0].text)
 	require.Equal(t, "l1", next.PendingRemoteSends[0].localID)
 	require.Equal(t, nowMs, next.PendingRemoteSends[0].nowMs)
 
-	var foundStopLocal, foundStartRemote bool
+	var foundStopLocal, foundStartRemote, foundActivity bool
 	for _, eff := range effects {
 		switch eff.(type) {
 		case effStopLocalRunner:
 			foundStopLocal = true
 		case effStartRemoteRunner:
 			foundStartRemote = true
+		case effEmitEphemeral:
+			foundActivity = true
 		}
 	}
 	require.True(t, foundStopLocal, "expected effStopLocalRunner in effects: %+v", effects)
 	require.True(t, foundStartRemote, "expected effStartRemoteRunner in effects: %+v", effects)
+	require.True(t, foundActivity, "expected an activity update to start the turn: %+v", effects)
+}
+
+func TestReduceInboundUserMessage_RemoteStarting_EmitsActivityOnce(t *testing.T) {
+	t.Parallel()
+
+	nowMs := int64(2_000)
+	state := State{
+		SessionID: "s1",
+		FSM:       StateRemoteStarting,
+		Mode:      ModeRemote,
+		RunnerGen: 3,
+			Working:   false,
+	}
+
+	next, effects := Reduce(state, cmdInboundUserMessage{
+		Text:  "hello",
+		NowMs: nowMs,
+	})
+
+	require.Equal(t, StateRemoteStarting, next.FSM)
+	require.True(t, next.Working)
+	require.Len(t, next.PendingRemoteSends, 1)
+
+	foundActivity := false
+	for _, eff := range effects {
+		if _, ok := eff.(effEmitEphemeral); ok {
+			foundActivity = true
+		}
+	}
+	require.True(t, foundActivity, "expected an activity update to start the turn: %+v", effects)
+
+	// A second inbound message while already thinking should not re-emit activity.
+	next2, effects2 := Reduce(next, cmdInboundUserMessage{
+		Text:  "hello again",
+		NowMs: nowMs + 1,
+	})
+	require.True(t, next2.Working)
+	foundActivity2 := false
+	for _, eff := range effects2 {
+		if _, ok := eff.(effEmitEphemeral); ok {
+			foundActivity2 = true
+		}
+	}
+	require.False(t, foundActivity2, "expected no duplicate activity update while already thinking: %+v", effects2)
+}
+
+func TestReduceEngineUIEvent_Thinking_DoesNotToggleBusy(t *testing.T) {
+	t.Parallel()
+
+	nowMs := int64(1234)
+	state := State{
+		SessionID: "s1",
+		FSM:       StateRemoteRunning,
+		Mode:      ModeRemote,
+		RunnerGen: 9,
+			Working:   false,
+	}
+
+	next, effects := Reduce(state, evEngineUIEvent{
+		Gen:           9,
+		Mode:          ModeRemote,
+		EventID:       "thinking-1",
+		Kind:          string(agentengine.UIEventThinking),
+		Phase:         string(agentengine.UIEventPhaseStart),
+		Status:        string(agentengine.UIEventStatusRunning),
+		BriefMarkdown: "thinking…",
+		FullMarkdown:  "thinking…",
+		NowMs:         nowMs,
+	})
+
+	require.False(t, next.Working, "expected UI thinking event not to change busy state")
+
+	var foundUIEvent bool
+	for _, eff := range effects {
+		emit, ok := eff.(effEmitEphemeral)
+		if !ok {
+			continue
+		}
+		switch payload := emit.Payload.(type) {
+		case wire.EphemeralUIEventPayload:
+			foundUIEvent = true
+			require.Equal(t, "s1", payload.SessionID)
+			require.Equal(t, "thinking-1", payload.EventID)
+			require.Equal(t, string(agentengine.UIEventThinking), payload.Kind)
+		}
+	}
+
+	require.True(t, foundUIEvent, "expected ui.event update alongside thinking UI event: %+v", effects)
+
+	// Ending the thinking UI event should not toggle busy state either.
+	next2, effects2 := Reduce(next, evEngineUIEvent{
+		Gen:           9,
+		Mode:          ModeRemote,
+		EventID:       "thinking-1",
+		Kind:          string(agentengine.UIEventThinking),
+		Phase:         string(agentengine.UIEventPhaseEnd),
+		Status:        string(agentengine.UIEventStatusOK),
+		BriefMarkdown: "",
+		FullMarkdown:  "",
+		NowMs:         nowMs + 50,
+	})
+	require.False(t, next2.Working, "expected UI thinking event end not to change busy state")
+	require.NotEmpty(t, effects2, "expected ui.event update: %+v", effects2)
 }
 
 func TestReduceRunnerReady_RemoteStarting_FlushesPendingRemoteSends(t *testing.T) {

@@ -192,3 +192,40 @@ func TestHandleRemoteBridgeMessageDedupesSessionIdentified(t *testing.T) {
 	default:
 	}
 }
+
+func TestEmitRemoteUIEventsFromRaw_DoesNotClearThinkingOnAssistantText(t *testing.T) {
+	e := New(".", nil, false)
+	e.startRemoteTurn()
+	e.setRemoteWorking(true, time.Now().UnixMilli())
+
+	before := time.Now().UnixMilli()
+	raw := []byte(`{"role":"agent","content":{"type":"output","data":{"type":"assistant","uuid":"x","message":{"role":"assistant","model":"test","content":[{"type":"text","text":"hello"}]}}}}`)
+	e.emitRemoteUIEventsFromRaw(raw, before)
+
+	e.mu.Lock()
+	gotWorking := e.remoteWorking
+	e.mu.Unlock()
+	if !gotWorking {
+		t.Fatalf("expected remoteWorking to remain true after assistant text")
+	}
+}
+
+func TestHandleRemoteBridgeMessage_ResultClearsThinking(t *testing.T) {
+	e := New(".", nil, false)
+	e.startRemoteTurn()
+	e.setRemoteWorking(true, time.Now().UnixMilli())
+
+	if err := e.handleRemoteBridgeMessage(&claude.RemoteMessage{
+		Type:   "result",
+		Result: "ok",
+	}); err != nil {
+		t.Fatalf("handleRemoteBridgeMessage returned error: %v", err)
+	}
+
+	e.mu.Lock()
+	gotWorking := e.remoteWorking
+	e.mu.Unlock()
+	if gotWorking {
+		t.Fatalf("expected remoteWorking=false after result")
+	}
+}

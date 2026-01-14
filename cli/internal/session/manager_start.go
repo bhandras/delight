@@ -160,11 +160,11 @@ func (m *Manager) Start(workDir string) error {
 		if m.wsClient.WaitForConnect(5 * time.Second) {
 			logger.Infof("WebSocket connected")
 			m.rpcManager.RegisterAll()
-			thinking := m.thinking
+			working := m.working
 			if m.sessionActor != nil {
-				thinking = m.sessionActor.State().Thinking
+				working = m.sessionActor.State().Working
 			}
-			_ = m.wsClient.KeepSessionAlive(m.sessionID, thinking)
+			_ = m.wsClient.KeepSessionAlive(m.sessionID, working)
 			// Persist the initial agent state immediately so mobile can derive
 			// control mode deterministically (and to migrate any legacy/invalid
 			// agentState on the server).
@@ -466,34 +466,45 @@ func (m *Manager) createSession() error {
 
 	// Send request
 	url := fmt.Sprintf("%s/v1/sessions", m.cfg.ServerURL)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", m.token))
-
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("create session failed: %s - %s", resp.Status, string(respBody))
-	}
-
+	// Send request (retry once on auth failure by refreshing token).
 	var result wire.CreateSessionResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
+	for attempt := 0; attempt < 2; attempt++ {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", m.token))
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to send request: %w", err)
+		}
+		respBody, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return fmt.Errorf("failed to read response: %w", readErr)
+		}
+
+		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
+			if err := m.refreshAuthToken(); err != nil {
+				return fmt.Errorf("refresh token after 401: %w", err)
+			}
+			continue
+		}
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+			return fmt.Errorf("create session failed: %s - %s", resp.Status, string(respBody))
+		}
+
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return fmt.Errorf("failed to parse response: %w", err)
+		}
+		break
 	}
+
 	if result.Session.ID == "" {
 		return fmt.Errorf("invalid response: missing session id")
 	}
@@ -584,17 +595,36 @@ func (m *Manager) findExistingSessionForAgent() (existingSessionMatch, bool, err
 		maxSessionsListBytes = 8 << 20
 	)
 
-	url := fmt.Sprintf("%s/v1/sessions?limit=%d", strings.TrimRight(m.cfg.ServerURL, "/"), sessionsListLimit)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return existingSessionMatch{}, false, err
-	}
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", m.token))
-
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return existingSessionMatch{}, false, err
+	url := fmt.Sprintf("%s/v1/sessions?limit=%d", strings.TrimRight(m.cfg.ServerURL, "/"), sessionsListLimit)
+	var resp *http.Response
+
+	// Fetch session list (retry once on auth failure by refreshing token).
+	for attempt := 0; attempt < 2; attempt++ {
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return existingSessionMatch{}, false, err
+		}
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", m.token))
+
+		nextResp, err := client.Do(req)
+		if err != nil {
+			return existingSessionMatch{}, false, err
+		}
+		if nextResp.StatusCode == http.StatusUnauthorized && attempt == 0 {
+			_, _ = io.Copy(io.Discard, io.LimitReader(nextResp.Body, 8*1024))
+			_ = nextResp.Body.Close()
+			if err := m.refreshAuthToken(); err != nil {
+				return existingSessionMatch{}, false, fmt.Errorf("refresh token after 401: %w", err)
+			}
+			continue
+		}
+		resp = nextResp
+		break
+	}
+
+	if resp == nil {
+		return existingSessionMatch{}, false, fmt.Errorf("list sessions failed: missing response")
 	}
 	defer resp.Body.Close()
 
@@ -743,6 +773,39 @@ func stableSessionTagForAgent(terminalID string, agent string) string {
 	return terminalID + ":" + agent
 }
 
+// refreshAuthToken refreshes the access token using the manager's master
+// secret, persists it via the standard Delight credential path, and updates
+// any already-constructed websocket clients to use the new token.
+func (m *Manager) refreshAuthToken() error {
+	if m == nil || m.cfg == nil {
+		return fmt.Errorf("missing manager config")
+	}
+	if len(m.masterSecret) == 0 {
+		return fmt.Errorf("missing master secret")
+	}
+
+	newToken, err := cliauth.RefreshAccessToken(m.cfg, m.masterSecret)
+	if err != nil {
+		return err
+	}
+	newToken = strings.TrimSpace(newToken)
+	if newToken == "" {
+		return fmt.Errorf("refreshed token was empty")
+	}
+
+	m.token = newToken
+	if m.wsClient != nil {
+		m.wsClient.SetToken(newToken)
+	}
+	if m.terminalClient != nil {
+		m.terminalClient.SetToken(newToken)
+	}
+	if m.spawnActorRuntime != nil {
+		m.spawnActorRuntime.setToken(newToken)
+	}
+	return nil
+}
+
 // createTerminal creates or updates a terminal on the server.
 func (m *Manager) createTerminal() error {
 	// Encrypt terminal metadata
@@ -770,36 +833,44 @@ func (m *Manager) createTerminal() error {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Send request
 	url := fmt.Sprintf("%s/v1/terminals", m.cfg.ServerURL)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", m.token))
-
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
+	// Send request (retry once on auth failure by refreshing token).
+	for attempt := 0; attempt < 2; attempt++ {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", m.token))
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("create terminal failed: %s - %s", resp.Status, string(respBody))
-	}
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to send request: %w", err)
+		}
+		respBody, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return fmt.Errorf("failed to read response: %w", readErr)
+		}
 
-	var response wire.CreateTerminalResponse
-	if err := json.Unmarshal(respBody, &response); err == nil {
-		m.terminalMetaVer = response.Terminal.MetadataVersion
-		m.terminalStateVer = response.Terminal.DaemonStateVersion
+		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
+			if err := m.refreshAuthToken(); err != nil {
+				return fmt.Errorf("refresh token after 401: %w", err)
+			}
+			continue
+		}
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+			return fmt.Errorf("create terminal failed: %s - %s", resp.Status, string(respBody))
+		}
+
+		var response wire.CreateTerminalResponse
+		if err := json.Unmarshal(respBody, &response); err == nil {
+			m.terminalMetaVer = response.Terminal.MetadataVersion
+			m.terminalStateVer = response.Terminal.DaemonStateVersion
+		}
+		break
 	}
 
 	if m.debug {
@@ -963,11 +1034,11 @@ func (m *Manager) keepAliveLoop() {
 		case <-sessionTicker.C:
 			// Send session keep-alive.
 			if m.wsClient != nil && m.wsClient.IsConnected() {
-				thinking := m.thinking
+				working := m.working
 				if m.sessionActor != nil {
-					thinking = m.sessionActor.State().Thinking
+					working = m.sessionActor.State().Working
 				}
-				if err := m.wsClient.KeepSessionAlive(m.sessionID, thinking); err != nil && m.debug {
+				if err := m.wsClient.KeepSessionAlive(m.sessionID, working); err != nil && m.debug {
 					logger.Warnf("Session keep-alive error: %v", err)
 				}
 				// AgentState persistence retries are actor-owned; do not attempt to

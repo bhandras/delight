@@ -9,7 +9,7 @@ import (
 
 // SessionTurnState captures durable in-flight turn information for a session.
 //
-// The server uses this to derive "thinking" state for clients that reconnect
+// The server uses this to derive "working" state for clients that reconnect
 // after missing ephemeral updates (e.g. when a phone is backgrounded).
 type SessionTurnState struct {
 	// SessionID is the owning session id.
@@ -71,10 +71,10 @@ ON CONFLICT(session_id) DO UPDATE SET
 	return err
 }
 
-// SessionThinkingByID returns whether the session currently has an in-flight turn.
+// SessionWorkingByID returns whether the session currently has an in-flight turn.
 //
 // If the session has no recorded turn state, it returns false with no error.
-func (q *Queries) SessionThinkingByID(ctx context.Context, sessionID string) (bool, error) {
+func (q *Queries) SessionWorkingByID(ctx context.Context, sessionID string) (bool, error) {
 	if q == nil || strings.TrimSpace(sessionID) == "" {
 		return false, nil
 	}
@@ -89,8 +89,8 @@ func (q *Queries) SessionThinkingByID(ctx context.Context, sessionID string) (bo
 	return openInt != 0, nil
 }
 
-// SessionThinkingByIDs returns a map of sessionID -> thinking for the provided ids.
-func (q *Queries) SessionThinkingByIDs(ctx context.Context, sessionIDs []string) (map[string]bool, error) {
+// SessionWorkingByIDs returns a map of sessionID -> working for the provided ids.
+func (q *Queries) SessionWorkingByIDs(ctx context.Context, sessionIDs []string) (map[string]bool, error) {
 	out := make(map[string]bool, len(sessionIDs))
 	if q == nil || len(sessionIDs) == 0 {
 		return out, nil

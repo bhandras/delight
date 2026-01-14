@@ -47,7 +47,7 @@ type SessionResponse struct {
 	UpdatedAt         int64   `json:"updatedAt"`
 	Active            bool    `json:"active"`
 	ActiveAt          int64   `json:"activeAt"`
-	Thinking          bool    `json:"thinking"`
+	Working           bool    `json:"working"`
 	TerminalID        string  `json:"terminalId"`
 	Metadata          string  `json:"metadata"`
 	MetadataVersion   int64   `json:"metadataVersion"`
@@ -111,22 +111,18 @@ func (h *SessionHandler) ListSessions(c *gin.Context) {
 			sessionIDs = append(sessionIDs, session.ID)
 		}
 	}
-	thinkingByID, err := h.queries.SessionThinkingByIDs(c.Request.Context(), sessionIDs)
+	workingByID, err := h.queries.SessionWorkingByIDs(c.Request.Context(), sessionIDs)
 	if err != nil {
 		logger.Warnf("Failed to load session turn state: %v", err)
-		thinkingByID = nil
+		workingByID = nil
 	}
 	for i, session := range sessions {
 		resp := h.toSessionResponse(session)
-		thinking := false
-		if thinkingByID != nil {
-			thinking = thinkingByID[session.ID]
+		working := false
+		if workingByID != nil {
+			working = workingByID[session.ID]
 		}
-		// If the session is inactive, always report thinking=false.
-		if session.Active == 0 {
-			thinking = false
-		}
-		resp.Thinking = thinking
+		resp.Working = working
 		response[i] = resp
 	}
 
@@ -639,7 +635,7 @@ func (h *SessionHandler) toSessionResponse(session models.Session) SessionRespon
 		UpdatedAt:         session.UpdatedAt.UnixMilli(),
 		Active:            session.Active != 0,
 		ActiveAt:          session.LastActiveAt.UnixMilli(),
-		Thinking:          false,
+		Working:           false,
 		TerminalID:        session.TerminalID,
 		Metadata:          session.Metadata,
 		MetadataVersion:   session.MetadataVersion,

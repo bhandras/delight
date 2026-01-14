@@ -88,6 +88,13 @@ func TestRemoteAgentMessageDeltaWithoutItemStarted(t *testing.T) {
 	}
 	engine.handleAgentMessageDelta(deltaParams)
 
+	engine.mu.Lock()
+	workingAfterDelta := engine.remoteWorking
+	engine.mu.Unlock()
+	if workingAfterDelta {
+		t.Fatalf("expected remoteWorking=false without turn/started")
+	}
+
 	itemCompletedParams, err := json.Marshal(map[string]any{
 		"item": map[string]any{
 			"id":   "it_1",
@@ -99,16 +106,210 @@ func TestRemoteAgentMessageDeltaWithoutItemStarted(t *testing.T) {
 	}
 	engine.handleItemCompleted(itemCompletedParams)
 
-	ev := readEngineEvent(t, engine, 3*time.Second)
-	out, ok := ev.(agentengine.EvOutboundRecord)
-	if !ok {
-		t.Fatalf("expected EvOutboundRecord, got %T", ev)
+	engine.mu.Lock()
+	workingAfterCompleted := engine.remoteWorking
+	engine.mu.Unlock()
+	if workingAfterCompleted {
+		t.Fatalf("expected remoteWorking=false without turn/completed")
+	}
+
+	var out agentengine.EvOutboundRecord
+	foundOutbound := false
+	deadline := time.Now().Add(3 * time.Second)
+	for !foundOutbound && time.Now().Before(deadline) {
+		ev := readEngineEvent(t, engine, 3*time.Second)
+		if ev == nil {
+			continue
+		}
+		if record, ok := ev.(agentengine.EvOutboundRecord); ok {
+			out = record
+			foundOutbound = true
+			break
+		}
+	}
+	if !foundOutbound {
+		t.Fatalf("expected EvOutboundRecord after agentMessage completion")
 	}
 	if out.Mode != agentengine.ModeRemote {
 		t.Fatalf("expected remote mode, got %q", out.Mode)
 	}
 	if len(out.Payload) == 0 {
 		t.Fatalf("expected non-empty payload")
+	}
+}
+
+func TestTurnCompletionClearsThinkingImmediately(t *testing.T) {
+	engine := New("/tmp", nil, false)
+
+	turnStartedParams, err := json.Marshal(map[string]any{
+		"turn": map[string]any{"id": "turn_1"},
+	})
+	if err != nil {
+		t.Fatalf("Marshal turn/started params: %v", err)
+	}
+	engine.handleTurnStarted(turnStartedParams)
+
+	turnCompletedParams, err := json.Marshal(map[string]any{
+		"turn": map[string]any{"id": "turn_1", "status": "ok"},
+	})
+	if err != nil {
+		t.Fatalf("Marshal turn/completed params: %v", err)
+	}
+	engine.handleTurnCompleted(turnCompletedParams)
+
+	engine.mu.Lock()
+	workingAfterTurnCompleted := engine.remoteWorking
+	activeAfterTurnCompleted := engine.remoteActiveTurnID
+	engine.mu.Unlock()
+	if workingAfterTurnCompleted {
+		t.Fatalf("expected remoteWorking=false after turn/completed")
+	}
+	if strings.TrimSpace(activeAfterTurnCompleted) != "" {
+		t.Fatalf("expected remoteActiveTurnID cleared after turn/completed, got %q", activeAfterTurnCompleted)
+	}
+}
+
+func TestTurnCompletionClearsThinkingEvenWithInFlightItems(t *testing.T) {
+	engine := New("/tmp", nil, false)
+
+	turnStartedParams, err := json.Marshal(map[string]any{
+		"turn": map[string]any{"id": "turn_1"},
+	})
+	if err != nil {
+		t.Fatalf("Marshal turn/started params: %v", err)
+	}
+	engine.handleTurnStarted(turnStartedParams)
+
+	itemStartedParams, err := json.Marshal(map[string]any{
+		"item": map[string]any{
+			"id":      "it_1",
+			"type":    "commandExecution",
+			"command": "echo hi",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal item/started params: %v", err)
+	}
+	engine.handleItemStarted(itemStartedParams)
+
+	turnCompletedParams, err := json.Marshal(map[string]any{
+		"turn": map[string]any{"id": "turn_1", "status": "ok"},
+	})
+	if err != nil {
+		t.Fatalf("Marshal turn/completed params: %v", err)
+	}
+	engine.handleTurnCompleted(turnCompletedParams)
+
+	engine.mu.Lock()
+	workingAfterTurnCompleted := engine.remoteWorking
+	activeTurnID := strings.TrimSpace(engine.remoteActiveTurnID)
+	engine.mu.Unlock()
+	if workingAfterTurnCompleted {
+		t.Fatalf("expected remoteWorking=false after turn/completed")
+	}
+	if activeTurnID != "" {
+		t.Fatalf("expected remoteActiveTurnID cleared after turn/completed, got %q", activeTurnID)
+	}
+}
+
+func TestTurnCompletedWithoutIDDoesNotClearBusy(t *testing.T) {
+	engine := New("/tmp", nil, false)
+
+	turnStartedParams, err := json.Marshal(map[string]any{
+		"turn": map[string]any{"id": "turn_1"},
+	})
+	if err != nil {
+		t.Fatalf("Marshal turn/started params: %v", err)
+	}
+	engine.handleTurnStarted(turnStartedParams)
+
+	engine.mu.Lock()
+	if !engine.remoteWorking {
+		engine.mu.Unlock()
+		t.Fatalf("expected remoteWorking=true after turn start")
+	}
+	engine.mu.Unlock()
+
+	// This simulates a schema mismatch where we receive a turn/completed
+	// notification without a parsable turn id.
+	turnCompletedParams, err := json.Marshal(map[string]any{
+		"turn": map[string]any{"status": "ok"},
+	})
+	if err != nil {
+		t.Fatalf("Marshal turn/completed params: %v", err)
+	}
+	engine.handleTurnCompleted(turnCompletedParams)
+
+	engine.mu.Lock()
+	workingAfter := engine.remoteWorking
+	activeAfter := engine.remoteActiveTurnID
+	engine.mu.Unlock()
+	if !workingAfter {
+		t.Fatalf("expected remoteWorking to remain true after malformed turn/completed")
+	}
+	if strings.TrimSpace(activeAfter) == "" {
+		t.Fatalf("expected remoteActiveTurnID retained after malformed turn/completed")
+	}
+}
+
+func TestTurnIDParseAcceptsFlatTurnID(t *testing.T) {
+	engine := New("/tmp", nil, false)
+
+	turnStartedParams, err := json.Marshal(map[string]any{
+		"turnId": "turn_1",
+	})
+	if err != nil {
+		t.Fatalf("Marshal turn/started params: %v", err)
+	}
+	engine.handleTurnStarted(turnStartedParams)
+
+	engine.mu.Lock()
+	working := engine.remoteWorking
+	active := engine.remoteActiveTurnID
+	engine.mu.Unlock()
+	if !working {
+		t.Fatalf("expected remoteWorking=true after turn start")
+	}
+	if strings.TrimSpace(active) != "turn_1" {
+		t.Fatalf("expected remoteActiveTurnID turn_1, got %q", active)
+	}
+}
+
+func TestTurnStartResultParseAcceptsFlatTurnID(t *testing.T) {
+	raw, err := json.Marshal(map[string]any{
+		"turnId": "turn_1",
+	})
+	if err != nil {
+		t.Fatalf("Marshal turn/start result: %v", err)
+	}
+	if got := parseTurnIDFromResult(raw); got != "turn_1" {
+		t.Fatalf("expected parseTurnIDFromResult turn_1, got %q", got)
+	}
+}
+
+func TestTurnStartedClosesWaitChannel(t *testing.T) {
+	engine := New("/tmp", nil, false)
+
+	engine.mu.Lock()
+	ch := engine.remoteTurnStartedCh
+	engine.mu.Unlock()
+	if ch == nil {
+		t.Fatalf("expected remoteTurnStartedCh to be initialized")
+	}
+
+	turnStartedParams, err := json.Marshal(map[string]any{
+		"turn": map[string]any{"id": "turn_1"},
+	})
+	if err != nil {
+		t.Fatalf("Marshal turn/started params: %v", err)
+	}
+	engine.handleTurnStarted(turnStartedParams)
+
+	select {
+	case <-ch:
+		// ok
+	default:
+		t.Fatalf("expected turn/started to close wait channel")
 	}
 }
 

@@ -172,15 +172,15 @@ struct TerminalDetailView: View {
     ///
     /// Note: `SessionUIState.online` represents session activity/online-ness
     /// (keep-alive), not whether a model turn is currently in progress. Busy UI
-    /// should be driven by thinking/turn state.
+    /// should be driven by `SessionUIState.working`.
     struct TerminalComposerState: Equatable {
         let isInputEnabled: Bool
         let isHistoryEnabled: Bool
         let isShowingStop: Bool
 
-        static func make(ui: SessionUIState?, isThinking: Bool, controlledByDesktop: Bool) -> TerminalComposerState {
+        static func make(ui: SessionUIState?, controlledByDesktop: Bool) -> TerminalComposerState {
             let canSendFromPhone = (ui?.canSend ?? false) && !controlledByDesktop
-            let isTurnInFlight = (ui?.working ?? false) || isThinking
+            let isTurnInFlight = (ui?.working ?? false)
 
             // Keep prompt history usable even while a turn is running.
             let isHistoryEnabled = canSendFromPhone
@@ -207,7 +207,6 @@ struct TerminalDetailView: View {
         let isPhoneControlled = (ui?.mode == "remote") && (ui?.connected ?? false) && (ui?.online ?? false)
         let composerState = TerminalComposerState.make(
             ui: ui,
-            isThinking: model.isThinking(sessionID: currentSession.id),
             controlledByDesktop: controlledByDesktop
         )
         let placeholder: String = {
@@ -375,10 +374,9 @@ private struct TerminalAgentConfigControls: View {
         let settings = model.agentEngineSettings[session.id]
         let ui = session.uiState
         let isOnline = (ui?.connected ?? false) && (ui?.online ?? false)
-        let isThinking = model.isThinking(sessionID: session.id)
         // Disable model/permission changes while the agent is actively working.
         // SessionUIState.online reflects keep-alive/online-ness, not turn state.
-        let isLocked = (ui?.working ?? false) || isThinking
+        let isLocked = (ui?.working ?? false)
         let vibe: String? = {
             // If the CLI goes offline, hide the activity chip entirely. Otherwise,
             // stale "thinking" state can linger visually after disconnects.
@@ -386,9 +384,7 @@ private struct TerminalAgentConfigControls: View {
             if session.agentState?.hasPendingRequests == true {
                 return "permission required"
             }
-            if isThinking {
-                return vibingMessage(for: session.id)
-            }
+            if ui?.working == true { return vibingMessage(for: session.id) }
             if isFetchingSettings {
                 return "loading…"
             }
@@ -1075,7 +1071,7 @@ private struct MessageComposer: View {
     let placeholder: String
 
     var body: some View {
-        let isThinking = isShowingStop
+        let isWorking = isShowingStop
         let hasHistory = model.hasPromptHistory()
 
         HStack(spacing: 12) {
@@ -1121,7 +1117,7 @@ private struct MessageComposer: View {
             )
             .disabled(!isInputEnabled)
 
-            if isThinking {
+            if isWorking {
                 Button {
                     model.abortCurrentTurn()
                 } label: {
@@ -1175,8 +1171,8 @@ private func isSessionOnline(_ session: SessionSummary) -> Bool {
     return session.active
 }
 
-private func statusInfo(for session: SessionSummary, thinkingOverride: Bool? = nil) -> SessionStatusInfo {
-    let thinking = thinkingOverride ?? session.thinking
+private func statusInfo(for session: SessionSummary, workingOverride: Bool? = nil) -> SessionStatusInfo {
+    let working = workingOverride ?? (session.uiState?.working ?? false)
     if let ui = session.uiState {
         if !ui.online {
             return SessionStatusInfo(
@@ -1211,9 +1207,9 @@ private func statusInfo(for session: SessionSummary, thinkingOverride: Bool? = n
             isPulsing: true
         )
     }
-    if thinking {
+    if working {
         return SessionStatusInfo(
-            text: "thinking",
+            text: "working",
             dotColor: Theme.accent,
             textColor: Theme.success,
             isPulsing: true

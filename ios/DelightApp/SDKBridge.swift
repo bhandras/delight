@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import UIKit
 import DelightSDK
+import CryptoKit
 
 /// PermissionDecisionParams is the payload sent to `sessionID:permission` RPC calls.
 private struct PermissionDecisionParams: Encodable {
@@ -156,6 +157,7 @@ private struct UpdateEnvelope: Decodable {
     // Root-level activity payload (best-effort).
     let active: Bool?
     let activeAt: Int64?
+    let working: Bool?
     let thinking: Bool?
     let time: Int64?
 
@@ -203,6 +205,7 @@ private struct UpdateBody: Decodable {
     // Activity payload.
     let active: Bool?
     let activeAt: Int64?
+    let working: Bool?
     let thinking: Bool?
     let time: Int64?
 
@@ -313,6 +316,14 @@ private enum UpdateTiming {
     static let sessionRefreshMinIntervalSeconds: TimeInterval = 1.0
 }
 
+/// AuthTiming collects authentication-related constants.
+private enum AuthTiming {
+    /// tokenExpirySkewSeconds is the amount of time before token expiry we
+    /// consider a token "effectively expired", to avoid a round-trip 401 on the
+    /// first request after wake / relaunch.
+    static let tokenExpirySkewSeconds: TimeInterval = 30
+}
+
 /// LogLimits defines the maximum log buffer size retained in memory.
 private enum LogLimits {
     static let maxLines = 100
@@ -418,20 +429,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var lastTerminalPairingReceipt: TerminalPairingReceipt?
 
     private let client: SdkClient
-    private static let settingsKeyPrefix = "delight.harness."
-    private var selectedMetadata: SessionMetadata?
-    /// thinkingOverrides stores the most recent thinking signal per session.
-    ///
-    /// Rationale:
-    /// - The active session view can remain onscreen even while the sessions list
-    ///   is refreshing, so updating only the `SessionSummary` value can drop UI
-    ///   updates.
-    /// - Thinking updates can arrive via multiple paths (activity ephemerals,
-    ///   Codex heuristics, optimistic send flow). This map keeps a stable
-    ///   best-effort value independent of session list refreshes.
-    private var thinkingOverrides: [String: Bool] = [:]
-    private var promptHistoryBySession: [String: PromptHistoryState] = [:]
-    private var uiEventsByKey: [String: UIEventPayload] = [:]
+	private static let settingsKeyPrefix = "delight.harness."
+	private var selectedMetadata: SessionMetadata?
+	private var promptHistoryBySession: [String: PromptHistoryState] = [:]
+	private var uiEventsByKey: [String: UIEventPayload] = [:]
     private var logLines: [String] = []
     private var pendingPublishedLogLine: String = ""
     private var pendingLogPublishWork: DispatchWorkItem?
@@ -453,6 +454,55 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     private var transcriptCacheBySessionID: [String: TranscriptCache] = [:]
+
+    private struct TranscriptDiskCache {
+        static let directoryName = "transcripts"
+        static let latestPageSuffix = "latest.json"
+    }
+
+    private func serverCacheKey() -> String {
+        let normalized = serverURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let digest = SHA256.hash(data: Data(normalized.utf8))
+        return digest.compactMap { String(format: "%02x", $0) }.joined()
+    }
+
+    private func transcriptCacheDirectoryURL() -> URL? {
+        guard let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        return base
+            .appendingPathComponent(TranscriptDiskCache.directoryName, isDirectory: true)
+            .appendingPathComponent(serverCacheKey(), isDirectory: true)
+    }
+
+    private func transcriptCacheFileURL(sessionID: String) -> URL? {
+        let trimmed = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let dir = transcriptCacheDirectoryURL() else { return nil }
+        return dir
+            .appendingPathComponent(trimmed, isDirectory: true)
+            .appendingPathComponent(TranscriptDiskCache.latestPageSuffix)
+    }
+
+    private func loadCachedLatestTranscriptPage(sessionID: String) -> String? {
+        guard let url = transcriptCacheFileURL(sessionID: sessionID) else { return nil }
+        return try? String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func storeCachedLatestTranscriptPage(sessionID: String, json: String) {
+        guard !json.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard let url = transcriptCacheFileURL(sessionID: sessionID) else { return }
+
+        DispatchQueue.global(qos: .utility).async {
+            do {
+                let dir = url.deletingLastPathComponent()
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                try json.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                self.logSwiftOnly("Transcript cache write error: \(error)")
+            }
+        }
+    }
 
     /// transcriptDecodeQueue runs JSON decoding and message merging off the
     /// SDK call queue so UI work doesn't get stuck behind Go RPC calls (and
@@ -651,6 +701,92 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             data = data.prefix(written)
         }
         return String(data: data, encoding: .utf8)
+    }
+
+    /// isTokenLikelyExpired returns true when the stored JWT is expired (or
+    /// close enough to expiry that we should refresh it before sending requests).
+    ///
+    /// The iOS app persists `token` across launches; if the user returns after
+    /// the server TTL elapses, the token is still present but no longer valid.
+    private func isTokenLikelyExpired(_ token: String, now: Date = Date()) -> Bool {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+
+        // Expected format: header.payload.signature (base64url).
+        let parts = trimmed.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count >= 2 else { return true }
+
+        let payloadB64URL = String(parts[1])
+        guard let payloadData = decodeBase64URL(payloadB64URL) else { return true }
+
+        struct TokenClaims: Decodable {
+            let exp: Int64?
+        }
+        guard let claims = try? JSONDecoder().decode(TokenClaims.self, from: payloadData),
+              let expSeconds = claims.exp else {
+            return true
+        }
+
+        let expiresAt = Date(timeIntervalSince1970: TimeInterval(expSeconds))
+        let effectiveExpiry = expiresAt.addingTimeInterval(-AuthTiming.tokenExpirySkewSeconds)
+        return now >= effectiveExpiry
+    }
+
+    /// decodeBase64URL decodes a base64url string as used in JWT segments.
+    private func decodeBase64URL(_ value: String) -> Data? {
+        var s = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        let mod = s.count % 4
+        if mod != 0 {
+            s.append(String(repeating: "=", count: 4 - mod))
+        }
+        return Data(base64Encoded: s)
+    }
+
+    /// prepareClientForAuthenticatedRequest configures the Go SDK client with
+    /// server URL, master key, and a usable auth token.
+    ///
+    /// If the token is missing or expired, this re-auths with the master key and
+    /// updates `self.token` on the main queue.
+    private func prepareClientForAuthenticatedRequest(
+        serverURL: String,
+        tokenSnapshot: String,
+        masterKeySnapshot: String
+    ) throws {
+        client.setServerURL(serverURL)
+
+        var effectiveToken = tokenSnapshot
+        if effectiveToken.isEmpty || isTokenLikelyExpired(effectiveToken) {
+            guard !masterKeySnapshot.isEmpty else {
+                // Without a master key we can't rotate the token; we'll attempt
+                // requests with the existing token and surface any errors.
+                effectiveToken = tokenSnapshot
+                client.setToken(effectiveToken)
+                return
+            }
+
+            let tokenBuf = try client.auth(withMasterKeyBase64Buffer: masterKeySnapshot)
+            guard let tokenValue = stringFromBuffer(tokenBuf) else {
+                throw NSError(
+                    domain: "DelightAuth",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "unable to decode refreshed token"]
+                )
+            }
+            effectiveToken = tokenValue
+
+            DispatchQueue.main.async {
+                // Avoid racing with explicit logout/reset: only overwrite if the UI
+                // hasn't already moved to a different token value.
+                if self.token == tokenSnapshot {
+                    self.token = tokenValue
+                }
+            }
+        }
+
+        client.setToken(effectiveToken)
+        if !masterKeySnapshot.isEmpty {
+            try client.setMasterKeyBase64(masterKeySnapshot)
+        }
     }
 
     private func sdkCallSync<T>(_ work: () throws -> T) rethrows -> T {
@@ -902,14 +1038,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                                     activeAt: existing.activeAt,
                                     title: existing.title,
                                     subtitle: existing.subtitle,
-                                    metadata: existing.metadata,
-                                    agentState: agentState,
-                                    uiState: existing.uiState,
-                                    thinking: existing.thinking
-                                )
-                            }
-                        }
-                    }
+	                                    metadata: existing.metadata,
+	                                    agentState: agentState,
+	                                    uiState: existing.uiState
+	                                )
+	                            }
+	                        }
+	                    }
                 }
 
                 // Refresh sessions to converge on the server's authoritative state.
@@ -1102,9 +1237,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             }
             do {
                 try self.sdkCallSync {
-                    self.client.setServerURL(self.serverURL)
-                    self.client.setToken(self.token)
-                    try self.client.setMasterKeyBase64(self.masterKey)
+                    try self.prepareClientForAuthenticatedRequest(
+                        serverURL: self.serverURL,
+                        tokenSnapshot: self.token,
+                        masterKeySnapshot: self.masterKey
+                    )
                     try self.client.approveTerminalAuth(terminalKey, masterKeyB64: self.masterKey)
                 }
                 DispatchQueue.main.async {
@@ -1150,23 +1287,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             do {
                 self.client.setServerURL(serverURLSnapshot)
 
-                var effectiveToken = tokenSnapshot
-                if effectiveToken.isEmpty {
-                    self.log("Token missing; attempting auth with master key.")
-                    let tokenBuf = try self.client.auth(withMasterKeyBase64Buffer: masterKeySnapshot)
-                    guard let tokenValue = self.stringFromBuffer(tokenBuf) else {
-                        self.log("Auth error: unable to decode token")
-                        return
-                    }
-                    effectiveToken = tokenValue
-                    DispatchQueue.main.async {
-                        self.token = tokenValue
-                    }
-                    self.log("Auth ok")
-                }
-
-                self.client.setToken(effectiveToken)
-                try self.client.setMasterKeyBase64(masterKeySnapshot)
+                try self.prepareClientForAuthenticatedRequest(
+                    serverURL: serverURLSnapshot,
+                    tokenSnapshot: tokenSnapshot,
+                    masterKeySnapshot: masterKeySnapshot
+                )
                 // The listener is already installed at init, but re-setting it
                 // is safe and helps when reconnecting after crashes.
                 self.client.setListener(self)
@@ -1203,9 +1328,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
         sdkCallAsync {
             do {
-                self.client.setServerURL(serverURLSnapshot)
-                self.client.setToken(tokenSnapshot)
-                try self.client.setMasterKeyBase64(masterKeySnapshot)
+                try self.prepareClientForAuthenticatedRequest(
+                    serverURL: serverURLSnapshot,
+                    tokenSnapshot: tokenSnapshot,
+                    masterKeySnapshot: masterKeySnapshot
+                )
 
                 let sessionsBuf = try self.client.listSessionsBuffer()
                 guard let sessionsJSON = self.stringFromBuffer(sessionsBuf) else {
@@ -1214,22 +1341,16 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 }
                 self.parseSessions(sessionsJSON)
 
-                // Fetch terminals in the same SDK task so the UI updates are
-                // consistent and we avoid bouncing between queues.
-                do {
-                    let terminalsBuf = try self.client.listTerminalsBuffer()
-                    if let terminalsJSON = self.stringFromBuffer(terminalsBuf), !terminalsJSON.isEmpty {
-                        self.parseTerminals(terminalsJSON)
-                    }
-                } catch {
-                    self.log("List terminals error: \(error)")
-                }
-
                 self.log("Sessions loaded")
             } catch {
                 self.log("List sessions error: \(error)")
             }
         }
+
+        // Terminals are related but not required to render sessions or open a
+        // session transcript. Loading them in a separate SDK task keeps the
+        // interactive path (tap session → see transcript) responsive.
+        listTerminals()
     }
 
     func listTerminals() {
@@ -1239,9 +1360,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
         sdkCallAsync {
             do {
-                self.client.setServerURL(serverURLSnapshot)
-                self.client.setToken(tokenSnapshot)
-                try self.client.setMasterKeyBase64(masterKeySnapshot)
+                try self.prepareClientForAuthenticatedRequest(
+                    serverURL: serverURLSnapshot,
+                    tokenSnapshot: tokenSnapshot,
+                    masterKeySnapshot: masterKeySnapshot
+                )
 
                 let responseBuf = try self.client.listTerminalsBuffer()
                 if let json = self.stringFromBuffer(responseBuf), !json.isEmpty {
@@ -1303,6 +1426,20 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             messages = []
             hasMoreHistory = false
             oldestLoadedSeq = nil
+
+            if let cachedJSON = loadCachedLatestTranscriptPage(sessionID: id),
+               !cachedJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let generation = messagesFetchGeneration
+                decodeTranscriptAsync {
+                    self.applyMessagesResponse(
+                        cachedJSON,
+                        reset: true,
+                        scrollToBottom: false,
+                        expectedSessionID: id,
+                        expectedGeneration: generation
+                    )
+                }
+            }
         }
         isLoadingHistory = false
         fetchLatestMessages(reset: true)
@@ -1339,8 +1476,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             self.sdkCallAsync {
                 do {
                     self.client.setServerURL(serverURLSnapshot)
-                    self.client.setToken(tokenSnapshot)
-                    try self.client.setMasterKeyBase64(masterKeySnapshot)
+                    try self.prepareClientForAuthenticatedRequest(
+                        serverURL: serverURLSnapshot,
+                        tokenSnapshot: tokenSnapshot,
+                        masterKeySnapshot: masterKeySnapshot
+                    )
 
                     // Prefer cursor-based pagination if available.
                     let responseBuf = try self.client.getSessionMessagesPageBuffer(
@@ -1388,11 +1528,19 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         isLoadingHistory = true
         let generation = messagesFetchGeneration
         let requestedSessionID = sessionID
+        let serverURLSnapshot = serverURL
+        let tokenSnapshot = token
+        let masterKeySnapshot = masterKey
 
         sdkCallAsync {
             do {
                 let responseBuf = try self.sdkCallSync {
-                    try self.client.getSessionMessagesPageBuffer(requestedSessionID, limit: 50, beforeSeq: cursor)
+                    try self.prepareClientForAuthenticatedRequest(
+                        serverURL: serverURLSnapshot,
+                        tokenSnapshot: tokenSnapshot,
+                        masterKeySnapshot: masterKeySnapshot
+                    )
+                    return try self.client.getSessionMessagesPageBuffer(requestedSessionID, limit: 50, beforeSeq: cursor)
                 }
                 guard let json = self.stringFromBuffer(responseBuf) else {
                     self.log("Get older messages error: unable to decode response")
@@ -1439,7 +1587,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 log("Desktop controls this session. Tap “Take Control” first.")
                 return
             }
-            if ui?.working == true || isThinking(sessionID: sessionID) {
+            if ui?.working == true {
                 log("Agent is busy. Wait or tap Stop.")
                 return
             }
@@ -1449,8 +1597,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         recordPromptHistory(outgoingText, sessionID: sessionID)
         messageText = ""
         let localID = UUID().uuidString
-
-        updateSessionThinking(true)
 
         // Optimistic UI: show the user's message immediately.
         let optimistic = MessageItem(
@@ -1488,14 +1634,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     // This merges (rather than replacing) so we don't blow away older pages.
                     self.fetchLatestMessages(reset: false)
                 } catch {
-                    DispatchQueue.main.async {
-                        self.updateSessionThinking(false)
-                    }
                     self.log("Send error: \(error)")
                 }
             }
         } catch {
-            updateSessionThinking(false)
             log("Send error: \(error)")
         }
     }
@@ -1519,10 +1661,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 return
             }
         }
-
-        // Optimistically clear the thinking UI. If abort fails, normal activity
-        // updates will reassert the correct state.
-        updateSessionThinking(false, sessionID: targetID)
 
         sdkCallAsync {
             do {
@@ -1728,7 +1866,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     @objc func onConnected() {
         updateStatus("connected")
-        clearThinkingState()
         // Reconnects can happen without an app foreground transition (e.g. network
         // blips, iOS suspending sockets). The SDK-derived `ui.connected` bit is
         // computed during ListSessions, so always refresh sessions on connect to
@@ -1745,7 +1882,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     @objc func onDisconnected(_ reason: String?) {
         updateStatus("disconnected: \(reason ?? "unknown")")
-        clearThinkingState()
     }
 
     @objc func onUpdate(_ sessionID: String?, updateJSON: String?) {
@@ -1866,39 +2002,25 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             return false
         }
 
-        DispatchQueue.main.async {
-            if let index = self.sessions.firstIndex(where: { $0.id == sessionID }) {
-                let prev = self.sessions[index]
-                self.sessions[index] = SessionSummary(
-                    id: prev.id,
-                    terminalID: prev.terminalID,
-                    updatedAt: prev.updatedAt,
-                    active: prev.active,
-                    activeAt: prev.activeAt,
-                    title: prev.title,
-                    subtitle: prev.subtitle,
-                    metadata: prev.metadata,
-                    agentState: prev.agentState,
-                    uiState: ui,
-                    thinking: prev.thinking
-                )
-            }
-
-            // If the session goes offline, we may never receive a "thinking end"
-            // UI event. Clear the override to avoid showing stale vibing state.
-            if self.isUIOffline(ui) {
-                self.thinkingOverrides[sessionID] = false
-                if let index = self.sessions.firstIndex(where: { $0.id == sessionID }) {
-                    self.sessions[index] = self.sessions[index].updatingActivity(
-                        active: nil,
-                        activeAt: nil,
-                        thinking: false
-                    )
-                }
-            }
-        }
-        return true
-    }
+		DispatchQueue.main.async {
+			if let index = self.sessions.firstIndex(where: { $0.id == sessionID }) {
+				let prev = self.sessions[index]
+				self.sessions[index] = SessionSummary(
+					id: prev.id,
+					terminalID: prev.terminalID,
+					updatedAt: prev.updatedAt,
+					active: prev.active,
+					activeAt: prev.activeAt,
+					title: prev.title,
+					subtitle: prev.subtitle,
+					metadata: prev.metadata,
+					agentState: prev.agentState,
+					uiState: ui
+				)
+			}
+		}
+		return true
+	}
 
     /// tryAppendMessageFromUpdate attempts to render a new message without a fetch.
     private func tryAppendMessageFromUpdate(_ updateJSON: String, sessionID: String) -> Bool {
@@ -2010,21 +2132,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return true
     }
 
-    private func clearThinkingState() {
-        let targetID = sessionID
-        if targetID.isEmpty {
-            DispatchQueue.main.async {
-                self.sessions = self.sessions.map { $0.updatingActivity(active: nil, activeAt: nil, thinking: false) }
-                self.thinkingOverrides.removeAll()
-            }
-            return
-        }
-        DispatchQueue.main.async {
-            self.thinkingOverrides[targetID] = false
-        }
-        updateSessionThinking(false)
-    }
-
     @objc func onError(_ message: String?) {
         log("SDK error: \(message ?? "unknown")")
     }
@@ -2041,21 +2148,18 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
         if let payload = extractActivityPayload(from: update) {
             DispatchQueue.main.async {
-                if let thinking = payload.thinking {
-                    self.thinkingOverrides[payload.id] = thinking
-                }
                 if let index = self.sessions.firstIndex(where: { $0.id == payload.id }) {
                     let updated = self.sessions[index].updatingActivity(
                         active: payload.active,
-                        activeAt: payload.activeAt,
-                        thinking: payload.thinking
+                        working: payload.working,
+                        activeAt: payload.activeAt
                     )
                     self.sessions[index] = updated
                 }
             }
-            // Activity / keep-alive updates are the earliest reliable signal that a CLI
-            // came online after the phone app started. Refresh sessions so the UI state
-            // (remote/local/offline) stays SDK-owned and up-to-date.
+            // Activity / keep-alive updates are often the earliest signal that a CLI
+            // came online after the phone app started. Refresh sessions so non-ephemeral
+            // fields (metadata/agentState) stay up-to-date.
             scheduleSessionsRefreshDebounced()
         }
     }
@@ -2072,20 +2176,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let key = uiEventKey(sessionID: payload.sessionID, eventID: payload.eventID)
         DispatchQueue.main.async {
             self.uiEventsByKey[key] = payload
-        }
-
-        if payload.kind == "thinking" {
-            let isThinking = payload.phase != "end"
-            DispatchQueue.main.async {
-                self.thinkingOverrides[payload.sessionID] = isThinking
-                if let index = self.sessions.firstIndex(where: { $0.id == payload.sessionID }) {
-                    self.sessions[index] = self.sessions[index].updatingActivity(
-                        active: nil,
-                        activeAt: nil,
-                        thinking: isThinking
-                    )
-                }
-            }
         }
 
         // Only mutate the visible transcript when the detail view is open for this session.
@@ -2483,18 +2573,18 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     /// extractActivityPayload normalizes activity updates from update envelopes.
-    private func extractActivityPayload(from update: UpdateEnvelope) -> (id: String, active: Bool?, activeAt: Int64?, thinking: Bool?)? {
+    private func extractActivityPayload(from update: UpdateEnvelope) -> (id: String, active: Bool?, working: Bool?, activeAt: Int64?)? {
         // Root-level activity messages.
         if update.type == UpdateKind.activity.rawValue || update.t == UpdateKind.activity.rawValue {
             let id = update.id ?? update.sid
             guard let id, !id.isEmpty else { return nil }
-            return (id: id, active: update.active, activeAt: update.activeAt, thinking: update.thinking)
+            return (id: id, active: update.active, working: update.working ?? update.thinking, activeAt: update.activeAt)
         }
         if update.type == UpdateKind.sessionAlive.rawValue || update.t == UpdateKind.sessionAlive.rawValue {
             let id = update.id ?? update.sid
             guard let id, !id.isEmpty else { return nil }
             let activeAt = update.activeAt ?? update.time
-            return (id: id, active: true, activeAt: activeAt, thinking: nil)
+            return (id: id, active: true, working: update.working ?? update.thinking, activeAt: activeAt)
         }
 
         guard let body = update.body else { return nil }
@@ -2504,7 +2594,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         if bodyType == UpdateKind.activity.rawValue {
             let id = body.id ?? body.sid
             guard let id, !id.isEmpty else { return nil }
-            return (id: id, active: body.active, activeAt: body.activeAt, thinking: body.thinking)
+            return (id: id, active: body.active, working: body.working ?? body.thinking, activeAt: body.activeAt)
         }
 
         if bodyType == UpdateKind.sessionAlive.rawValue {
@@ -2512,7 +2602,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             guard let id, !id.isEmpty else { return nil }
             // Session alive implies the session is active.
             let activeAt = body.activeAt ?? body.time
-            return (id: id, active: true, activeAt: activeAt, thinking: nil)
+            return (id: id, active: true, working: body.working ?? body.thinking, activeAt: activeAt)
         }
 
         return nil
@@ -2660,20 +2750,19 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
-    func parseSessions(_ json: String) {
-        struct SessionsResponse: Decodable {
-            struct Session: Decodable {
-                let id: String
-                let updatedAt: Int64
-                let active: Bool
-                let activeAt: Int64?
-                let thinking: Bool?
-                let metadata: String?
-                let agentState: String?
-                let terminalId: String?
-            }
-            let sessions: [Session]
-        }
+	    func parseSessions(_ json: String) {
+	        struct SessionsResponse: Decodable {
+	            struct Session: Decodable {
+	                let id: String
+	                let updatedAt: Int64
+	                let active: Bool
+	                let activeAt: Int64?
+	                let metadata: String?
+	                let agentState: String?
+	                let terminalId: String?
+	            }
+	            let sessions: [Session]
+	        }
         struct SessionsUIResponse: Decodable {
             struct Session: Decodable {
                 let id: String
@@ -2698,58 +2787,33 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }()
 
         DispatchQueue.main.async { [self] in
-            let parsedSessions: [SessionSummary] = decoded.sessions.map { session in
-                let metadata = SessionMetadata.fromJSON(session.metadata)
-                let agentState = SessionAgentState.fromJSON(session.agentState)
-                let uiState = uiByID[session.id]
-                let terminalID = session.terminalId ?? metadata?.terminalId
-                let title = metadata?.agent
-                    ?? metadata?.summaryText
-                    ?? terminalID
-                let serverThinking = session.thinking ?? false
-                // Server-reported thinking is derived from durable turn boundaries,
-                // so treat `thinking=false` as authoritative and clear stale
-                // client-side overrides.
-                let overrideThinking = self.thinkingOverrides[session.id]
-                let effectiveThinking: Bool
-                if !serverThinking {
-                    effectiveThinking = false
-                    self.thinkingOverrides[session.id] = false
-                } else {
-                    effectiveThinking = overrideThinking ?? serverThinking
-                }
-                return SessionSummary(
-                    id: session.id,
-                    terminalID: terminalID,
-                    updatedAt: session.updatedAt,
-                    active: session.active,
-                    activeAt: session.activeAt,
-                    title: title,
-                    subtitle: metadata?.host
-                        ?? terminalID,
-                    metadata: metadata,
-                    agentState: agentState,
-                    uiState: uiState,
-                    thinking: effectiveThinking
-                )
-            }
-            self.sessions = parsedSessions
+	            let parsedSessions: [SessionSummary] = decoded.sessions.map { session in
+	                let metadata = SessionMetadata.fromJSON(session.metadata)
+	                let agentState = SessionAgentState.fromJSON(session.agentState)
+	                let uiState = uiByID[session.id]
+	                let terminalID = session.terminalId ?? metadata?.terminalId
+	                let title = metadata?.agent
+	                    ?? metadata?.summaryText
+	                    ?? terminalID
+	                return SessionSummary(
+	                    id: session.id,
+	                    terminalID: terminalID,
+	                    updatedAt: session.updatedAt,
+	                    active: session.active,
+	                    activeAt: session.activeAt,
+	                    title: title,
+	                    subtitle: metadata?.host
+	                        ?? terminalID,
+	                    metadata: metadata,
+	                    agentState: agentState,
+	                    uiState: uiState
+	                )
+	            }
+	            self.sessions = parsedSessions
 
-            // Drop stale thinking overrides for sessions that no longer exist, and
-            // proactively clear thinking for sessions that are offline. Offline
-            // sessions may never emit a "thinking end" UI event, so without this
-            // the UI can show stuck "vibing" state.
-            let currentIDs = Set(parsedSessions.map { $0.id })
-            self.thinkingOverrides = Dictionary(
-                uniqueKeysWithValues: self.thinkingOverrides.filter { currentIDs.contains($0.key) }
-            )
-            for session in parsedSessions where self.isUIOffline(session.uiState) {
-                self.thinkingOverrides[session.id] = false
-            }
-
-            // Hydrate pending permission prompts from durable agent state.
-            let now = Int64(Date().timeIntervalSince1970 * 1000)
-            for session in parsedSessions {
+	            // Hydrate pending permission prompts from durable agent state.
+	            let now = Int64(Date().timeIntervalSince1970 * 1000)
+	            for session in parsedSessions {
                 // Keep the permission queue in sync with durable agent state, but
                 // only auto-present prompts while the phone controls the session.
                 //
@@ -2927,12 +2991,14 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     hasMoreHistory: self.hasMoreHistory,
                     oldestLoadedSeq: self.oldestLoadedSeq
                 )
+                if reset {
+                    self.storeCachedLatestTranscriptPage(sessionID: self.sessionID, json: json)
+                }
             }
 
-            // Thinking/busy state should be driven by durable server state
-            // (ListSessions `thinking` → ui.working) and explicit thinking UI events,
-            // not inferred from transcript ordering. Inference can clear "busy"
-            // incorrectly when the app refreshes during an in-flight turn.
+            // Busy state should be driven by the SDK-derived session UI snapshot
+            // (`ui.working`), not inferred from transcript ordering. Inference can
+            // clear "busy" incorrectly when the app refreshes mid-turn.
 
             if scrollToBottom, !self.messages.isEmpty {
                 self.scrollRequest = ScrollRequest(target: .bottom)
@@ -3543,47 +3609,6 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             }
         }
         return false
-    }
-
-    private func updateSessionThinking(_ thinking: Bool) {
-        updateSessionThinking(thinking, sessionID: sessionID)
-    }
-
-    private func updateSessionThinking(_ thinking: Bool, sessionID: String?) {
-        guard let targetID = sessionID, !targetID.isEmpty else { return }
-        DispatchQueue.main.async {
-            self.thinkingOverrides[targetID] = thinking
-            if let index = self.sessions.firstIndex(where: { $0.id == targetID }) {
-                let updated = self.sessions[index].updatingActivity(
-                    active: nil,
-                    activeAt: nil,
-                    thinking: thinking
-                )
-                self.sessions[index] = updated
-            }
-        }
-    }
-
-    /// isUIOffline returns true when the provided UI state indicates the session
-    /// cannot be interacted with from the phone (e.g. the CLI/terminal is offline).
-    ///
-    /// This is intentionally conservative: if the SDK says the session isn't
-    /// connected, treat it as offline for the purposes of clearing ephemeral
-    /// thinking/activity state.
-    private func isUIOffline(_ ui: SessionUIState?) -> Bool {
-        guard let ui else { return true }
-        if !ui.connected { return true }
-        return !ui.online
-    }
-
-    /// isThinking returns the best-effort thinking state for a session.
-    func isThinking(sessionID: String) -> Bool {
-        let id = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
-        if id.isEmpty { return false }
-        if let override = thinkingOverrides[id] {
-            return override
-        }
-        return sessions.first(where: { $0.id == id })?.thinking ?? false
     }
 
     private func extractText(from content: JSONValue?) -> String? {

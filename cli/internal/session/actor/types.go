@@ -110,10 +110,11 @@ type State struct {
 	WSConnected       bool
 	TerminalConnected bool
 
-	// Thinking reports whether the remote engine is currently processing a turn.
+	// Working reports whether the remote engine is currently processing a turn.
 	// It is surfaced via session keep-alives and activity ephemerals so mobile
-	// clients can show a live "thinking" indicator.
-	Thinking bool
+	// clients can derive a stable `ui.working` state (turn in-flight) without
+	// relying on transcript ordering heuristics.
+	Working bool
 
 	// Dedupe windows (populated by events) to suppress message echoes.
 	RecentRemoteInputs         []remoteInputRecord
@@ -379,17 +380,17 @@ type evEngineRolloutPath struct {
 // isSessionEvent marks evEngineRolloutPath as a session event.
 func (evEngineRolloutPath) isSessionEvent() {}
 
-// evEngineThinking indicates whether the active runner is currently processing a turn.
-type evEngineThinking struct {
+// evEngineWorking indicates whether the active runner is currently processing a turn.
+type evEngineWorking struct {
 	actor.InputBase
-	Gen      int64
-	Mode     Mode
-	Thinking bool
-	NowMs    int64
+	Gen     int64
+	Mode    Mode
+	Working bool
+	NowMs   int64
 }
 
-// isSessionEvent marks evEngineThinking as a session event.
-func (evEngineThinking) isSessionEvent() {}
+// isSessionEvent marks evEngineWorking as a session event.
+func (evEngineWorking) isSessionEvent() {}
 
 // evEngineUIEvent is a rendered UI event emitted by the active engine.
 type evEngineUIEvent struct {

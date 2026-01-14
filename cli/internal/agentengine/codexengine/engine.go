@@ -19,6 +19,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/codex/appserver"
 	"github.com/bhandras/delight/cli/internal/codex/rollout"
 	"github.com/bhandras/delight/cli/pkg/types"
+	"github.com/bhandras/delight/shared/logger"
 	"github.com/bhandras/delight/shared/wire"
 )
 
@@ -75,12 +76,6 @@ const (
 )
 
 const (
-	// localStartupExitProbeDelay bounds how long we wait after starting Codex local
-	// before considering it "ready enough" to switch the CLI into local mode.
-	localStartupExitProbeDelay = 150 * time.Millisecond
-)
-
-const (
 	// permissionModeDefault mirrors Codex's default permission behavior.
 	permissionModeDefault = "default"
 )
@@ -95,10 +90,19 @@ const (
 	localShutdownTimeout = 2 * time.Second
 )
 
+// remoteTurnStartedAckTimeout bounds how long we wait for the app-server to emit
+// turn/started after successfully issuing a turn/start request.
+//
+// Delight treats turn/started and turn/completed as the busy/working boundaries.
+var remoteTurnStartedAckTimeout = 10 * time.Second
+
 const (
 	// rolloutRootRelative is the default relative directory containing Codex rollout JSONLs.
 	rolloutRootRelative = ".codex/sessions"
 )
+
+var acquireTTYForegroundFn = acquireTTYForeground
+var buildLocalCodexCommandFn = buildLocalCodexCommand
 
 const (
 	// engineEventBufferSize bounds the number of engine events we can queue
@@ -119,6 +123,18 @@ const (
 	localToolOutputMaxChars = 24_000
 )
 
+var (
+	// localStartupExitProbeDelay bounds how long we wait after starting Codex local
+	// mode before assuming it successfully launched.
+	//
+	// This needs to be long enough to catch immediate exits (e.g. bad resume
+	// token) but short enough to not noticeably delay startup.
+	//
+	// It is a var (not a const) so tests can increase it to avoid flakes on slow
+	// CI machines.
+	localStartupExitProbeDelay = 150 * time.Millisecond
+)
+
 // Engine adapts Codex (local TUI + rollout JSONL, remote `codex exec --json`)
 // to the AgentEngine interface.
 type Engine struct {
@@ -137,14 +153,16 @@ type Engine struct {
 	remoteModel           string
 	remoteReasoningEffort string
 	remoteResumeToken     string
-	remoteThinking        bool
+	remoteWorking         bool
 	remoteThreadID        string
 	remoteActiveTurnID    string
 	remoteTurnID          string
+	remoteTurnStartedCh   chan struct{}
 
 	remoteAppServer *appserver.Client
 
-	remoteAgentMessageItems map[string]string
+	remoteAgentMessageItems map[string]*remoteTextAccumulator
+	remoteInFlightItems     map[string]struct{}
 
 	localCmd               *exec.Cmd
 	localCancel            context.CancelFunc
@@ -164,6 +182,63 @@ type localToolCall struct {
 	atMs      int64
 }
 
+const (
+	// remoteAgentMessageMaxBytes bounds the amount of streamed agentMessage text
+	// we buffer per in-flight item. The remote app-server can stream very large
+	// responses; capping this keeps Delight stable even if upstream output is
+	// unexpectedly huge.
+	remoteAgentMessageMaxBytes = 4 * 1024 * 1024
+)
+
+// remoteTextAccumulator buffers streamed text incrementally and supports
+// truncation once a size limit is exceeded.
+type remoteTextAccumulator struct {
+	builder   strings.Builder
+	truncated bool
+	dropped   int
+}
+
+// Append appends delta to the accumulator, truncating once the maximum buffer
+// size is reached.
+func (a *remoteTextAccumulator) Append(delta string) {
+	if a == nil || delta == "" {
+		return
+	}
+	if a.truncated {
+		a.dropped += len(delta)
+		return
+	}
+
+	remaining := remoteAgentMessageMaxBytes - a.builder.Len()
+	if remaining <= 0 {
+		a.truncated = true
+		a.dropped += len(delta)
+		return
+	}
+	if len(delta) > remaining {
+		a.builder.WriteString(delta[:remaining])
+		a.truncated = true
+		a.dropped += len(delta) - remaining
+		return
+	}
+	a.builder.WriteString(delta)
+}
+
+// String returns the accumulated text, including a truncation notice if needed.
+func (a *remoteTextAccumulator) String() string {
+	if a == nil {
+		return ""
+	}
+	s := a.builder.String()
+	if !a.truncated {
+		return s
+	}
+	if a.dropped <= 0 {
+		return s + "\n… (truncated)"
+	}
+	return fmt.Sprintf("%s\n… (truncated; %d chars omitted)", s, a.dropped)
+}
+
 // New returns a Codex engine.
 func New(workDir string, requester agentengine.PermissionRequester, debug bool) *Engine {
 	return &Engine{
@@ -171,6 +246,7 @@ func New(workDir string, requester agentengine.PermissionRequester, debug bool) 
 		debug:     debug,
 		requester: requester,
 		events:    make(chan agentengine.Event, engineEventBufferSize),
+		remoteTurnStartedCh: make(chan struct{}),
 		waitCh:    make(chan struct{}),
 	}
 }
@@ -243,7 +319,7 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 
 	e.mu.Lock()
 	enabled := e.remoteEnabled
-	busy := strings.TrimSpace(e.remoteActiveTurnID) != ""
+	busy := e.remoteBusyLocked()
 	e.mu.Unlock()
 	if !enabled {
 		return fmt.Errorf("codex remote mode not active")
@@ -415,9 +491,9 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 
 	var cmd *exec.Cmd
 	if resumeToken != "" {
-		cmd = buildLocalCodexCommand(resumeToken, spec.Config)
+		cmd = buildLocalCodexCommandFn(resumeToken, spec.Config)
 	} else {
-		cmd = buildLocalCodexCommand("", spec.Config)
+		cmd = buildLocalCodexCommandFn("", spec.Config)
 	}
 	workDir := e.workDir
 	if spec.WorkDir != "" {
@@ -442,7 +518,13 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 		return err
 	}
 
-	restoreForeground := acquireTTYForeground(cmd)
+	restoreForeground := acquireTTYForegroundFn(cmd)
+	foregroundOwnedByEngine := false
+	defer func() {
+		if !foregroundOwnedByEngine && restoreForeground != nil {
+			restoreForeground()
+		}
+	}()
 
 	// Use a single wait goroutine so:
 	// - we can detect immediate startup failures (no TUI appears)
@@ -504,6 +586,7 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 	e.localWaitCh = waitErrCh
 	e.localToolCalls = make(map[string]localToolCall)
 	e.mu.Unlock()
+	foregroundOwnedByEngine = true
 	old.stop(context.Background())
 
 	e.tryEmit(agentengine.EvReady{Mode: agentengine.ModeLocal})
@@ -645,23 +728,27 @@ func (e *Engine) detachLocalLocked() localStopHandle {
 
 func (e *Engine) stopRemoteAndWait(ctx context.Context) error {
 	e.mu.Lock()
-	wasThinking := e.remoteThinking
+	wasWorking := e.remoteWorking
 	e.remoteEnabled = false
 	e.remoteSessionActive = false
 	e.remoteResumeToken = ""
-	e.remoteThinking = false
+	e.remoteWorking = false
 	e.remoteThreadID = ""
 	e.remoteActiveTurnID = ""
 	e.remoteTurnID = ""
+	if e.remoteTurnStartedCh != nil {
+		close(e.remoteTurnStartedCh)
+	}
+	e.remoteTurnStartedCh = make(chan struct{})
 	app := e.remoteAppServer
 	e.remoteAppServer = nil
 	e.remoteAgentMessageItems = nil
 	e.mu.Unlock()
 
-	if wasThinking {
-		e.tryEmit(agentengine.EvThinking{
+	if wasWorking {
+		e.tryEmit(agentengine.EvWorking{
 			Mode:     agentengine.ModeRemote,
-			Thinking: false,
+			Working:  false,
 			AtMs:     time.Now().UnixMilli(),
 		})
 	}
@@ -735,9 +822,9 @@ func (e *Engine) handleRolloutEvent(ev rollout.Event) {
 	case rollout.EvSessionMeta:
 		e.tryEmit(agentengine.EvSessionIdentified{Mode: agentengine.ModeLocal, ResumeToken: v.SessionID})
 	case rollout.EvUserMessage:
-		e.tryEmit(agentengine.EvThinking{
+		e.tryEmit(agentengine.EvWorking{
 			Mode:     agentengine.ModeLocal,
-			Thinking: true,
+			Working:  true,
 			AtMs:     v.AtMs,
 		})
 		raw, err := marshalUserTextRecord(v.Text, nil)
@@ -752,9 +839,9 @@ func (e *Engine) handleRolloutEvent(ev rollout.Event) {
 			AtMs:               v.AtMs,
 		})
 	case rollout.EvAssistantMessage:
-		e.tryEmit(agentengine.EvThinking{
+		e.tryEmit(agentengine.EvWorking{
 			Mode:     agentengine.ModeLocal,
-			Thinking: false,
+			Working:  false,
 			AtMs:     v.AtMs,
 		})
 		raw, err := marshalAssistantTextRecord(v.Text, "unknown")
@@ -1045,9 +1132,9 @@ func (e *Engine) startRemoteTurnLocked(turnID string) {
 	e.remoteTurnID = turnID
 }
 
-// setRemoteThinking updates the cached remote thinking state and emits a
-// best-effort EvThinking when the value changes.
-func (e *Engine) setRemoteThinking(thinking bool, atMs int64) {
+// setRemoteWorking updates the cached remote working state and emits a
+// best-effort EvWorking when the value changes.
+func (e *Engine) setRemoteWorking(working bool, atMs int64) {
 	if e == nil {
 		return
 	}
@@ -1056,16 +1143,33 @@ func (e *Engine) setRemoteThinking(thinking bool, atMs int64) {
 	}
 
 	e.mu.Lock()
-	if e.remoteThinking == thinking {
+	debug := e.debug
+	prevWorking := e.remoteWorking
+	activeTurnID := e.remoteActiveTurnID
+	inFlightItems := len(e.remoteInFlightItems)
+	agentMessageItems := len(e.remoteAgentMessageItems)
+	if e.remoteWorking == working {
 		e.mu.Unlock()
 		return
 	}
-	e.remoteThinking = thinking
+	e.remoteWorking = working
 	e.mu.Unlock()
 
-	e.tryEmit(agentengine.EvThinking{
+	if debug {
+		logger.Debugf(
+			"codex: remote working %t -> %t (turn=%q inFlight=%d agentMsg=%d atMs=%d)",
+			prevWorking,
+			working,
+			strings.TrimSpace(activeTurnID),
+			inFlightItems,
+			agentMessageItems,
+			atMs,
+		)
+	}
+
+	e.tryEmit(agentengine.EvWorking{
 		Mode:     agentengine.ModeRemote,
-		Thinking: thinking,
+		Working:  working,
 		AtMs:     atMs,
 	})
 
@@ -1078,12 +1182,12 @@ func (e *Engine) setRemoteThinking(thinking bool, atMs int64) {
 
 	phase := agentengine.UIEventPhaseUpdate
 	status := agentengine.UIEventStatusRunning
-	if !thinking {
+	if !working {
 		phase = agentengine.UIEventPhaseEnd
 		status = agentengine.UIEventStatusOK
 	}
 	brief := "Thinking…"
-	if !thinking {
+	if !working {
 		brief = ""
 	}
 
@@ -1097,6 +1201,35 @@ func (e *Engine) setRemoteThinking(thinking bool, atMs int64) {
 		FullMarkdown:  "",
 		AtMs:          atMs,
 	})
+}
+
+// remoteBusyLocked reports whether the engine is currently busy executing a
+// remote request.
+//
+// Caller must hold e.mu.
+func (e *Engine) remoteBusyLocked() bool {
+	if e == nil {
+		return false
+	}
+	if strings.TrimSpace(e.remoteActiveTurnID) != "" {
+		return true
+	}
+	return false
+}
+
+// updateRemoteWorkingFromState recomputes the best-effort "working" signal
+// from the engine's remote state and emits EvWorking/UI events when it changes.
+func (e *Engine) updateRemoteWorkingFromState(atMs int64) {
+	if e == nil {
+		return
+	}
+	if atMs == 0 {
+		atMs = time.Now().UnixMilli()
+	}
+	e.mu.Lock()
+	busy := e.remoteBusyLocked()
+	e.mu.Unlock()
+	e.setRemoteWorking(busy, atMs)
 }
 
 func truncateText(text string, maxChars int) string {

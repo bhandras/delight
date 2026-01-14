@@ -162,41 +162,80 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 	e.mu.Unlock()
 
 	nowMs := time.Now().UnixMilli()
-	e.tryEmit(agentengine.EvThinking{Mode: agentengine.ModeRemote, Thinking: true, AtMs: nowMs})
-	defer e.tryEmit(agentengine.EvThinking{Mode: agentengine.ModeRemote, Thinking: false, AtMs: time.Now().UnixMilli()})
+	e.tryEmit(agentengine.EvWorking{Mode: agentengine.ModeRemote, Working: true, AtMs: nowMs})
+	defer e.tryEmit(agentengine.EvWorking{Mode: agentengine.ModeRemote, Working: false, AtMs: time.Now().UnixMilli()})
 
 	result, err := client.Run(runCtx, sessionID, msg.Text)
 	if err != nil {
 		return err
 	}
 
-	for result != nil && result.Status == "awaiting" && result.AwaitRequest != nil {
-		payload, err := json.Marshal(wire.ACPAwaitInput{Await: result.AwaitRequest})
-		if err != nil {
-			return err
+	for result != nil {
+		status := strings.TrimSpace(strings.ToLower(result.Status))
+		if status == "awaiting" && result.AwaitRequest != nil {
+			payload, err := json.Marshal(wire.ACPAwaitInput{Await: result.AwaitRequest})
+			if err != nil {
+				return err
+			}
+
+			permCtx, permCancel := context.WithTimeout(context.Background(), acpPermissionTimeout)
+			decision, err := e.requester.AwaitPermission(
+				permCtx,
+				fmt.Sprintf("acp-%s", result.RunID),
+				acpToolAwait,
+				payload,
+				time.Now().UnixMilli(),
+			)
+			permCancel()
+			if err != nil {
+				return err
+			}
+
+			resume := wire.ACPAwaitResume{
+				Allow:   decision.Allow,
+				Message: decision.Message,
+			}
+			result, err = client.Resume(runCtx, result.RunID, resume)
+			if err != nil {
+				return err
+			}
+			continue
 		}
 
-		permCtx, permCancel := context.WithTimeout(context.Background(), acpPermissionTimeout)
-		decision, err := e.requester.AwaitPermission(
-			permCtx,
-			fmt.Sprintf("acp-%s", result.RunID),
-			acpToolAwait,
-			payload,
-			time.Now().UnixMilli(),
-		)
-		permCancel()
-		if err != nil {
-			return err
+		terminal := false
+		switch status {
+		case "", "queued", "running", "started", "in_progress":
+			// ACP can respond with 202 Accepted and a run_id while still running.
+			// Poll until we reach a terminal state so mobile UI can keep Stop visible.
+			runID := strings.TrimSpace(result.RunID)
+			if runID == "" {
+				return nil
+			}
+			select {
+			case <-runCtx.Done():
+				return runCtx.Err()
+			case <-time.After(500 * time.Millisecond):
+			}
+			result, err = client.Poll(runCtx, runID)
+			if err != nil {
+				return err
+			}
+			continue
+		case "completed", "failed", "cancelled", "canceled":
+			// Terminal state.
+			terminal = true
+		default:
+			// Unknown state: best-effort treat as terminal.
+			terminal = true
 		}
+		if terminal {
+			break
+		}
+	}
 
-		resume := wire.ACPAwaitResume{
-			Allow:   decision.Allow,
-			Message: decision.Message,
-		}
-		result, err = client.Resume(runCtx, result.RunID, resume)
-		if err != nil {
-			return err
-		}
+	if result != nil && strings.TrimSpace(strings.ToLower(result.Status)) == "awaiting" && result.AwaitRequest != nil {
+		// If we somehow exited the loop in an awaiting state, do not emit a response.
+		return nil
 	}
 
 	if result == nil || strings.TrimSpace(result.OutputText) == "" {

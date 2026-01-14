@@ -2,11 +2,13 @@ package appserver
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -20,12 +22,13 @@ const (
 	// round-trip with the app-server.
 	defaultRequestTimeout = 30 * time.Second
 
-	// stdoutScannerMaxToken bounds the size of a single JSONL message we accept
-	// from the app-server.
+	// stdoutMaxLineBytes bounds the size of a single JSONL message we accept from
+	// the app-server.
 	//
-	// bufio.Scanner defaults to a 64KiB token limit; codex app-server messages
-	// can exceed that when they include aggregated tool output or file patches.
-	stdoutScannerMaxToken = 8 * 1024 * 1024
+	// codex app-server messages can exceed bufio.Scanner's 64KiB token limit when
+	// they include aggregated tool output or file patches. We avoid Scanner here
+	// so a single oversized message does not kill the entire stream.
+	stdoutMaxLineBytes = 16 * 1024 * 1024
 
 	// stderrCopyLimit bounds the amount of stderr we keep in memory for error
 	// reporting.
@@ -76,10 +79,10 @@ type rpcResponse struct {
 
 type rpcMessage struct {
 	ID     *json.RawMessage `json:"id,omitempty"`
-	Method string          `json:"method,omitempty"`
-	Params json.RawMessage `json:"params,omitempty"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  *RPCError       `json:"error,omitempty"`
+	Method string           `json:"method,omitempty"`
+	Params json.RawMessage  `json:"params,omitempty"`
+	Result json.RawMessage  `json:"result,omitempty"`
+	Error  *RPCError        `json:"error,omitempty"`
 }
 
 // RPCError is the JSON-RPC error payload shape used by codex app-server.
@@ -159,6 +162,7 @@ func (c *Client) Start(ctx context.Context, clientName string, clientVersion str
 
 	if err := c.initialize(ctx, clientName, clientVersion); err != nil {
 		_ = c.Close()
+		go func() { _ = c.Wait() }()
 		return err
 	}
 	return nil
@@ -177,6 +181,7 @@ func (c *Client) Close() error {
 	}
 	c.closed = true
 	cmd := c.cmd
+	stdin := c.stdin
 	pending := c.pending
 	c.pending = make(map[int64]chan rpcResponse)
 	c.mu.Unlock()
@@ -188,6 +193,9 @@ func (c *Client) Close() error {
 		}
 	}
 
+	if stdin != nil {
+		_ = stdin.Close()
+	}
 	if cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Kill()
 	}
@@ -313,10 +321,30 @@ func (c *Client) readStdout() {
 		return
 	}
 
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), stdoutScannerMaxToken)
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	br := bufio.NewReaderSize(r, 64*1024)
+	for {
+		line, tooLong, err := readJSONLLine(br, stdoutMaxLineBytes)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if isExpectedStreamCloseError(err) {
+				if debug {
+					logger.Debugf("app-server: stdout stream closed: %v", err)
+				}
+				break
+			}
+			logger.Errorf("app-server: stdout stream ended with error: %v", err)
+			break
+		}
+		if tooLong {
+			logger.Warnf("app-server: dropped oversized JSONL message (> %d bytes)", stdoutMaxLineBytes)
+			continue
+		}
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+
 		var msg rpcMessage
 		if err := json.Unmarshal(line, &msg); err != nil {
 			logger.Warnf("app-server: dropped invalid JSONL message (len=%d): %v", len(line), err)
@@ -346,14 +374,12 @@ func (c *Client) readStdout() {
 		}
 
 		if debug {
-			logger.Debugf("app-server: ignored message: %s", string(line))
+			logger.Debugf("app-server: ignored message (bytes=%d)", len(line))
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		logger.Errorf("app-server: stdout stream ended with error: %v", err)
-	}
 	_ = c.Close()
+	go func() { _ = c.Wait() }()
 }
 
 // readStderr captures a bounded tail of stderr for diagnostics.
@@ -496,4 +522,63 @@ func stringsTrim(s string) string {
 		return s
 	}
 	return s[i:j]
+}
+
+// isExpectedStreamCloseError reports whether err is a benign read error that can
+// occur when shutting down the app-server (for example when cmd.Wait closes the
+// stdout pipe while the read goroutine is still unwinding).
+func isExpectedStreamCloseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrClosed) {
+		return true
+	}
+	return errors.Is(err, io.ErrClosedPipe)
+}
+
+// readJSONLLine reads a single newline-delimited record from r. If the line
+// exceeds maxBytes, the bytes are discarded and tooLong is returned as true.
+func readJSONLLine(r *bufio.Reader, maxBytes int) (line []byte, tooLong bool, err error) {
+	if r == nil {
+		return nil, false, io.EOF
+	}
+
+	if maxBytes <= 0 {
+		maxBytes = 1
+	}
+
+	var b bytes.Buffer
+	for {
+		chunk, readErr := r.ReadSlice('\n')
+		if len(chunk) > 0 && !tooLong {
+			if b.Len()+len(chunk) <= maxBytes {
+				_, _ = b.Write(chunk)
+			} else {
+				tooLong = true
+			}
+		}
+
+		if readErr == nil {
+			break
+		}
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
+		}
+		if errors.Is(readErr, io.EOF) {
+			if b.Len() == 0 && len(chunk) == 0 {
+				return nil, tooLong, io.EOF
+			}
+			break
+		}
+		return nil, tooLong, readErr
+	}
+
+	if tooLong {
+		return nil, true, nil
+	}
+
+	raw := b.Bytes()
+	raw = bytes.TrimRight(raw, "\n")
+	return raw, false, nil
 }

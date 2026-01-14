@@ -175,7 +175,7 @@ type Engine struct {
 	remoteExitErr   *error
 	remoteSessionID string
 	remoteTurnID    string
-	remoteThinking  bool
+	remoteWorking   bool
 	remoteToolNames map[string]string
 
 	waitOnce sync.Once
@@ -288,7 +288,7 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 
 	e.startRemoteTurn()
 	nowMs := time.Now().UnixMilli()
-	e.setRemoteThinking(true, nowMs)
+	e.setRemoteWorking(true, nowMs)
 
 	meta := mergeClaudeMessageMeta(msg.Meta, cfg)
 	return bridge.SendUserMessage(msg.Text, meta)
@@ -651,6 +651,15 @@ func (e *Engine) handleRemoteBridgeMessage(msg *claude.RemoteMessage) error {
 		return nil
 	}
 
+	// Claude's stream-json bridge emits a `type:"result"` message when a turn is
+	// complete. Treat this as the authoritative "turn ended" boundary so
+	// mobile clients can keep "Stop" visible for the full turn (including
+	// streamed assistant tokens) without transcript heuristics.
+	if msg.Type == "result" {
+		e.setRemoteWorking(false, time.Now().UnixMilli())
+		return nil
+	}
+
 	// Capture a stable resume token for remote mode. The bridge emits a "system"
 	// init message with a session_id once Claude has started (or resumed).
 	if msg.Type == "system" && msg.Subtype == "init" {
@@ -826,9 +835,9 @@ func (e *Engine) startRemoteTurn() {
 	e.mu.Unlock()
 }
 
-// setRemoteThinking updates the cached remote thinking state and emits
-// best-effort EvThinking and EvUIEvent updates.
-func (e *Engine) setRemoteThinking(thinking bool, atMs int64) {
+// setRemoteWorking updates the cached remote working state and emits
+// best-effort EvWorking and EvUIEvent updates.
+func (e *Engine) setRemoteWorking(working bool, atMs int64) {
 	if e == nil {
 		return
 	}
@@ -837,15 +846,15 @@ func (e *Engine) setRemoteThinking(thinking bool, atMs int64) {
 	}
 
 	e.mu.Lock()
-	if e.remoteThinking == thinking {
+	if e.remoteWorking == working {
 		e.mu.Unlock()
 		return
 	}
-	e.remoteThinking = thinking
+	e.remoteWorking = working
 	turnID := e.remoteTurnID
 	e.mu.Unlock()
 
-	e.tryEmit(agentengine.EvThinking{Mode: agentengine.ModeRemote, Thinking: thinking, AtMs: atMs})
+	e.tryEmit(agentengine.EvWorking{Mode: agentengine.ModeRemote, Working: working, AtMs: atMs})
 
 	if strings.TrimSpace(turnID) == "" {
 		return
@@ -854,7 +863,7 @@ func (e *Engine) setRemoteThinking(thinking bool, atMs int64) {
 	phase := agentengine.UIEventPhaseUpdate
 	status := agentengine.UIEventStatusRunning
 	brief := "Thinking…"
-	if !thinking {
+	if !working {
 		phase = agentengine.UIEventPhaseEnd
 		status = agentengine.UIEventStatusOK
 		brief = ""
@@ -893,12 +902,11 @@ func (e *Engine) emitRemoteUIEventsFromRaw(raw []byte, nowMs int64) {
 		blockType := normalizeClaudeBlockType(block.Type)
 		switch blockType {
 		case "text":
-			if strings.TrimSpace(block.Text) != "" && msg.Role == "assistant" {
-				e.setRemoteThinking(false, nowMs)
-			}
+			// Do not clear busy/thinking on assistant text. "thinking" (busy) is
+			// tied to durable turn boundaries, and Claude streams text mid-turn.
 		case "thinking":
 			// Do not forward thinking content; treat it as a generic busy signal.
-			e.setRemoteThinking(true, nowMs)
+			e.setRemoteWorking(true, nowMs)
 		case "tool-use":
 			e.emitClaudeToolUIStart(block, nowMs)
 		case "tool-result":

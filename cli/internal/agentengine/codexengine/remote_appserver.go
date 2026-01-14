@@ -149,7 +149,7 @@ func (e *Engine) openAppServerThread(
 			"model":          model,
 			"cwd":            e.workDir,
 			"approvalPolicy": appServerApprovalPolicyNever,
-			"sandbox": sandboxName(permissionMode),
+			"sandbox":        sandboxName(permissionMode),
 		})
 	}
 	if err != nil {
@@ -171,6 +171,7 @@ func (e *Engine) startRemoteTurnViaAppServer(ctx context.Context, msg agentengin
 		ctx = context.Background()
 	}
 
+	nowMs := time.Now().UnixMilli()
 	e.mu.Lock()
 	client := e.remoteAppServer
 	threadID := strings.TrimSpace(e.remoteThreadID)
@@ -178,27 +179,14 @@ func (e *Engine) startRemoteTurnViaAppServer(ctx context.Context, msg agentengin
 	model := strings.TrimSpace(e.remoteModel)
 	effort := strings.TrimSpace(e.remoteReasoningEffort)
 	permissionMode := normalizePermissionMode(e.remotePermissionMode)
-	busy := strings.TrimSpace(e.remoteActiveTurnID) != ""
 	debug := e.debug
-	if enabled && !busy {
-		// Reserve the slot so concurrent sends fail fast even if the app-server is
-		// slow to respond.
-		e.remoteActiveTurnID = "pending"
-	}
+	waitCh := e.remoteTurnStartedCh
 	e.mu.Unlock()
 
 	if !enabled {
 		return fmt.Errorf("codex remote mode not active")
 	}
-	if busy {
-		return nil
-	}
 	if client == nil || threadID == "" {
-		e.mu.Lock()
-		if e.remoteActiveTurnID == "pending" {
-			e.remoteActiveTurnID = ""
-		}
-		e.mu.Unlock()
 		return fmt.Errorf("codex app-server not initialized")
 	}
 
@@ -244,34 +232,29 @@ func (e *Engine) startRemoteTurnViaAppServer(ctx context.Context, msg agentengin
 		if debug {
 			logger.Debugf("codex: turn/start failed: %v", err)
 		}
-		e.mu.Lock()
-		if e.remoteActiveTurnID == "pending" {
-			e.remoteActiveTurnID = ""
-		}
-		e.mu.Unlock()
 		return err
 	}
 	if debug {
 		logger.Debugf("codex: turn/start ok (bytes=%d)", len(raw))
 	}
 
-	turnID := parseTurnIDFromResult(raw)
-	if turnID == "" {
-		e.mu.Lock()
-		if e.remoteActiveTurnID == "pending" {
-			e.remoteActiveTurnID = ""
-		}
-		e.mu.Unlock()
-		return fmt.Errorf("turn/start returned empty turn id")
+	if waitCh == nil {
+		return nil
 	}
 
-	nowMs := time.Now().UnixMilli()
-	e.mu.Lock()
-	e.remoteActiveTurnID = turnID
-	e.startRemoteTurnLocked(turnID)
-	e.mu.Unlock()
-	e.setRemoteThinking(true, nowMs)
-	return nil
+	// `turn/start` is an RPC acknowledgement only; busy/working boundaries are
+	// driven by the corresponding `turn/started` / `turn/completed` notifications.
+	timer := time.NewTimer(remoteTurnStartedAckTimeout)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-waitCh:
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("timed out waiting for turn/started (after turn/start atMs=%d)", nowMs)
+	}
 }
 
 // interruptRemoteTurn requests canceling the active turn via turn/interrupt.
@@ -289,7 +272,7 @@ func (e *Engine) interruptRemoteTurn(ctx context.Context) error {
 	turnID := strings.TrimSpace(e.remoteActiveTurnID)
 	e.mu.Unlock()
 
-	if client == nil || threadID == "" || turnID == "" || turnID == "pending" {
+	if client == nil || threadID == "" || turnID == "" {
 		return nil
 	}
 
@@ -363,54 +346,66 @@ func (e *Engine) handleThreadStarted(params json.RawMessage) {
 
 // handleTurnStarted sets busy/thinking state from turn/started.
 func (e *Engine) handleTurnStarted(params json.RawMessage) {
-	type payload struct {
-		Turn struct {
-			ID string `json:"id"`
-		} `json:"turn"`
-	}
-	var p payload
-	if err := json.Unmarshal(params, &p); err != nil {
-		return
-	}
-	turnID := strings.TrimSpace(p.Turn.ID)
+	turnID := parseTurnIDFromParams(params)
 	if turnID == "" {
 		return
+	}
+
+	e.mu.Lock()
+	debug := e.debug
+	prev := e.remoteActiveTurnID
+	e.mu.Unlock()
+	if debug {
+		logger.Debugf("codex: notify turn/started id=%q (prevActive=%q)", turnID, strings.TrimSpace(prev))
 	}
 
 	nowMs := time.Now().UnixMilli()
 	e.mu.Lock()
 	e.remoteActiveTurnID = turnID
 	e.startRemoteTurnLocked(turnID)
+	if e.remoteTurnStartedCh != nil {
+		close(e.remoteTurnStartedCh)
+	}
+	e.remoteTurnStartedCh = make(chan struct{})
 	e.mu.Unlock()
-	e.setRemoteThinking(true, nowMs)
+	e.updateRemoteWorkingFromState(nowMs)
 }
 
 // handleTurnCompleted clears busy/thinking state from turn/completed.
 func (e *Engine) handleTurnCompleted(params json.RawMessage) {
-	type payload struct {
-		Turn struct {
-			ID     string `json:"id"`
-			Status string `json:"status"`
-		} `json:"turn"`
-	}
-	var p payload
-	if err := json.Unmarshal(params, &p); err != nil {
+	turnID := parseTurnIDFromParams(params)
+	if turnID == "" {
+		e.mu.Lock()
+		debug := e.debug
+		e.mu.Unlock()
+		if debug {
+			logger.Debugf("codex: dropped turn/completed without turn id (bytes=%d)", len(params))
+		}
 		return
 	}
-	turnID := strings.TrimSpace(p.Turn.ID)
 	nowMs := time.Now().UnixMilli()
 
 	e.mu.Lock()
-	if turnID != "" && e.remoteActiveTurnID == turnID {
-		e.remoteActiveTurnID = ""
-	} else if turnID == "" {
-		e.remoteActiveTurnID = ""
+	debug := e.debug
+	prev := e.remoteActiveTurnID
+	if strings.TrimSpace(prev) == "" {
+		e.mu.Unlock()
+		if debug {
+			logger.Debugf("codex: notify turn/completed id=%q (no active turn)", turnID)
+		}
+		return
 	}
+	if prev != turnID {
+		e.mu.Unlock()
+		if debug {
+			logger.Debugf("codex: notify turn/completed id=%q (active=%q) ignored", turnID, strings.TrimSpace(prev))
+		}
+		return
+	}
+	e.remoteActiveTurnID = ""
 	e.mu.Unlock()
 
-	// Always clear thinking when the turn completes; clients rely on this as the
-	// authoritative idle signal.
-	e.setRemoteThinking(false, nowMs)
+	e.updateRemoteWorkingFromState(nowMs)
 }
 
 // handleItemStarted emits a best-effort UI event for tool-like items.
@@ -426,12 +421,24 @@ func (e *Engine) handleItemStarted(params json.RawMessage) {
 		return
 	}
 
+	// Track all in-flight items, even ones we don't render in the mobile UI.
+	//
+	// These items may complete after turn/completed, but Delight treats
+	// turn/started and turn/completed as the busy/working boundaries. Item
+	// tracking is retained for transcript rendering only.
+	e.mu.Lock()
+	if e.remoteInFlightItems == nil {
+		e.remoteInFlightItems = make(map[string]struct{})
+	}
+	e.remoteInFlightItems[itemID] = struct{}{}
+	e.mu.Unlock()
+
 	if itemType == appserver.ItemTypeAgentMessage {
 		e.mu.Lock()
 		if e.remoteAgentMessageItems == nil {
-			e.remoteAgentMessageItems = make(map[string]string)
+			e.remoteAgentMessageItems = make(map[string]*remoteTextAccumulator)
 		}
-		e.remoteAgentMessageItems[itemID] = ""
+		e.remoteAgentMessageItems[itemID] = &remoteTextAccumulator{}
 		e.mu.Unlock()
 		return
 	}
@@ -470,9 +477,14 @@ func (e *Engine) handleAgentMessageDelta(params json.RawMessage) {
 
 	e.mu.Lock()
 	if e.remoteAgentMessageItems == nil {
-		e.remoteAgentMessageItems = make(map[string]string)
+		e.remoteAgentMessageItems = make(map[string]*remoteTextAccumulator)
 	}
-	e.remoteAgentMessageItems[itemID] = e.remoteAgentMessageItems[itemID] + p.Delta
+	acc := e.remoteAgentMessageItems[itemID]
+	if acc == nil {
+		acc = &remoteTextAccumulator{}
+		e.remoteAgentMessageItems[itemID] = acc
+	}
+	acc.Append(p.Delta)
 	e.mu.Unlock()
 }
 
@@ -489,11 +501,22 @@ func (e *Engine) handleItemCompleted(params json.RawMessage) {
 		return
 	}
 
+	nowMs := time.Now().UnixMilli()
+
+	// Remove from the in-flight set regardless of whether we render the item.
+	e.mu.Lock()
+	if e.remoteInFlightItems != nil {
+		delete(e.remoteInFlightItems, itemID)
+	}
+	e.mu.Unlock()
+
 	if itemType == appserver.ItemTypeAgentMessage {
 		text := ""
 		e.mu.Lock()
 		if e.remoteAgentMessageItems != nil {
-			text = e.remoteAgentMessageItems[itemID]
+			if acc := e.remoteAgentMessageItems[itemID]; acc != nil {
+				text = acc.String()
+			}
 			delete(e.remoteAgentMessageItems, itemID)
 		}
 		e.mu.Unlock()
@@ -522,7 +545,7 @@ func (e *Engine) handleItemCompleted(params json.RawMessage) {
 			Status:        agentengine.UIEventStatusOK,
 			BriefMarkdown: brief,
 			FullMarkdown:  full,
-			AtMs:          time.Now().UnixMilli(),
+			AtMs:          nowMs,
 		})
 		return
 	}
@@ -550,7 +573,7 @@ func (e *Engine) handleItemCompleted(params json.RawMessage) {
 		Status:        status,
 		BriefMarkdown: brief,
 		FullMarkdown:  full,
-		AtMs:          time.Now().UnixMilli(),
+		AtMs:          nowMs,
 	})
 }
 
@@ -574,30 +597,119 @@ func (e *Engine) handleTurnError(params json.RawMessage) {
 
 // parseThreadIDFromResult extracts a thread.id value from a request result payload.
 func parseThreadIDFromResult(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
 	type payload struct {
 		Thread struct {
 			ID string `json:"id"`
 		} `json:"thread"`
 	}
 	var p payload
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := json.Unmarshal(raw, &p); err == nil {
+		if id := strings.TrimSpace(p.Thread.ID); id != "" {
+			return id
+		}
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(p.Thread.ID)
+
+	if threadObj, ok := decoded["thread"].(map[string]any); ok {
+		if id := strings.TrimSpace(stringValue(threadObj["id"])); id != "" {
+			return id
+		}
+	}
+
+	for _, key := range []string{"threadId", "threadID", "thread_id", "id"} {
+		if id := strings.TrimSpace(stringValue(decoded[key])); id != "" {
+			return id
+		}
+	}
+
+	return ""
 }
 
 // parseTurnIDFromResult extracts a turn.id value from a request result payload.
 func parseTurnIDFromResult(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
 	type payload struct {
 		Turn struct {
 			ID string `json:"id"`
 		} `json:"turn"`
 	}
 	var p payload
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := json.Unmarshal(raw, &p); err == nil {
+		if id := strings.TrimSpace(p.Turn.ID); id != "" {
+			return id
+		}
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(p.Turn.ID)
+
+	if turnObj, ok := decoded["turn"].(map[string]any); ok {
+		if id := strings.TrimSpace(stringValue(turnObj["id"])); id != "" {
+			return id
+		}
+	}
+
+	for _, key := range []string{"turnId", "turnID", "turn_id", "id"} {
+		if id := strings.TrimSpace(stringValue(decoded[key])); id != "" {
+			return id
+		}
+	}
+
+	return ""
+}
+
+// parseTurnIDFromParams extracts a best-effort turn id from app-server
+// notification params (turn/*).
+func parseTurnIDFromParams(params json.RawMessage) string {
+	if len(params) == 0 {
+		return ""
+	}
+
+	// Prefer the documented shape: {"turn":{"id":"..."}}
+	type nested struct {
+		Turn struct {
+			ID string `json:"id"`
+		} `json:"turn"`
+	}
+	var n nested
+	if err := json.Unmarshal(params, &n); err == nil {
+		if id := strings.TrimSpace(n.Turn.ID); id != "" {
+			return id
+		}
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(params, &decoded); err != nil {
+		return ""
+	}
+
+	if turnObj, ok := decoded["turn"].(map[string]any); ok {
+		if id := strings.TrimSpace(stringValue(turnObj["id"])); id != "" {
+			return id
+		}
+	}
+
+	// Fall back to other common JSON conventions.
+	for _, key := range []string{"turnId", "turnID", "turn_id", "id"} {
+		if id := strings.TrimSpace(stringValue(decoded[key])); id != "" {
+			return id
+		}
+	}
+
+	return ""
 }
 
 // parseItemFromParams extracts the `item` object from an item/* notification payload.

@@ -40,6 +40,6 @@ func (m *Manager) handleRuntimeCommand(cmd runtime.Command) {
 
 	switch c := cmd.(type) {
 	case runtime.EmitActivityCommand:
-		m.broadcastThinking(c.Thinking)
+		m.broadcastWorking(c.Working)
 	}
 }

@@ -38,7 +38,7 @@ func SessionAlive(ctx context.Context, deps Deps, auth AuthContext, req protocol
 
 	// Persist turn boundaries so reconnecting clients can recover accurate busy
 	// state even if they missed ephemeral events while backgrounded.
-	if req.Thinking {
+	if req.Working {
 		if err := deps.Sessions().EnsureSessionTurnOpen(ctx, req.SID, t); err != nil {
 			logger.Warnf("Failed to persist session turn start: %v", err)
 		}
@@ -53,7 +53,7 @@ func SessionAlive(ctx context.Context, deps Deps, auth AuthContext, req protocol
 			Type:     "activity",
 			ID:       req.SID,
 			Active:   true,
-			Thinking: req.Thinking,
+			Working:  req.Working,
 			ActiveAt: t,
 		}),
 	})

@@ -587,7 +587,6 @@ func (c *Client) sendMessageWithLocalID(sessionID string, localID string, rawRec
 	}()
 	c.mu.Lock()
 	socket := c.userSocket
-	state := c.sessionFSM[sessionID]
 	c.mu.Unlock()
 
 	if socket == nil {
@@ -597,18 +596,19 @@ func (c *Client) sendMessageWithLocalID(sessionID string, localID string, rawRec
 	// Enforce phone-send rules:
 	// - phone can only send while the session is online and phone-controlled (remote mode)
 	// - phone cannot send while a turn is already in-flight
+	//
+	// Always consult a recent session snapshot, since `working` state is derived
+	// from persisted server turn boundaries and can become stale if callers don't
+	// poll frequently.
+	state, ok, err := c.ensureSessionFSM(sessionID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("cannot send: unknown session")
+	}
 	if state.state != "remote" {
-		// Refresh state once if we don't have a current snapshot.
-		refreshed, ok, err := c.ensureSessionFSM(sessionID)
-		if err != nil {
-			return err
-		}
-		if ok && refreshed.state != "remote" {
-			return fmt.Errorf("cannot send: session %s", refreshed.state)
-		}
-		if !ok {
-			return fmt.Errorf("cannot send: unknown session")
-		}
+		return fmt.Errorf("cannot send: session %s", state.state)
 	}
 	if state.working {
 		return fmt.Errorf("cannot send: session working")
@@ -692,7 +692,7 @@ func (c *Client) listSessions() (resp string, err error) {
 
 				agentState, _ := session["agentState"].(string)
 				active, _ := session["active"].(bool)
-				working, _ := session["thinking"].(bool)
+				working, _ := session["working"].(bool)
 				updatedAt := int64(0)
 				switch v := session["updatedAt"].(type) {
 				case float64:
@@ -1014,7 +1014,82 @@ func (c *Client) handleEphemeral(data map[string]interface{}) {
 			logPanic("handleEphemeral", r)
 		}
 	}()
+	c.applyEphemeralToSessionFSM(data)
 	c.emitUpdate("", data)
+}
+
+// applyEphemeralToSessionFSM updates the cached derived session UI state from
+// websocket ephemerals so mobile clients can render control/busy state without
+// polling ListSessions.
+func (c *Client) applyEphemeralToSessionFSM(data map[string]interface{}) {
+	if data == nil {
+		return
+	}
+
+	eventType, _ := data["type"].(string)
+	switch eventType {
+	case "activity":
+		c.applyEphemeralActivityToSessionFSM(data)
+	default:
+		return
+	}
+}
+
+// applyEphemeralActivityToSessionFSM updates session FSM snapshots from
+// EphemeralActivityPayload values.
+func (c *Client) applyEphemeralActivityToSessionFSM(data map[string]interface{}) {
+	sessionID, _ := data["id"].(string)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+
+	active, ok := data["active"].(bool)
+	if !ok {
+		return
+	}
+	workingValue, ok := data["working"].(bool)
+	if !ok {
+		return
+	}
+
+	working := workingValue
+	if !active {
+		working = false
+	}
+
+	now := time.Now().UnixMilli()
+
+	c.mu.Lock()
+	prev := c.sessionFSM[sessionID]
+	socket := c.userSocket
+	c.mu.Unlock()
+
+	connected := prev.connected
+	if socket != nil {
+		connected = socket.IsConnected()
+	}
+	if prev.state == "" && connected {
+		// If we haven't seen ListSessions yet, treat the event as evidence that the
+		// session exists and the socket is connected.
+		prev.connected = true
+	}
+
+	fsm, ui := deriveSessionUI(now, connected, active, working, "", &prev)
+	fsm.updatedAt = prev.updatedAt
+	fsm.switching = false
+	fsm.transition = ""
+	fsm.switchingAt = 0
+	fsm.uiJSON = sessionUIJSON(ui)
+
+	c.mu.Lock()
+	prevUI := prev.uiJSON
+	c.sessionFSM[sessionID] = fsm
+	c.mu.Unlock()
+
+	if prevUI != fsm.uiJSON {
+		c.emitUpdate(sessionID, buildSessionUIUpdate(now, sessionID, ui))
+	}
 }
 
 // handleUpdate decrypts message payloads and maintains derived UI state before emitting.
@@ -1274,7 +1349,12 @@ func (c *Client) doRequest(method, path string, body []byte) (resp []byte, err e
 		}
 	}()
 	// Best-effort proactive refresh for authenticated endpoints.
-	if !strings.HasPrefix(path, "/v1/auth") {
+	//
+	// NOTE: Some auth endpoints are public (e.g. /v1/auth/challenge), but others
+	// are protected (e.g. /v1/auth/response). Avoid blanket-skipping refresh for
+	// all /v1/auth routes or token-expired clients will fail to approve terminal
+	// auth and appear "stuck" in the UI.
+	if !isUnauthenticatedAuthPath(path) {
 		_ = c.refreshTokenIfNeeded(false)
 	}
 
@@ -1325,7 +1405,7 @@ func (c *Client) doRequest(method, path string, body []byte) (resp []byte, err e
 	}
 
 	// If auth failed, try a forced refresh once and retry.
-	if status == http.StatusUnauthorized && !strings.HasPrefix(path, "/v1/auth") {
+	if status == http.StatusUnauthorized && !isUnauthenticatedAuthPath(path) {
 		if refreshErr := c.refreshTokenIfNeeded(true); refreshErr == nil {
 			c.mu.Lock()
 			token = strings.TrimSpace(c.token)
@@ -1342,4 +1422,18 @@ func (c *Client) doRequest(method, path string, body []byte) (resp []byte, err e
 	}
 
 	return respBody, nil
+}
+
+func isUnauthenticatedAuthPath(path string) bool {
+	path = strings.TrimSpace(path)
+	switch path {
+	case "/v1/auth",
+		"/v1/auth/challenge",
+		"/v1/auth/request",
+		"/v1/auth/request/status",
+		"/v1/auth/account/request":
+		return true
+	default:
+		return false
+	}
 }

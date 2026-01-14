@@ -88,6 +88,55 @@ func TestDeriveSessionUI_ModeAndWorking(t *testing.T) {
 	require.Equal(t, false, ui["working"])
 }
 
+func TestDeriveSessionUI_PreservesWorkingWhenOffline(t *testing.T) {
+	t.Parallel()
+
+	now := int64(1)
+
+	_, ui := deriveSessionUI(now, true, false, true, `{"controlledByUser":false}`, nil)
+	require.Equal(t, false, ui["online"])
+	require.Equal(t, "", ui["mode"])
+	require.Equal(t, true, ui["working"])
+}
+
+func TestDeriveSessionUI_StickyWorkingGuardsListSessionsJitter(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UnixMilli()
+
+	cached := &sessionFSMState{
+		state:            "remote",
+		online:           true,
+		connected:        true,
+		controlledByUser: false,
+		working:          true,
+		workingAt:        now - 250,
+	}
+
+	fsm, ui := deriveSessionUI(now, true, true, false, `{"controlledByUser":false}`, cached)
+	require.True(t, fsm.working)
+	require.Equal(t, true, ui["working"])
+}
+
+func TestDeriveSessionUI_StickyWorkingExpires(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UnixMilli()
+
+	cached := &sessionFSMState{
+		state:            "remote",
+		online:           true,
+		connected:        true,
+		controlledByUser: false,
+		working:          true,
+		workingAt:        now - int64((sessionFSMStaleAfter + 250*time.Millisecond).Milliseconds()),
+	}
+
+	fsm, ui := deriveSessionUI(now, true, true, false, `{"controlledByUser":false}`, cached)
+	require.False(t, fsm.working)
+	require.Equal(t, false, ui["working"])
+}
+
 func TestComputeSessionFSM_Table(t *testing.T) {
 	t.Parallel()
 

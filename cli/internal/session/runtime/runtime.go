@@ -125,18 +125,18 @@ func (r *Runtime) apply(evt Event) []Command {
 	defer r.mu.Unlock()
 
 	switch e := evt.(type) {
-	case SetThinkingEvent:
-		if r.state.Thinking == e.Thinking {
+	case SetWorkingEvent:
+		if r.state.Working == e.Working {
 			return nil
 		}
-		r.state.Thinking = e.Thinking
+		r.state.Working = e.Working
 		if r.state.SessionID == "" {
 			return nil
 		}
 		return []Command{
 			EmitActivityCommand{
 				SessionID:  r.state.SessionID,
-				Thinking:   e.Thinking,
+				Working:    e.Working,
 				Active:     true,
 				ActiveAtMs: e.AtMs,
 			},

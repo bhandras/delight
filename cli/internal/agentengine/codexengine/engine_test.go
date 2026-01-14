@@ -1,8 +1,10 @@
 package codexengine
 
 import (
+	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -105,6 +107,69 @@ func TestBuildLocalCodexCommandYoloDisablesApprovals(t *testing.T) {
 	}
 }
 
+// TestStartLocalRestoresForegroundWhenCodexExitsEarly ensures we restore the tty
+// foreground process group when a local Codex subprocess exits before the engine
+// takes ownership of foreground restoration.
+func TestStartLocalRestoresForegroundWhenCodexExitsEarly(t *testing.T) {
+	tmp := t.TempDir()
+
+	prevDelay := localStartupExitProbeDelay
+	localStartupExitProbeDelay = 3 * time.Second
+	t.Cleanup(func() { localStartupExitProbeDelay = prevDelay })
+
+	binDir := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+
+	codexPath := filepath.Join(binDir, "codex")
+	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nexit 2\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile(codex) returned error: %v", err)
+	}
+
+	rolloutPath := filepath.Join(tmp, "rollout.jsonl")
+	if err := os.WriteFile(rolloutPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(rollout) returned error: %v", err)
+	}
+
+	acquired := false
+	restored := false
+	prevAcquire := acquireTTYForegroundFn
+	acquireTTYForegroundFn = func(cmd *exec.Cmd) func() {
+		acquired = true
+		_ = cmd
+		return func() { restored = true }
+	}
+	t.Cleanup(func() { acquireTTYForegroundFn = prevAcquire })
+
+	prevBuild := buildLocalCodexCommandFn
+	buildLocalCodexCommandFn = func(resumeToken string, cfg agentengine.AgentConfig) *exec.Cmd {
+		_ = resumeToken
+		_ = cfg
+		return exec.Command(codexPath)
+	}
+	t.Cleanup(func() { buildLocalCodexCommandFn = prevBuild })
+
+	engine := New(tmp, nil, false)
+	err := engine.startLocal(context.Background(), agentengine.EngineStartSpec{
+		WorkDir:     tmp,
+		ResumeToken: "resume-1",
+		RolloutPath: rolloutPath,
+		Mode:        agentengine.ModeLocal,
+		Agent:       agentengine.AgentCodex,
+		Config:      agentengine.AgentConfig{},
+	})
+	if err == nil {
+		t.Fatalf("startLocal unexpectedly succeeded")
+	}
+	if !acquired {
+		t.Fatalf("expected startLocal to acquire tty foreground restore closure")
+	}
+	if !restored {
+		t.Fatalf("expected startLocal to restore tty foreground on early exit")
+	}
+}
+
 func TestHandleRolloutEventEmitsToolUIEvents(t *testing.T) {
 	engine := New("/tmp", nil, false)
 
@@ -168,6 +233,23 @@ func TestHandleRolloutEventEmitsToolUIEvents(t *testing.T) {
 	}
 	if strings.Contains(ui.FullMarkdown, "Args:") {
 		t.Fatalf("did not expect args block in full markdown: %q", ui.FullMarkdown)
+	}
+}
+
+// TestRemoteTextAccumulatorTruncates verifies streamed remote agent messages are
+// capped to avoid unbounded memory usage.
+func TestRemoteTextAccumulatorTruncates(t *testing.T) {
+	var acc remoteTextAccumulator
+
+	chunk := bytes.Repeat([]byte("x"), 256*1024)
+	for i := 0; i < 32; i++ {
+		acc.Append(string(chunk))
+	}
+	acc.Append("extra")
+
+	text := acc.String()
+	if !strings.Contains(text, "truncated") {
+		t.Fatalf("expected truncation notice, got len=%d", len(text))
 	}
 }
 

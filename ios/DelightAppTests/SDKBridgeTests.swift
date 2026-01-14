@@ -43,7 +43,7 @@ final class SDKBridgeTests: XCTestCase {
         waitForExpectations(timeout: 1.0)
     }
 
-    func testHandleActivityUpdateThinking() {
+    func testHandleActivityUpdateUpdatesActiveFlag() {
         let model = HarnessViewModel()
         model.sessions = [
             SessionSummary(
@@ -56,23 +56,23 @@ final class SDKBridgeTests: XCTestCase {
                 subtitle: nil,
                 metadata: nil,
                 agentState: nil,
-                uiState: nil,
-                thinking: false
+                uiState: nil
             )
         ]
         let json = """
-        {"type":"activity","id":"s1","thinking":true}
+        {"type":"activity","id":"s1","active":false,"activeAt":123}
         """
         let expectation = expectation(description: "activity applied")
         model.handleActivityUpdate(json)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            XCTAssertEqual(model.sessions.first?.thinking, true)
+            XCTAssertEqual(model.sessions.first?.active, false)
+            XCTAssertEqual(model.sessions.first?.activeAt, 123)
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1.0)
     }
 
-    func testSessionUIUpdateOfflineClearsThinkingOverride() {
+    func testSessionUIUpdateOfflineUpdatesState() {
         let model = HarnessViewModel()
         model.sessions = [
             SessionSummary(
@@ -92,28 +92,24 @@ final class SDKBridgeTests: XCTestCase {
                     mode: "remote",
                     switching: false,
                     transition: ""
-                ),
-                thinking: false
+                )
             )
         ]
 
-        model.handleActivityUpdate("{\"type\":\"activity\",\"id\":\"s1\",\"thinking\":true}")
         let update = """
         {"body":{"t":"session-ui","sid":"s1","ui":{"connected":true,"online":false,"working":false,"mode":"","switching":false,"transition":""}}}
         """
 
-        let expectation = expectation(description: "offline clears thinking")
+        let expectation = expectation(description: "offline updates ui state")
         model.onUpdate(nil, updateJSON: update)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            XCTAssertFalse(model.isThinking(sessionID: "s1"))
             XCTAssertEqual(model.sessions.first?.uiState?.state, "offline")
-            XCTAssertEqual(model.sessions.first?.thinking, false)
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1.0)
     }
 
-    func testParseSessionsOfflineClearsThinkingOverride() {
+    func testParseSessionsOfflineUpdatesUIState() {
         let model = HarnessViewModel()
         model.sessions = [
             SessionSummary(
@@ -126,26 +122,24 @@ final class SDKBridgeTests: XCTestCase {
                 subtitle: nil,
                 metadata: nil,
                 agentState: nil,
-                uiState: nil,
-                thinking: false
+                uiState: nil
             )
         ]
 
-        model.handleActivityUpdate("{\"type\":\"activity\",\"id\":\"s1\",\"thinking\":true}")
         let sessionsJSON = """
         {"sessions":[{"id":"s1","updatedAt":1,"active":true,"activeAt":1,"metadata":"{\\"agent\\":\\"codex\\",\\"path\\":\\"/work/project\\",\\"host\\":\\"m2.local\\"}","ui":{"connected":true,"online":false,"working":false,"mode":"","switching":false,"transition":""}}]}
         """
 
-        let expectation = expectation(description: "parse sessions clears thinking")
+        let expectation = expectation(description: "parse sessions applies ui state")
         model.parseSessions(sessionsJSON)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            XCTAssertFalse(model.isThinking(sessionID: "s1"))
+            XCTAssertEqual(model.sessions.first?.uiState?.state, "offline")
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1.0)
     }
 
-    func testSessionUIUpdateConnectedFalseClearsThinkingOverride() {
+    func testSessionUIUpdateConnectedFalseUpdatesState() {
         let model = HarnessViewModel()
         model.sessions = [
             SessionSummary(
@@ -165,29 +159,25 @@ final class SDKBridgeTests: XCTestCase {
                     mode: "remote",
                     switching: false,
                     transition: ""
-                ),
-                thinking: false
+                )
             )
         ]
 
-        model.handleActivityUpdate("{\"type\":\"activity\",\"id\":\"s1\",\"thinking\":true}")
         let update = """
         {"body":{"t":"session-ui","sid":"s1","ui":{"connected":false,"online":true,"working":false,"mode":"remote","switching":false,"transition":""}}}
         """
 
-        let expectation = expectation(description: "connected=false clears thinking")
+        let expectation = expectation(description: "connected=false updates ui state")
         model.onUpdate(nil, updateJSON: update)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            XCTAssertFalse(model.isThinking(sessionID: "s1"))
             XCTAssertEqual(model.sessions.first?.uiState?.state, "disconnected")
             XCTAssertEqual(model.sessions.first?.uiState?.connected, false)
-            XCTAssertEqual(model.sessions.first?.thinking, false)
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1.0)
     }
 
-    func testParseSessionsConnectedFalseClearsThinkingOverride() {
+    func testParseSessionsConnectedFalseUpdatesUIState() {
         let model = HarnessViewModel()
         model.sessions = [
             SessionSummary(
@@ -200,20 +190,18 @@ final class SDKBridgeTests: XCTestCase {
                 subtitle: nil,
                 metadata: nil,
                 agentState: nil,
-                uiState: nil,
-                thinking: false
+                uiState: nil
             )
         ]
 
-        model.handleActivityUpdate("{\"type\":\"activity\",\"id\":\"s1\",\"thinking\":true}")
         let sessionsJSON = """
         {"sessions":[{"id":"s1","updatedAt":1,"active":true,"activeAt":1,"metadata":"{\\"agent\\":\\"codex\\",\\"path\\":\\"/work/project\\",\\"host\\":\\"m2.local\\"}","ui":{"connected":false,"online":true,"working":false,"mode":"remote","switching":false,"transition":""}}]}
         """
 
-        let expectation = expectation(description: "parse sessions clears thinking")
+        let expectation = expectation(description: "parse sessions applies ui state")
         model.parseSessions(sessionsJSON)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            XCTAssertFalse(model.isThinking(sessionID: "s1"))
+            XCTAssertEqual(model.sessions.first?.uiState?.connected, false)
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1.0)
@@ -255,8 +243,7 @@ final class SDKBridgeTests: XCTestCase {
                     mode: "remote",
                     switching: false,
                     transition: ""
-                ),
-                thinking: false
+                )
             )
         ]
         let json = """
@@ -297,8 +284,7 @@ final class SDKBridgeTests: XCTestCase {
                     mode: "remote",
                     switching: false,
                     transition: ""
-                ),
-                thinking: false
+                )
             )
         ]
         let json = """
@@ -336,8 +322,7 @@ final class SDKBridgeTests: XCTestCase {
                     permissionMode: nil,
                     requests: [:]
                 ),
-                uiState: nil,
-                thinking: false
+                uiState: nil
             )
         ]
         let json = """
@@ -382,8 +367,7 @@ final class SDKBridgeTests: XCTestCase {
                     mode: "remote",
                     switching: false,
                     transition: ""
-                ),
-                thinking: false
+                )
             )
         ]
         let json = """
@@ -401,7 +385,7 @@ final class SDKBridgeTests: XCTestCase {
         waitForExpectations(timeout: 1.0)
     }
 
-    func testUIEventThinkingStartSetsThinkingTrue() {
+    func testUIEventThinkingStartAddsTranscriptMessage() {
         let model = HarnessViewModel()
         model.sessionID = "s1"
         model.sessions = [
@@ -415,8 +399,7 @@ final class SDKBridgeTests: XCTestCase {
                 subtitle: nil,
                 metadata: nil,
                 agentState: nil,
-                uiState: nil,
-                thinking: false
+                uiState: nil
             )
         ]
 
@@ -424,17 +407,16 @@ final class SDKBridgeTests: XCTestCase {
         {"type":"ui.event","id":"s1","eventId":"thinking-1","kind":"thinking","phase":"start","status":"running","briefMarkdown":"Thinking…","fullMarkdown":"### Thinking\\n- step 1","atMs":123}
         """
 
-        let expectation = expectation(description: "thinking becomes true")
+        let expectation = expectation(description: "thinking ui event rendered")
         model.onUpdate(nil, updateJSON: json)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            XCTAssertEqual(model.sessions.first?.thinking, true)
             XCTAssertTrue(model.messages.contains(where: { $0.id == "ui-thinking-1" }))
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1.0)
     }
 
-    func testUIEventThinkingEndClearsThinkingAndRemovesMessage() {
+    func testUIEventThinkingEndRemovesMessageWhenEmpty() {
         let model = HarnessViewModel()
         model.sessionID = "s1"
         model.sessions = [
@@ -448,8 +430,7 @@ final class SDKBridgeTests: XCTestCase {
                 subtitle: nil,
                 metadata: nil,
                 agentState: nil,
-                uiState: nil,
-                thinking: true
+                uiState: nil
             )
         ]
 
@@ -460,11 +441,10 @@ final class SDKBridgeTests: XCTestCase {
         {"type":"ui.event","id":"s1","eventId":"thinking-1","kind":"thinking","phase":"end","status":"ok","briefMarkdown":"","fullMarkdown":"","atMs":124}
         """
 
-        let expectation = expectation(description: "thinking clears and message removed")
+        let expectation = expectation(description: "thinking message removed")
         model.onUpdate(nil, updateJSON: start)
         model.onUpdate(nil, updateJSON: end)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            XCTAssertEqual(model.sessions.first?.thinking, false)
             XCTAssertFalse(model.messages.contains(where: { $0.id == "ui-thinking-1" }))
             expectation.fulfill()
         }
@@ -485,16 +465,16 @@ final class SDKBridgeTests: XCTestCase {
                 subtitle: nil,
                 metadata: nil,
                 agentState: nil,
-                uiState: nil,
-                thinking: false
+                uiState: SessionUIState(
+                    connected: true,
+                    online: true,
+                    working: true,
+                    mode: "remote",
+                    switching: false,
+                    transition: ""
+                )
             )
         ]
-
-        // Simulate the phone marking the session as busy via an activity update.
-        let activityJSON = """
-        {"type":"activity","id":"s1","thinking":true}
-        """
-        model.onUpdate(nil, updateJSON: activityJSON)
 
         // Now simulate fetching messages after reconnect/sleep, where the newest
         // message is a completed assistant reply.
@@ -502,10 +482,10 @@ final class SDKBridgeTests: XCTestCase {
         {"messages":[{"id":"m1","createdAt":123,"message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}]}
         """
 
-        let expectation = expectation(description: "messages fetch does not clear thinking")
+        let expectation = expectation(description: "messages fetch does not clear working")
         model.parseMessages(messagesJSON)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            XCTAssertEqual(model.sessions.first?.thinking, true)
+            XCTAssertEqual(model.sessions.first?.uiState?.working, true)
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1.0)
@@ -614,8 +594,7 @@ final class SDKBridgeTests: XCTestCase {
                 subtitle: nil,
                 metadata: nil,
                 agentState: nil,
-                uiState: nil,
-                thinking: false
+                uiState: nil
             )
         ]
 
@@ -656,8 +635,7 @@ final class SDKBridgeTests: XCTestCase {
                 subtitle: nil,
                 metadata: nil,
                 agentState: nil,
-                uiState: nil,
-                thinking: false
+                uiState: nil
             )
         ]
 
@@ -687,8 +665,7 @@ final class SDKBridgeTests: XCTestCase {
                 subtitle: nil,
                 metadata: nil,
                 agentState: nil,
-                uiState: nil,
-                thinking: false
+                uiState: nil
             )
         ]
 
@@ -731,8 +708,7 @@ final class SDKBridgeTests: XCTestCase {
                 subtitle: nil,
                 metadata: nil,
                 agentState: nil,
-                uiState: nil,
-                thinking: false
+                uiState: nil
             )
         ]
 
@@ -781,34 +757,12 @@ final class SDKBridgeTests: XCTestCase {
 
         let state = TerminalDetailView.TerminalComposerState.make(
             ui: ui,
-            isThinking: false,
             controlledByDesktop: false
         )
 
         XCTAssertTrue(state.isInputEnabled)
         XCTAssertTrue(state.isHistoryEnabled)
         XCTAssertFalse(state.isShowingStop)
-    }
-
-    func testTerminalComposerStateBusyFromThinkingOverride() {
-        let ui = SessionUIState(
-            connected: true,
-            online: true,
-            working: false,
-            mode: "remote",
-            switching: false,
-            transition: ""
-        )
-
-        let state = TerminalDetailView.TerminalComposerState.make(
-            ui: ui,
-            isThinking: true,
-            controlledByDesktop: false
-        )
-
-        XCTAssertFalse(state.isInputEnabled)
-        XCTAssertTrue(state.isHistoryEnabled)
-        XCTAssertTrue(state.isShowingStop)
     }
 
     func testTerminalComposerStateBusyFromUIWorking() {
@@ -823,7 +777,6 @@ final class SDKBridgeTests: XCTestCase {
 
         let state = TerminalDetailView.TerminalComposerState.make(
             ui: ui,
-            isThinking: false,
             controlledByDesktop: false
         )
 
@@ -844,7 +797,6 @@ final class SDKBridgeTests: XCTestCase {
 
         let state = TerminalDetailView.TerminalComposerState.make(
             ui: ui,
-            isThinking: true,
             controlledByDesktop: true
         )
 

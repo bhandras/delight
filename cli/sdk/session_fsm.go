@@ -27,6 +27,7 @@ type sessionFSMState struct {
 	state            string
 	online           bool
 	working          bool
+	workingAt        int64
 	controlledByUser bool
 	connected        bool
 	switching        bool
@@ -86,9 +87,27 @@ func deriveSessionUI(
 		controlledByUser = cached.controlledByUser
 	}
 
+	workingAt := int64(0)
+	if cached != nil {
+		workingAt = cached.workingAt
+	}
+	if working {
+		if cached == nil || !cached.working {
+			workingAt = now
+		}
+	} else if cached != nil && cached.working {
+		// ListSessions (and other sources) can briefly report working=false even if the
+		// client has recently observed a turn in-flight via activity ephemerals.
+		// Keep working true for a short window to avoid UI flicker.
+		if workingAt > 0 && time.UnixMilli(now).Sub(time.UnixMilli(workingAt)) <= sessionFSMStaleAfter {
+			working = true
+		}
+	}
+
 	fsm := computeSessionFSM(connected, active, controlledByUser)
 	fsm.fetchedAt = now
 	fsm.working = working
+	fsm.workingAt = workingAt
 	if cached != nil {
 		fsm.updatedAt = cached.updatedAt
 		fsm.switching = cached.switching
@@ -120,9 +139,6 @@ func deriveSessionUI(
 
 	if !fsm.online {
 		mode = ""
-	}
-	if !fsm.online {
-		working = false
 	}
 
 	ui := map[string]any{

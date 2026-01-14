@@ -33,7 +33,7 @@ func DisconnectEffects(ctx context.Context, deps Deps, auth AuthContext, session
 			Type:     "activity",
 			ID:       sessionID,
 			Active:   false,
-			Thinking: false,
+			Working:  false,
 			ActiveAt: now.UnixMilli(),
 		}))
 	}

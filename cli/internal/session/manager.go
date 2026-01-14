@@ -53,7 +53,7 @@ type Manager struct {
 
 	workDir string
 
-	thinking bool
+	working bool
 	stopCh   chan struct{}
 
 	// Pending permission requests (for remote mode)
@@ -106,9 +106,9 @@ func NewManager(cfg *config.Config, token string, debug bool) (*Manager, error) 
 	}, nil
 }
 
-// IsThinking returns whether an agent is currently thinking.
-func (m *Manager) IsThinking() bool {
-	return m.thinking
+// IsWorking returns whether an agent is currently working.
+func (m *Manager) IsWorking() bool {
+	return m.working
 }
 
 // HandlePermissionResponse handles a permission response from the mobile app.
@@ -125,14 +125,14 @@ func (m *Manager) HandlePermissionResponse(requestID string, allow bool, message
 	))
 }
 
-// broadcastThinking broadcasts thinking state to connected clients.
-func (m *Manager) broadcastThinking(thinking bool) {
+// broadcastWorking broadcasts working state to connected clients.
+func (m *Manager) broadcastWorking(working bool) {
 	if m.wsClient != nil && m.wsClient.IsConnected() {
 		m.wsClient.EmitEphemeral(wire.EphemeralActivityPayload{
 			Type:     "activity",
 			ID:       m.sessionID,
 			Active:   true,
-			Thinking: thinking,
+			Working:  working,
 			ActiveAt: time.Now().UnixMilli(),
 		})
 	}

@@ -337,11 +337,23 @@ struct SessionSummary: Identifiable {
     let metadata: SessionMetadata?
     let agentState: SessionAgentState?
     let uiState: SessionUIState?
-    let thinking: Bool
 
-    /// updatingActivity returns a copy updated with activity and thinking flags.
-    func updatingActivity(active: Bool?, activeAt: Int64?, thinking: Bool?) -> SessionSummary {
-        SessionSummary(
+    /// updatingActivity returns a copy updated with activity flags.
+    func updatingActivity(active: Bool?, working: Bool?, activeAt: Int64?) -> SessionSummary {
+        let nextUIState: SessionUIState? = {
+            guard let uiState else { return nil }
+            guard let working else { return uiState }
+            return SessionUIState(
+                connected: uiState.connected,
+                online: uiState.online,
+                working: working,
+                mode: uiState.mode,
+                switching: uiState.switching,
+                transition: uiState.transition
+            )
+        }()
+
+        return SessionSummary(
             id: id,
             terminalID: terminalID,
             updatedAt: updatedAt,
@@ -351,8 +363,7 @@ struct SessionSummary: Identifiable {
             subtitle: subtitle,
             metadata: metadata,
             agentState: agentState,
-            uiState: uiState,
-            thinking: thinking ?? self.thinking
+            uiState: nextUIState
         )
     }
 }

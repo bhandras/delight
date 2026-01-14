@@ -299,41 +299,64 @@ func (h *AuthHandler) PostAuthResponse(c *gin.Context) {
 		return
 	}
 
-	// Try to update terminal_auth_requests first
-	err = h.queries.UpdateTerminalAuthResponse(c.Request.Context(), models.UpdateTerminalAuthResponseParams{
-		Response: sql.NullString{
-			String: req.Response,
-			Valid:  true,
-		},
-		ResponseAccountID: sql.NullString{
-			String: userIDStr,
-			Valid:  true,
-		},
-		PublicKey: publicKeyHex,
-	})
-	if err == nil {
+	// Only return success if we actually found and updated a matching request.
+	// sqlite UPDATE statements do not return an error when 0 rows were affected,
+	// so we must check existence explicitly.
+	_, err = h.queries.GetTerminalAuthRequest(c.Request.Context(), publicKeyHex)
+	switch err {
+	case nil:
+		err = h.queries.UpdateTerminalAuthResponse(c.Request.Context(), models.UpdateTerminalAuthResponseParams{
+			Response: sql.NullString{
+				String: req.Response,
+				Valid:  true,
+			},
+			ResponseAccountID: sql.NullString{
+				String: userIDStr,
+				Valid:  true,
+			},
+			PublicKey: publicKeyHex,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to update auth request"})
+			return
+		}
 		c.JSON(http.StatusOK, types.SuccessResponse{Success: true})
 		return
-	}
-
-	// If terminal auth request not found, try account_auth_requests
-	err = h.queries.UpdateAccountAuthResponse(c.Request.Context(), models.UpdateAccountAuthResponseParams{
-		Response: sql.NullString{
-			String: req.Response,
-			Valid:  true,
-		},
-		ResponseAccountID: sql.NullString{
-			String: userIDStr,
-			Valid:  true,
-		},
-		PublicKey: publicKeyHex,
-	})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to update auth request"})
+	case sql.ErrNoRows:
+		// Continue and try account_auth_requests.
+	default:
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "database error"})
 		return
 	}
 
-	c.JSON(http.StatusOK, types.SuccessResponse{Success: true})
+	_, err = h.queries.GetAccountAuthRequest(c.Request.Context(), publicKeyHex)
+	switch err {
+	case nil:
+		err = h.queries.UpdateAccountAuthResponse(c.Request.Context(), models.UpdateAccountAuthResponseParams{
+			Response: sql.NullString{
+				String: req.Response,
+				Valid:  true,
+			},
+			ResponseAccountID: sql.NullString{
+				String: userIDStr,
+				Valid:  true,
+			},
+			PublicKey: publicKeyHex,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "failed to update auth request"})
+			return
+		}
+		c.JSON(http.StatusOK, types.SuccessResponse{Success: true})
+		return
+	case sql.ErrNoRows:
+		c.JSON(http.StatusNotFound, types.ErrorResponse{Error: "auth request not found"})
+		return
+	default:
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "database error"})
+		return
+	}
+
 }
 
 // PostAccountAuthRequest handles device linking request (step 1 of account QR flow)
@@ -424,6 +447,15 @@ func (h *AuthHandler) PostAccountAuthResponse(c *gin.Context) {
 	publicKeyHex, err := crypto.PublicKeyToHex(req.PublicKey)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, types.ErrorResponse{Error: "invalid public key"})
+		return
+	}
+
+	// Ensure the request exists; UPDATE returns nil even when 0 rows are affected.
+	if _, err := h.queries.GetAccountAuthRequest(c.Request.Context(), publicKeyHex); err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, types.ErrorResponse{Error: "auth request not found"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: "database error"})
 		return
 	}
 

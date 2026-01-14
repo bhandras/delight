@@ -42,6 +42,11 @@ type runResumeRequest struct {
 	Mode        string `json:"mode"`
 }
 
+type runPollRequest struct {
+	RunID string `json:"run_id"`
+	Mode  string `json:"mode"`
+}
+
 type RunResponse struct {
 	RunID        string                 `json:"run_id"`
 	Status       string                 `json:"status"`
@@ -99,6 +104,30 @@ func (c *Client) Resume(ctx context.Context, runID string, awaitResume any) (*Ru
 	return c.doRun(ctx, "/runs/"+runID, req)
 }
 
+// Poll fetches the current run status for runID.
+//
+// ACP's sync endpoints can respond with 202 Accepted and a run_id when work is
+// still in progress. Poll provides a best-effort way to wait for completion
+// without returning early and clearing UI busy state.
+func (c *Client) Poll(ctx context.Context, runID string) (*RunResult, error) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return nil, fmt.Errorf("runID required")
+	}
+
+	// Prefer GET when supported.
+	if res, err := c.getRun(ctx, runID); err == nil && res != nil {
+		return res, nil
+	}
+
+	// Fallback: some ACP deployments expose polling via POST /runs/{id}.
+	req := runPollRequest{
+		RunID: runID,
+		Mode:  "sync",
+	}
+	return c.doRun(ctx, "/runs/"+runID, req)
+}
+
 func (c *Client) doRun(ctx context.Context, path string, payload interface{}) (*RunResult, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -109,7 +138,9 @@ func (c *Client) doRun(ctx context.Context, path string, payload interface{}) (*
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	// Prefer server-sent event streaming when supported so "sync" runs keep the
+	// HTTP request open until completion.
+	req.Header.Set("Accept", "text/event-stream, application/json")
 	req.Close = true
 
 	if c.debug {
@@ -135,6 +166,51 @@ func (c *Client) doRun(ctx context.Context, path string, payload interface{}) (*
 		return c.parseEventStream(resp)
 	}
 
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var run RunResponse
+	if err := json.Unmarshal(data, &run); err != nil {
+		return nil, err
+	}
+
+	outputText := extractOutputText(run.Output)
+	if outputText == "" {
+		var raw map[string]interface{}
+		if err := json.Unmarshal(data, &raw); err == nil {
+			if out, ok := raw["output"].([]interface{}); ok {
+				outputText = extractOutputTextFromAny(out)
+			}
+		}
+	}
+
+	return &RunResult{
+		RunID:        run.RunID,
+		Status:       run.Status,
+		AwaitRequest: run.AwaitRequest,
+		OutputText:   outputText,
+	}, nil
+}
+
+func (c *Client) getRun(ctx context.Context, runID string) (*RunResult, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/runs/"+runID, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Close = true
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("acp get run failed: %s", resp.Status)
+	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err

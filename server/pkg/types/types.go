@@ -37,7 +37,7 @@ type EphemeralEvent struct {
 	ID       string `json:"id"`
 	Active   bool   `json:"active"`
 	ActiveAt int64  `json:"activeAt"`
-	Thinking *bool  `json:"thinking,omitempty"`
+	Working  *bool  `json:"working,omitempty"`
 }
 
 // Connection types for WebSocket

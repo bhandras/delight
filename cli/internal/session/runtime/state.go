@@ -8,6 +8,6 @@ type State struct {
 	// SessionID identifies the Delight session this runtime instance belongs to.
 	SessionID string
 
-	// Thinking is true when the agent is currently working on a request.
-	Thinking bool
+	// Working is true when the agent is currently working on a request.
+	Working bool
 }

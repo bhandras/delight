@@ -94,13 +94,13 @@ func (r *Runtime) runEngineEvents(ctx context.Context, engine agentengine.AgentE
 
 func (r *Runtime) handleEngineEvent(ev agentengine.Event, emit func(framework.Input)) {
 	switch v := ev.(type) {
-	case agentengine.EvThinking:
+	case agentengine.EvWorking:
 		gen, mode := r.engineGenForMode(v.Mode)
 		nowMs := v.AtMs
 		if nowMs == 0 {
 			nowMs = time.Now().UnixMilli()
 		}
-		emit(evEngineThinking{Gen: gen, Mode: mode, Thinking: v.Thinking, NowMs: nowMs})
+		emit(evEngineWorking{Gen: gen, Mode: mode, Working: v.Working, NowMs: nowMs})
 	case agentengine.EvUIEvent:
 		gen, mode := r.engineGenForMode(v.Mode)
 		nowMs := v.AtMs

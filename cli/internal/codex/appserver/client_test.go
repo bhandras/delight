@@ -1,6 +1,7 @@
 package appserver
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"sync/atomic"
@@ -66,3 +67,34 @@ type ioNopCloser struct {
 
 // Close implements io.Closer.
 func (c ioNopCloser) Close() error { return nil }
+
+// TestReadJSONLLineDropsOversizedLine ensures an oversized JSONL line is
+// discarded without preventing subsequent reads.
+func TestReadJSONLLineDropsOversizedLine(t *testing.T) {
+	var stream bytes.Buffer
+	stream.WriteString(`{"method":"too_big","params":{"x":"`)
+	stream.Write(bytes.Repeat([]byte("x"), 1024))
+	stream.WriteString(`"}}` + "\n")
+	stream.WriteString(`{"method":"ok","params":{"y":1}}` + "\n")
+
+	r := bufio.NewReader(&stream)
+
+	line, tooLong, err := readJSONLLine(r, 128)
+	if err != nil {
+		t.Fatalf("readJSONLLine(oversized) err: %v", err)
+	}
+	if !tooLong {
+		t.Fatalf("expected tooLong=true for oversized line, got line len=%d", len(line))
+	}
+
+	line, tooLong, err = readJSONLLine(r, 128)
+	if err != nil {
+		t.Fatalf("readJSONLLine(next) err: %v", err)
+	}
+	if tooLong {
+		t.Fatalf("expected tooLong=false for second line")
+	}
+	if got := string(line); got != `{"method":"ok","params":{"y":1}}` {
+		t.Fatalf("unexpected second line: %q", got)
+	}
+}

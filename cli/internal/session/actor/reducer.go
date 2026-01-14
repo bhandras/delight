@@ -95,8 +95,8 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 			}
 		}
 		return state, nil
-	case evEngineThinking:
-		return reduceEngineThinking(state, in)
+	case evEngineWorking:
+		return reduceEngineWorking(state, in)
 	case evEngineUIEvent:
 		return reduceEngineUIEvent(state, in)
 	case evPermissionRequested:
@@ -163,9 +163,14 @@ func reduceInboundUserMessage(state State, cmd cmdInboundUserMessage) (State, []
 	}
 
 	if state.FSM == StateRemoteRunning {
-		return state, []actor.Effect{
+		state, activityEffects := maybeStartTurn(state, cmd.NowMs)
+		effects := []actor.Effect{
 			effRemoteSend{Gen: state.RunnerGen, Text: cmd.Text, Meta: cmd.Meta, LocalID: cmd.LocalID},
 		}
+		if len(activityEffects) > 0 {
+			effects = append(activityEffects, effects...)
+		}
+		return state, effects
 	}
 
 	state.PendingRemoteSends = append(state.PendingRemoteSends, pendingRemoteSend{
@@ -177,11 +182,22 @@ func reduceInboundUserMessage(state State, cmd cmdInboundUserMessage) (State, []
 
 	switch state.FSM {
 	case StateLocalRunning:
-		return reduceSwitchMode(state, cmdSwitchMode{Target: ModeRemote, Reply: nil})
+		next, effects := reduceSwitchMode(state, cmdSwitchMode{Target: ModeRemote, Reply: nil})
+		next, activityEffects := maybeStartTurn(next, cmd.NowMs)
+		if len(activityEffects) > 0 {
+			effects = append(activityEffects, effects...)
+		}
+		return next, effects
 	case StateRemoteStarting:
-		return state, nil
+		next, activityEffects := maybeStartTurn(state, cmd.NowMs)
+		return next, activityEffects
 	default:
-		return reduceSwitchMode(state, cmdSwitchMode{Target: ModeRemote, Reply: nil})
+		next, effects := reduceSwitchMode(state, cmdSwitchMode{Target: ModeRemote, Reply: nil})
+		next, activityEffects := maybeStartTurn(next, cmd.NowMs)
+		if len(activityEffects) > 0 {
+			effects = append(activityEffects, effects...)
+		}
+		return next, effects
 	}
 }
 
@@ -466,7 +482,7 @@ func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 		state.PendingSwitchReply = cmd.Reply
 		state.Mode = ModeRemote
 		state.FSM = StateRemoteStarting
-		state.Thinking = false
+		state.Working = false
 		state.RemoteRunner = runnerHandle{gen: gen, running: false}
 		state.AgentState.ControlledByUser = false
 		state = refreshAgentStateJSON(state)
@@ -488,7 +504,7 @@ func reduceSwitchMode(state State, cmd cmdSwitchMode) (State, []actor.Effect) {
 		state.PendingSwitchReply = cmd.Reply
 		state.Mode = ModeLocal
 		state.FSM = StateLocalStarting
-		state.Thinking = false
+		state.Working = false
 		state.LocalRunner = runnerHandle{gen: gen, running: false}
 		state.AgentState.ControlledByUser = true
 		state = refreshAgentStateJSON(state)
@@ -575,7 +591,7 @@ func reduceRunnerExited(state State, ev evRunnerExited) (State, []actor.Effect) 
 		if state.RemoteRunner.gen == ev.Gen {
 			state.RemoteRunner.running = false
 		}
-		state.Thinking = false
+		state.Working = false
 	}
 	// If we were starting, fail the pending switch.
 	if state.FSM == StateLocalStarting || state.FSM == StateRemoteStarting {
@@ -608,7 +624,7 @@ func reduceRunnerExited(state State, ev evRunnerExited) (State, []actor.Effect) 
 		// Otherwise: move to local running on failure (runtime will decide).
 		state.FSM = StateLocalRunning
 		state.Mode = ModeLocal
-		state.Thinking = false
+		state.Working = false
 		return state, effects
 	}
 
@@ -620,7 +636,7 @@ func reduceRunnerExited(state State, ev evRunnerExited) (State, []actor.Effect) 
 		gen := state.RunnerGen
 		state.Mode = ModeLocal
 		state.FSM = StateLocalStarting
-		state.Thinking = false
+		state.Working = false
 		state.LocalRunner = runnerHandle{gen: gen, running: false}
 		state.AgentState.ControlledByUser = true
 		state = refreshAgentStateJSON(state)
@@ -656,8 +672,12 @@ func reduceRemoteSend(state State, cmd cmdRemoteSend) (State, []actor.Effect) {
 		}
 		return state, []actor.Effect{effCompleteReply{Reply: cmd.Reply, Err: ErrNotRemote}}
 	}
+	state, activityEffects := maybeStartTurn(state, 0)
 	effects := []actor.Effect{
 		effRemoteSend{Gen: state.RunnerGen, Text: cmd.Text, Meta: cmd.Meta, LocalID: cmd.LocalID},
+	}
+	if len(activityEffects) > 0 {
+		effects = append(activityEffects, effects...)
 	}
 	if cmd.Reply != nil {
 		effects = append(effects, effCompleteReply{Reply: cmd.Reply, Err: nil})
@@ -665,9 +685,37 @@ func reduceRemoteSend(state State, cmd cmdRemoteSend) (State, []actor.Effect) {
 	return state, effects
 }
 
-// reduceEngineThinking applies engine "thinking" signals to the session state
+// maybeStartTurn marks the session as having an in-flight turn (Working=true)
+// and emits an activity update so mobile clients can render `ui.working`
+// immediately.
+func maybeStartTurn(state State, nowMs int64) (State, []actor.Effect) {
+	if state.SessionID == "" {
+		return state, nil
+	}
+	if state.Working {
+		return state, nil
+	}
+
+	activeAt := nowMs
+	if activeAt < 0 {
+		activeAt = 0
+	}
+
+	state.Working = true
+	return state, []actor.Effect{
+		effEmitEphemeral{Payload: wire.EphemeralActivityPayload{
+			Type:     "activity",
+			ID:       state.SessionID,
+			Active:   true,
+			Working:  true,
+			ActiveAt: activeAt,
+		}},
+	}
+}
+
+// reduceEngineWorking applies engine working signals to the session state
 // and emits an activity update so mobile clients can render status updates.
-func reduceEngineThinking(state State, ev evEngineThinking) (State, []actor.Effect) {
+func reduceEngineWorking(state State, ev evEngineWorking) (State, []actor.Effect) {
 	if ev.Gen != 0 && ev.Gen != state.RunnerGen {
 		return state, nil
 	}
@@ -675,23 +723,23 @@ func reduceEngineThinking(state State, ev evEngineThinking) (State, []actor.Effe
 		return state, nil
 	}
 
-	// Apply thinking updates only for the currently active runner mode.
+	// Apply working updates only for the currently active runner mode.
 	//
 	// We support both local and remote here so reconnecting clients can recover
 	// correct busy state (turn boundaries are persisted server-side).
 	switch {
-	case ev.Mode == ModeRemote && state.FSM == StateRemoteRunning:
+	case ev.Mode == ModeRemote && (state.FSM == StateRemoteRunning || state.FSM == StateRemoteStarting):
 		// ok
 	case ev.Mode == ModeLocal && state.FSM == StateLocalRunning:
 		// ok
 	default:
 		return state, nil
 	}
-	if state.Thinking == ev.Thinking {
+	if state.Working == ev.Working {
 		return state, nil
 	}
 
-	state.Thinking = ev.Thinking
+	state.Working = ev.Working
 	activeAt := ev.NowMs
 	if activeAt < 0 {
 		activeAt = 0
@@ -702,7 +750,7 @@ func reduceEngineThinking(state State, ev evEngineThinking) (State, []actor.Effe
 			Type:     "activity",
 			ID:       state.SessionID,
 			Active:   true,
-			Thinking: state.Thinking,
+			Working:  state.Working,
 			ActiveAt: activeAt,
 		}},
 	}
@@ -722,35 +770,31 @@ func reduceEngineUIEvent(state State, ev evEngineUIEvent) (State, []actor.Effect
 		if ev.Mode != ModeRemote {
 			return state, nil
 		}
-		if ev.Kind == string(agentengine.UIEventThinking) {
-			thinking := ev.Phase != string(agentengine.UIEventPhaseEnd)
-			state.Thinking = thinking
-		}
 	case StateLocalRunning:
 		if ev.Mode != ModeLocal {
 			return state, nil
-		}
-		if ev.Kind == string(agentengine.UIEventThinking) {
-			thinking := ev.Phase != string(agentengine.UIEventPhaseEnd)
-			state.Thinking = thinking
 		}
 	default:
 		return state, nil
 	}
 
-	return state, []actor.Effect{
-		effEmitEphemeral{Payload: wire.EphemeralUIEventPayload{
-			Type:          "ui.event",
-			SessionID:     state.SessionID,
-			EventID:       ev.EventID,
-			Kind:          ev.Kind,
-			Phase:         ev.Phase,
-			Status:        ev.Status,
-			BriefMarkdown: ev.BriefMarkdown,
-			FullMarkdown:  ev.FullMarkdown,
-			AtMs:          ev.NowMs,
-		}},
-	}
+	// UI events are transcript-only. They should not drive `state.Working` (busy)
+	// because they can start/end multiple times within a single agent turn.
+	//
+	// Busy state is driven by the engine's working signal (turn lifecycle).
+	effects := []actor.Effect{effEmitEphemeral{Payload: wire.EphemeralUIEventPayload{
+		Type:          "ui.event",
+		SessionID:     state.SessionID,
+		EventID:       ev.EventID,
+		Kind:          ev.Kind,
+		Phase:         ev.Phase,
+		Status:        ev.Status,
+		BriefMarkdown: ev.BriefMarkdown,
+		FullMarkdown:  ev.FullMarkdown,
+		AtMs:          ev.NowMs,
+	}}}
+
+	return state, effects
 }
 
 // reduceAbortRemote requests aborting the current remote turn.

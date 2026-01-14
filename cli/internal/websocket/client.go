@@ -659,16 +659,16 @@ func getInt64(value interface{}) int64 {
 	}
 }
 
-// KeepSessionAlive sends a keep-alive ping for a session
-func (c *Client) KeepSessionAlive(sessionID string, thinking bool) error {
+// KeepSessionAlive sends a keep-alive ping for a session.
+func (c *Client) KeepSessionAlive(sessionID string, working bool) error {
 	return c.Emit(EventSessionAlive, wire.SessionAlivePayload{
-		SID:      sessionID,
-		Time:     time.Now().UnixMilli(),
-		Thinking: thinking,
+		SID:     sessionID,
+		Time:    time.Now().UnixMilli(),
+		Working: working,
 	})
 }
 
-// EmitEphemeral sends an ephemeral event (activity/thinking state)
+// EmitEphemeral sends an ephemeral event (activity/working state).
 // These events are not persisted, just broadcast to connected clients
 func (c *Client) EmitEphemeral(data any) error {
 	return c.Emit(EventEphemeral, data)

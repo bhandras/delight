@@ -208,9 +208,11 @@ func reduceSpawnActor(state spawnActorState, input framework.Input) (spawnActorS
 
 type spawnActorRuntime struct {
 	cfg     *config.Config
-	token   string
 	debug   bool
 	ownerID string
+
+	tokenMu sync.RWMutex
+	token   string
 
 	childrenMu sync.Mutex
 	children   map[string]spawnedChild
@@ -220,6 +222,21 @@ type spawnActorRuntime struct {
 	// startChild starts a child session manager. It is injected to keep
 	// spawn actor tests deterministic and free of network dependencies.
 	startChild spawnChildStarter
+}
+
+// setToken updates the auth token used when starting new child sessions.
+func (r *spawnActorRuntime) setToken(token string) {
+	r.tokenMu.Lock()
+	r.token = token
+	r.tokenMu.Unlock()
+}
+
+// tokenForRequest returns the most recent auth token for spawn operations.
+func (r *spawnActorRuntime) tokenForRequest() string {
+	r.tokenMu.RLock()
+	token := r.token
+	r.tokenMu.RUnlock()
+	return token
 }
 
 // spawnedChild is the minimal interface the spawn actor needs to manage child
@@ -375,7 +392,7 @@ func (r *spawnActorRuntime) handleStartChild(ctx context.Context, eff effStartCh
 		r.emit(evChildStartFailed{ReqID: eff.ReqID, Err: fmt.Errorf("directory is required")})
 		return
 	}
-	sessionID, child, err := r.startChild(ctx, r.cfg, r.token, r.debug, eff.Directory, eff.Agent)
+	sessionID, child, err := r.startChild(ctx, r.cfg, r.tokenForRequest(), r.debug, eff.Directory, eff.Agent)
 	if err != nil {
 		r.emit(evChildStartFailed{ReqID: eff.ReqID, Err: err})
 		return
@@ -450,7 +467,7 @@ func (r *spawnActorRuntime) handleRestore(ctx context.Context, eff effRestoreChi
 		}
 		// Always start a new child; the session id can change, so we update
 		// the registry if it differs from the stored id.
-		sessionID, child, err := r.startChild(ctx, r.cfg, r.token, r.debug, entry.Directory, "")
+		sessionID, child, err := r.startChild(ctx, r.cfg, r.tokenForRequest(), r.debug, entry.Directory, "")
 		if err != nil {
 			continue
 		}

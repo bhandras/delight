@@ -13,8 +13,8 @@ type EmitActivityCommand struct {
 	// SessionID identifies which session to associate with the event.
 	SessionID string
 
-	// Thinking indicates whether the session should show as thinking.
-	Thinking bool
+	// Working indicates whether the session should show as working.
+	Working bool
 
 	// Active indicates whether the session is active.
 	Active bool

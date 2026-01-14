@@ -19,6 +19,8 @@ import (
 	"golang.org/x/term"
 )
 
+const fetchWorkingDebounceWindow = 500 * time.Millisecond
+
 // LauncherMessage represents a message from the launcher script via fd 3
 type LauncherMessage struct {
 	Type      string `json:"type"`      // "uuid", "fetch-start", "fetch-end"
@@ -49,10 +51,10 @@ type Process struct {
 	claudeSessionID string
 	sessionIDCh     chan string
 
-	// Thinking state tracking
+	// Working state tracking
 	activeFetches map[int]bool
-	thinkingCh    chan bool
-	thinking      bool
+	workingCh     chan bool
+	working       bool
 
 	// Stop channel for cleanup
 	stopCh chan struct{}
@@ -142,7 +144,7 @@ func NewProcess(opts ProcessOptions) (*Process, error) {
 		fd3Reader:     fd3Reader,
 		fd3Writer:     fd3Writer,
 		sessionIDCh:   make(chan string, 1),
-		thinkingCh:    make(chan bool, 10),
+		workingCh:     make(chan bool, 10),
 		activeFetches: make(map[int]bool),
 		stopCh:        make(chan struct{}),
 		ttyFD:         -1,
@@ -407,7 +409,7 @@ func (p *Process) handleUUID(uuid string) {
 	}
 }
 
-// handleFetchStart marks a fetch as active (thinking = true)
+// handleFetchStart marks a fetch as active (working = true).
 func (p *Process) handleFetchStart(id int) {
 	p.mu.Lock()
 	wasEmpty := len(p.activeFetches) == 0
@@ -415,7 +417,7 @@ func (p *Process) handleFetchStart(id int) {
 	p.mu.Unlock()
 
 	if wasEmpty {
-		p.setThinking(true)
+		p.setWorking(true)
 	}
 
 	if p.debug {
@@ -435,39 +437,39 @@ func (p *Process) handleFetchEnd(id int) {
 	}
 
 	if isEmpty {
-		// Debounce: wait 500ms before setting thinking=false
+		// Debounce: wait briefly before setting working=false.
 		// This prevents flickering during rapid fetch sequences
 		go func() {
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(fetchWorkingDebounceWindow)
 			p.mu.Lock()
 			stillEmpty := len(p.activeFetches) == 0
 			p.mu.Unlock()
 
 			if stillEmpty {
-				p.setThinking(false)
+				p.setWorking(false)
 			}
 		}()
 	}
 }
 
-// setThinking updates the thinking state and notifies listeners
-func (p *Process) setThinking(thinking bool) {
+// setWorking updates the working state and notifies listeners.
+func (p *Process) setWorking(working bool) {
 	p.mu.Lock()
-	if p.thinking == thinking {
+	if p.working == working {
 		p.mu.Unlock()
 		return
 	}
-	p.thinking = thinking
+	p.working = working
 	p.mu.Unlock()
 
 	// Non-blocking send to channel
 	select {
-	case p.thinkingCh <- thinking:
+	case p.workingCh <- working:
 	default:
 	}
 
 	if p.debug {
-		logger.Debugf("Thinking state: %v", thinking)
+		logger.Debugf("Working state: %v", working)
 	}
 }
 
@@ -476,16 +478,16 @@ func (p *Process) SessionID() <-chan string {
 	return p.sessionIDCh
 }
 
-// Thinking returns a channel that receives thinking state changes
-func (p *Process) Thinking() <-chan bool {
-	return p.thinkingCh
+// Working returns a channel that receives working state changes.
+func (p *Process) Working() <-chan bool {
+	return p.workingCh
 }
 
-// IsThinking returns the current thinking state
-func (p *Process) IsThinking() bool {
+// IsWorking returns the current working state.
+func (p *Process) IsWorking() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.thinking
+	return p.working
 }
 
 // GetSessionID returns the detected Claude session ID (empty if not yet detected)

@@ -49,8 +49,8 @@ type SessionAlivePayload struct {
 	SID string `json:"sid"`
 	// Time is a wall-clock timestamp in milliseconds since epoch.
 	Time int64 `json:"time"`
-	// Thinking indicates whether the session is currently busy.
-	Thinking bool `json:"thinking"`
+	// Working indicates whether the session is currently busy.
+	Working bool `json:"working"`
 }
 
 // TerminalAlivePayload is the client -> server payload for the "terminal-alive"
@@ -71,8 +71,8 @@ type EphemeralActivityPayload struct {
 	ID string `json:"id"`
 	// Active is true when the session is active.
 	Active bool `json:"active"`
-	// Thinking indicates whether the session is currently busy.
-	Thinking bool `json:"thinking"`
+	// Working indicates whether the session is currently busy.
+	Working bool `json:"working"`
 	// ActiveAt is a wall-clock timestamp in milliseconds since epoch.
 	ActiveAt int64 `json:"activeAt"`
 }

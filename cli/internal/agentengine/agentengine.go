@@ -175,21 +175,21 @@ type EvUIEvent struct {
 // isAgentEngineEvent marks EvUIEvent as an Event.
 func (EvUIEvent) isAgentEngineEvent() {}
 
-// EvThinking indicates whether an engine is currently working on a request.
+// EvWorking indicates whether an engine is currently working on a request.
 //
 // This is emitted as an ephemeral UI signal (e.g. for "thinking…" indicators).
 // It should not be persisted as durable session state.
-type EvThinking struct {
-	// Mode indicates which mode runner the thinking signal applies to.
+type EvWorking struct {
+	// Mode indicates which mode runner the working signal applies to.
 	Mode Mode
-	// Thinking is true while the engine is processing a turn.
-	Thinking bool
+	// Working is true while the engine is processing a turn.
+	Working bool
 	// AtMs is the wall-clock timestamp (unix millis) when the state was observed.
 	AtMs int64
 }
 
-// isAgentEngineEvent marks EvThinking as an Event.
-func (EvThinking) isAgentEngineEvent() {}
+// isAgentEngineEvent marks EvWorking as an Event.
+func (EvWorking) isAgentEngineEvent() {}
 
 // EvReady indicates the engine process/protocol is ready to accept input.
 type EvReady struct {

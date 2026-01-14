@@ -124,8 +124,8 @@ func (e *Engine) SendUserMessage(ctx context.Context, msg agentengine.UserMessag
 	}
 
 	nowMs := time.Now().UnixMilli()
-	e.tryEmit(agentengine.EvThinking{Mode: agentengine.ModeRemote, Thinking: true, AtMs: nowMs})
-	defer e.tryEmit(agentengine.EvThinking{Mode: agentengine.ModeRemote, Thinking: false, AtMs: time.Now().UnixMilli()})
+	e.tryEmit(agentengine.EvWorking{Mode: agentengine.ModeRemote, Working: true, AtMs: nowMs})
+	defer e.tryEmit(agentengine.EvWorking{Mode: agentengine.ModeRemote, Working: false, AtMs: time.Now().UnixMilli()})
 
 	reply := fmt.Sprintf("%s%s", fakeAgentReplyPrefix, text)
 	uuid := types.NewCUID()

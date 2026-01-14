@@ -524,13 +524,13 @@ func TestSessionAliveEphemeral(t *testing.T) {
 	sessionSock := connectSessionSocket(t, env.serverURL, env.token, env.sessionID)
 	defer sessionSock.Close()
 
-	if err := sessionSock.Emit("session-alive", map[string]interface{}{
-		"sid":      env.sessionID,
-		"time":     time.Now().UnixMilli(),
-		"thinking": true,
-	}); err != nil {
-		t.Fatalf("emit session-alive: %v", err)
-	}
+		if err := sessionSock.Emit("session-alive", map[string]interface{}{
+			"sid":      env.sessionID,
+			"time":     time.Now().UnixMilli(),
+			"working":  true,
+		}); err != nil {
+			t.Fatalf("emit session-alive: %v", err)
+		}
 
 	waitForEphemeralType(t, ephemeralCh, "activity", env.sessionID)
 }

@@ -92,7 +92,7 @@ func TestSessionAlive_EmitsEphemeral(t *testing.T) {
 	res := SessionAlive(context.Background(), deps, NewAuthContext("u1", "session-scoped", "sock1"), protocolwire.SessionAlivePayload{
 		SID:      "s1",
 		Time:     now.UnixMilli(),
-		Thinking: true,
+		Working:  true,
 	})
 
 	require.Equal(t, int64(1), got.Active)
@@ -105,6 +105,6 @@ func TestSessionAlive_EmitsEphemeral(t *testing.T) {
 	require.Equal(t, "activity", payload.Type)
 	require.Equal(t, "s1", payload.ID)
 	require.True(t, payload.Active)
-	require.True(t, payload.Thinking)
+	require.True(t, payload.Working)
 	require.True(t, opened)
 }
