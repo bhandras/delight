@@ -41,9 +41,19 @@ func NewSocketIOServer(db *sql.DB, jwtManager *crypto.JWTManager) *SocketIOServe
 		Credentials: false,
 	})
 
-	// Set ping timeout and interval to match TypeScript server
-	opts.SetPingTimeout(45 * time.Second)
-	opts.SetPingInterval(15 * time.Second)
+	// SocketIOPingInterval defines how frequently the server pings clients to
+	// detect stale/disconnected sockets.
+	//
+	// This influences how quickly we mark sessions/terminals offline after an
+	// abrupt CLI exit (where no graceful disconnect event is emitted).
+	const SocketIOPingInterval = 5 * time.Second
+
+	// SocketIOPingTimeout defines how long the server waits before considering a
+	// socket dead (no pong received).
+	const SocketIOPingTimeout = 15 * time.Second
+
+	opts.SetPingTimeout(SocketIOPingTimeout)
+	opts.SetPingInterval(SocketIOPingInterval)
 
 	// Set the path to match what mobile app expects (same as TypeScript server)
 	opts.SetPath("/v1/updates")

@@ -584,6 +584,7 @@ private struct TerminalPropertiesSheet: View {
                             }
                             .listRowBackground(Color.clear)
                             .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                            .disabled(!online)
 
                             SheetActionButton(
                                 title: "Stop CLI",
@@ -594,6 +595,7 @@ private struct TerminalPropertiesSheet: View {
                             }
                             .listRowBackground(Color.clear)
                             .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                            .disabled(!online)
                         } footer: {
                             Text("Restart exits the CLI with a special restart code. If you run the CLI under a wrapper script, it can automatically re-launch in the same directory.")
                                 .font(Theme.caption)
@@ -748,6 +750,8 @@ private struct SheetActionButton: View {
     let tint: Color
     let action: () -> Void
 
+    @Environment(\.isEnabled) private var isEnabled
+
     private enum Layout {
         static let fontSize: CGFloat = 15
         static let paddingVertical: CGFloat = 14
@@ -759,7 +763,7 @@ private struct SheetActionButton: View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .font(.system(size: Layout.fontSize, weight: .semibold))
-                .foregroundColor(tint)
+                .foregroundColor(isEnabled ? tint : Theme.mutedText)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, Layout.paddingVertical)
                 .background(Color(uiColor: .secondarySystemBackground))

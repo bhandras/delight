@@ -137,6 +137,26 @@ func main() {
 		}
 	}
 
+	// Clear stale "active" flags on boot.
+	//
+	// The `active` bit is a best-effort reflection of whether the server believes
+	// a terminal/session socket is currently connected. If the server exits
+	// uncleanly (crash/restart) or the CLI is killed abruptly, these flags may
+	// remain stuck in the DB even though no socket exists anymore.
+	//
+	// On startup we have no connected sockets yet, so it is safe to reset them.
+	// A live CLI will re-establish keep-alives quickly and flip active back on.
+	if res, err := db.Exec(`UPDATE sessions SET active = 0 WHERE active != 0`); err != nil {
+		logger.Warnf("Failed to clear session activity on boot: %v", err)
+	} else if n, err := res.RowsAffected(); err == nil && n > 0 {
+		logger.Infof("Cleared %d stale session active flags on boot", n)
+	}
+	if res, err := db.Exec(`UPDATE terminals SET active = 0 WHERE active != 0`); err != nil {
+		logger.Warnf("Failed to clear terminal activity on boot: %v", err)
+	} else if n, err := res.RowsAffected(); err == nil && n > 0 {
+		logger.Infof("Cleared %d stale terminal active flags on boot", n)
+	}
+
 	// Migrate legacy message content (wrap non-JSON content)
 	if err := migrations.WrapLegacyMessageContent(db.DB); err != nil {
 		logger.Warnf("Failed to wrap legacy message content: %v", err)
