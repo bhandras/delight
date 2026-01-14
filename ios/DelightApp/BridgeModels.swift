@@ -29,6 +29,13 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 /// TerminalAppearance defines user-facing presentation defaults for terminal
 /// transcript rendering.
 enum TerminalAppearance {
+    /// transcriptFontFamilyName is the font family used for terminal transcript
+    /// text and tool/code rendering.
+    ///
+    /// Menlo is available on iOS and provides a readable monospaced style
+    /// similar to many CLI terminals.
+    static let transcriptFontFamilyName: String = "Menlo"
+
     /// defaultFontSize is the initial font size for terminal transcripts.
     static let defaultFontSize: Double = 16
 
@@ -63,6 +70,35 @@ enum TerminalAppearance {
     /// chipFontSize returns a derived chip font size for a transcript base font.
     static func chipFontSize(for baseFontSize: Double) -> Double {
         min(max(baseFontSize * 0.75, minChipFontSize), maxChipFontSize)
+    }
+
+    /// uiFont returns the transcript font for UIKit-backed views, falling back
+    /// to the system monospaced font when unavailable.
+    static func uiFont(size: CGFloat, weight: UIFont.Weight = .regular) -> UIFont {
+        let preferredName: String = {
+            switch weight {
+            case .bold, .semibold, .heavy:
+                return "Menlo-Bold"
+            default:
+                return transcriptFontFamilyName
+            }
+        }()
+
+        if let font = UIFont(name: preferredName, size: size) {
+            return font
+        }
+        if let font = UIFont(name: transcriptFontFamilyName, size: size) {
+            return font
+        }
+        return UIFont.monospacedSystemFont(ofSize: size, weight: weight)
+    }
+
+    /// swiftUIFont returns the transcript font for SwiftUI-backed views.
+    ///
+    /// Note: `Font.custom` doesn't encode weight; call sites may layer
+    /// `fontWeight` when emphasizing labels.
+    static func swiftUIFont(size: CGFloat) -> Font {
+        Font.custom(transcriptFontFamilyName, size: size)
     }
 }
 

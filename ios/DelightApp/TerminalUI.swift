@@ -195,15 +195,16 @@ struct TerminalDetailView: View {
         }
     }
 
-    var body: some View {
-        let currentSession = model.sessions.first(where: { $0.id == session.id }) ?? session
-        let agentLabel = terminalAgentLabel(for: currentSession)
-        let ui = currentSession.uiState
-        let uiState = ui?.state ?? "disconnected"
-        // The phone should only send input when it controls the session.
-        // Even if the backend accidentally marks `canSend=true` while in local mode,
-        // keep the UX consistent: user must tap "Take Control" first.
-        let controlledByDesktop = ui?.mode != "remote"
+	    var body: some View {
+	        let currentSession = model.sessions.first(where: { $0.id == session.id }) ?? session
+	        let agentLabel = terminalAgentLabel(for: currentSession)
+	        let ui = currentSession.uiState
+	        let uiState = ui?.state ?? "disconnected"
+	        let transcriptFontSize = model.effectiveTerminalFontSize(for: currentSession)
+	        // The phone should only send input when it controls the session.
+	        // Even if the backend accidentally marks `canSend=true` while in local mode,
+	        // keep the UX consistent: user must tap "Take Control" first.
+	        let controlledByDesktop = ui?.mode != "remote"
         let isPhoneControlled = (ui?.mode == "remote") && (ui?.connected ?? false) && (ui?.online ?? false)
         let composerState = TerminalComposerState.make(
             ui: ui,
@@ -232,26 +233,26 @@ struct TerminalDetailView: View {
                 if uiState == "local" {
                     ControlStatusBanner(model: model, session: currentSession)
                 }
-                TerminalTranscriptCollectionView(
-                    messages: model.messages,
-                    hasMoreHistory: model.hasMoreHistory,
-                    isLoadingHistory: model.isLoadingHistory,
-                    isLoadingLatest: model.isLoadingLatest,
-                    onLoadOlder: { model.fetchOlderMessages() },
-                    onDoubleTap: {
-                        // Double-tap: jump to the newest message.
-                        model.scrollRequest = ScrollRequest(target: .bottom)
-                    },
-                    scrollRequest: model.scrollRequest,
-                    onConsumeScrollRequest: { model.scrollRequest = nil },
-                    fontSize: CGFloat(model.terminalFontSize)
-                )
-                // Re-host on font size changes to keep the transcript layout stable.
-                .id("collection-transcript-\(currentSession.id)-\(Int(model.terminalFontSize))")
-                // Keep "tap to dismiss keyboard" behavior scoped to the transcript
-                // so composer interactions (including paste) don't immediately
-                // resign first responder.
-                .dismissKeyboardOnTap()
+	                TerminalTranscriptCollectionView(
+	                    messages: model.messages,
+	                    hasMoreHistory: model.hasMoreHistory,
+	                    isLoadingHistory: model.isLoadingHistory,
+	                    isLoadingLatest: model.isLoadingLatest,
+	                    onLoadOlder: { model.fetchOlderMessages() },
+	                    onDoubleTap: {
+	                        // Double-tap: jump to the newest message.
+	                        model.scrollRequest = ScrollRequest(target: .bottom)
+	                    },
+	                    scrollRequest: model.scrollRequest,
+	                    onConsumeScrollRequest: { model.scrollRequest = nil },
+	                    fontSize: CGFloat(transcriptFontSize)
+	                )
+	                // Re-host on font size changes to keep the transcript layout stable.
+	                .id("collection-transcript-\(currentSession.id)-\(Int(transcriptFontSize))")
+	                // Keep "tap to dismiss keyboard" behavior scoped to the transcript
+	                // so composer interactions (including paste) don't immediately
+	                // resign first responder.
+	                .dismissKeyboardOnTap()
                 TerminalAgentConfigControls(model: model, session: currentSession, isEnabled: isPhoneControlled)
                     .background(Theme.cardBackground)
                 MessageComposer(
@@ -307,7 +308,7 @@ struct TerminalDetailView: View {
         }
         .sheet(isPresented: $showTextSizeSheet) {
             NavigationStack {
-                TerminalTextSizeView(model: model)
+                TerminalTranscriptPreferencesView(model: model, session: currentSession)
             }
         }
         .onAppear {
@@ -503,13 +504,15 @@ private struct TerminalPropertiesSheet: View {
         static let costDecimals: Int = 4
     }
 
-    var body: some View {
-        let terminalID = session.terminalID ?? session.metadata?.terminalId ?? "unknown"
-        let terminal = model.terminals.first(where: { $0.id == terminalID })
-        let host = terminal?.metadata?.host
-            ?? session.metadata?.host
-            ?? terminalID
-        let agent = terminalAgentLabel(for: session)
+	    var body: some View {
+	        let terminalID = session.terminalID ?? session.metadata?.terminalId
+	        let terminal = terminalID.flatMap { id in model.terminals.first(where: { $0.id == id }) }
+	        let terminalIDDisplay = terminalID ?? "unknown"
+	        let host = terminal?.metadata?.host
+	            ?? session.metadata?.host
+	            ?? terminalID
+	            ?? "unknown"
+	        let agent = terminalAgentLabel(for: session)
         let platformDisplay: String = {
             let trimmed = terminal?.metadata?.platform?.trimmingCharacters(in: .whitespacesAndNewlines)
             if let trimmed, !trimmed.isEmpty {
@@ -551,9 +554,9 @@ private struct TerminalPropertiesSheet: View {
             return nil
         }()
 
-        NavigationStack {
-            ZStack {
-                Theme.background.ignoresSafeArea()
+	        NavigationStack {
+	            ZStack {
+	                Theme.background.ignoresSafeArea()
                 List {
                     Section("Daemon") {
                         HStack {
@@ -576,11 +579,11 @@ private struct TerminalPropertiesSheet: View {
                         }
                     }
 
-                    if terminalID != "unknown" {
-                        Section {
-                            SheetActionButton(
-                                title: "Restart CLI",
-                                systemImage: "arrow.clockwise",
+	                    if let terminalID, !terminalID.isEmpty {
+	                        Section {
+	                            SheetActionButton(
+	                                title: "Restart CLI",
+	                                systemImage: "arrow.clockwise",
                                 tint: Theme.accent
                             ) {
                                 activeAlert = .restartCLI
@@ -600,11 +603,11 @@ private struct TerminalPropertiesSheet: View {
                             .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                             .disabled(!online)
                         } footer: {
-                            Text("Restart exits the CLI with a special restart code. If you run the CLI under a wrapper script, it can automatically re-launch in the same directory.")
-                                .font(Theme.caption)
-                                .foregroundColor(Theme.mutedText)
-                        }
-                    }
+	                            Text("Restart exits the CLI with a special restart code. If you run the CLI under a wrapper script, it can automatically re-launch in the same directory.")
+	                                .font(Theme.caption)
+	                                .foregroundColor(Theme.mutedText)
+	                        }
+	                    }
 
                     Section("Terminal") {
                         HStack {
@@ -625,14 +628,14 @@ private struct TerminalPropertiesSheet: View {
                             Text(flavorDisplay)
                                 .foregroundColor(Theme.mutedText)
                         }
-                        HStack {
-                            Text("Terminal ID")
-                            Spacer()
-                            Text(terminalID)
-                                .foregroundColor(Theme.mutedText)
-                                .textSelection(.enabled)
-                        }
-                    }
+	                        HStack {
+	                            Text("Terminal ID")
+	                            Spacer()
+	                            Text(terminalIDDisplay)
+	                                .foregroundColor(Theme.mutedText)
+	                                .textSelection(.enabled)
+	                        }
+	                    }
 
                     if let usage, usage.tokensTotal != nil || usage.costTotal != nil {
                         Section("Usage") {
@@ -676,11 +679,11 @@ private struct TerminalPropertiesSheet: View {
                         }
                     }
 
-                    if terminalID != "unknown" {
-                        Section {
-                            SheetActionButton(
-                                title: model.isDeletingTerminal ? "Deleting…" : "Delete Terminal",
-                                systemImage: model.isDeletingTerminal ? "hourglass" : "trash",
+	                    if let terminalID, !terminalID.isEmpty {
+	                        Section {
+	                            SheetActionButton(
+	                                title: model.isDeletingTerminal ? "Deleting…" : "Delete Terminal",
+	                                systemImage: model.isDeletingTerminal ? "hourglass" : "trash",
                                 tint: Theme.warning
                             ) {
                                 activeAlert = .deleteTerminal
@@ -705,13 +708,20 @@ private struct TerminalPropertiesSheet: View {
                     Button("Close") { dismiss() }
                 }
             }
-            .alert(item: $activeAlert) { alert in
-                switch alert {
-                case .deleteTerminal:
-                    return Alert(
-                        title: Text("Delete Terminal?"),
-                        message: Text("This will remove the terminal and its sessions from the server."),
-                        primaryButton: .destructive(Text("Delete")) {
+	            .alert(item: $activeAlert) { alert in
+	                switch alert {
+	                case .deleteTerminal:
+	                    guard let terminalID, !terminalID.isEmpty else {
+	                        return Alert(
+	                            title: Text("Terminal unavailable"),
+	                            message: Text("Unable to determine terminal ID."),
+	                            dismissButton: .cancel()
+	                        )
+	                    }
+	                    return Alert(
+	                        title: Text("Delete Terminal?"),
+	                        message: Text("This will remove the terminal and its sessions from the server."),
+	                        primaryButton: .destructive(Text("Delete")) {
                             model.deleteTerminal(terminalID) {
                                 dismiss()
                                 DispatchQueue.main.async {
@@ -719,23 +729,37 @@ private struct TerminalPropertiesSheet: View {
                                 }
                             }
                         },
-                        secondaryButton: .cancel()
-                    )
-                case .restartCLI:
-                    return Alert(
-                        title: Text("Restart CLI?"),
-                        message: Text("This requests the CLI shut down and (optionally) restart if it is running under a wrapper."),
-                        primaryButton: .destructive(Text("Restart")) {
-                            model.restartDaemon(terminalID: terminalID)
-                            dismiss()
-                        },
-                        secondaryButton: .cancel()
-                    )
-                case .stopCLI:
-                    return Alert(
-                        title: Text("Stop CLI?"),
-                        message: Text("This requests the CLI shut down. You can start it again from your terminal."),
-                        primaryButton: .destructive(Text("Stop")) {
+	                        secondaryButton: .cancel()
+	                    )
+	                case .restartCLI:
+	                    guard let terminalID, !terminalID.isEmpty else {
+	                        return Alert(
+	                            title: Text("Terminal unavailable"),
+	                            message: Text("Unable to determine terminal ID."),
+	                            dismissButton: .cancel()
+	                        )
+	                    }
+	                    return Alert(
+	                        title: Text("Restart CLI?"),
+	                        message: Text("This requests the CLI shut down and (optionally) restart if it is running under a wrapper."),
+	                        primaryButton: .destructive(Text("Restart")) {
+	                            model.restartDaemon(terminalID: terminalID)
+	                            dismiss()
+	                        },
+	                        secondaryButton: .cancel()
+	                    )
+	                case .stopCLI:
+	                    guard let terminalID, !terminalID.isEmpty else {
+	                        return Alert(
+	                            title: Text("Terminal unavailable"),
+	                            message: Text("Unable to determine terminal ID."),
+	                            dismissButton: .cancel()
+	                        )
+	                    }
+	                    return Alert(
+	                        title: Text("Stop CLI?"),
+	                        message: Text("This requests the CLI shut down. You can start it again from your terminal."),
+	                        primaryButton: .destructive(Text("Stop")) {
                             model.stopDaemon(terminalID: terminalID)
                             dismiss()
                         },
@@ -744,6 +768,146 @@ private struct TerminalPropertiesSheet: View {
                 }
             }
         }
+    }
+}
+
+private struct TerminalTranscriptPreferencesView: View {
+    @ObservedObject var model: HarnessViewModel
+    let session: SessionSummary
+
+    private var terminalID: String? {
+        session.terminalID ?? session.metadata?.terminalId
+    }
+
+    private enum Preview {
+        static let sampleText = "The quick brown fox jumps over the lazy dog."
+        static let sampleCommand = "echo \"hello\""
+    }
+
+	    var body: some View {
+	        let terminalIDValue = terminalID?.trimmingCharacters(in: .whitespacesAndNewlines)
+	        let hasTerminalID = terminalIDValue != nil && !(terminalIDValue?.isEmpty ?? true)
+	        let effectiveTerminalFontSize = model.effectiveTerminalFontSize(for: session)
+
+        ZStack {
+            Theme.background.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+	                    if let terminalID = terminalIDValue, hasTerminalID {
+	                        FeatureListCard {
+	                            VStack(alignment: .leading, spacing: 12) {
+	                                HStack {
+	                                    Text("This Terminal")
+	                                        .font(Theme.body)
+                                        .foregroundColor(Theme.messageText)
+                                    Spacer()
+                                    if model.hasTerminalTranscriptOverrides(terminalID: terminalID) {
+	                                        Text("override")
+	                                            .font(Theme.caption)
+	                                            .foregroundColor(Theme.mutedText)
+	                                    } else {
+	                                        Text("default")
+	                                            .font(Theme.caption)
+	                                            .foregroundColor(Theme.mutedText)
+	                                    }
+	                                }
+
+                                Toggle(
+                                    isOn: Binding(
+                                        get: { model.effectiveShowToolUse(forTerminalID: terminalID) },
+                                        set: { model.setTerminalTranscriptShowToolUse(terminalID: terminalID, value: $0) }
+                                    )
+                                ) {
+                                    Text("Show tool use")
+                                }
+
+                                Toggle(
+                                    isOn: Binding(
+                                        get: { model.effectiveShowToolOutput(forTerminalID: terminalID) },
+                                        set: { model.setTerminalTranscriptShowToolOutput(terminalID: terminalID, value: $0) }
+                                    )
+                                ) {
+                                    Text("Show tool output")
+                                }
+                                .disabled(!model.effectiveShowToolUse(forTerminalID: terminalID))
+
+                                Toggle(
+                                    isOn: Binding(
+                                        get: { model.effectiveShowReasoning(forTerminalID: terminalID) },
+                                        set: { model.setTerminalTranscriptShowReasoning(terminalID: terminalID, value: $0) }
+                                    )
+                                ) {
+                                    Text("Show reasoning summaries")
+                                }
+
+                                Divider()
+
+                                HStack {
+                                    Text("Text Size")
+                                        .font(Theme.body)
+                                        .foregroundColor(Theme.messageText)
+                                    Spacer()
+                                    Text("\(Int(effectiveTerminalFontSize))")
+                                        .font(Theme.caption)
+                                        .foregroundColor(Theme.mutedText)
+                                }
+	                                Slider(
+	                                    value: Binding(
+	                                        get: { model.effectiveTerminalFontSize(for: session) },
+	                                        set: { model.setTerminalTranscriptFontSize(terminalID: terminalID, value: $0) }
+	                                    ),
+	                                    in: TerminalAppearance.minFontSize...TerminalAppearance.maxFontSize,
+	                                    step: TerminalAppearance.fontSizeStep
+	                                )
+
+	                                VStack(alignment: .leading, spacing: 10) {
+	                                    Text("Preview")
+	                                        .font(Theme.caption)
+	                                        .foregroundColor(Theme.mutedText)
+	                                    Text(Preview.sampleText)
+	                                        .font(TerminalAppearance.swiftUIFont(size: effectiveTerminalFontSize))
+	                                        .foregroundColor(Theme.messageText)
+	                                    Text(Preview.sampleCommand)
+	                                        .font(
+	                                            .custom(
+	                                                TerminalAppearance.transcriptFontFamilyName,
+	                                                size: CGFloat(TerminalAppearance.codeFontSize(for: effectiveTerminalFontSize))
+	                                            )
+	                                        )
+	                                        .foregroundColor(Theme.codeText)
+	                                        .padding(10)
+	                                        .background(Theme.codeBackground)
+	                                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+	                                }
+
+	                                Button("Use Global Defaults") {
+	                                    model.clearTerminalTranscriptOverrides(terminalID: terminalID)
+	                                }
+	                                .buttonStyle(.borderless)
+                                .foregroundColor(Theme.mutedText)
+                                .disabled(!model.hasTerminalTranscriptOverrides(terminalID: terminalID))
+                            }
+                            .padding(.vertical, 8)
+	                        }
+	                        .padding(.horizontal, 16)
+	                    } else {
+	                        FeatureListCard {
+	                            Text("Terminal transcript settings are unavailable for this session.")
+	                                .font(Theme.body)
+	                                .foregroundColor(Theme.mutedText)
+	                                .frame(maxWidth: .infinity, alignment: .leading)
+	                                .padding(.vertical, 8)
+	                        }
+	                        .padding(.horizontal, 16)
+	                    }
+
+	                    Spacer(minLength: 0)
+	                }
+                .padding(.top, 12)
+            }
+        }
+        .navigationTitle("Transcript")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

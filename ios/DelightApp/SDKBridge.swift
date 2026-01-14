@@ -409,6 +409,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             rebuildUIEventTranscript()
         }
     }
+    /// terminalTranscriptOverrides stores per-terminal transcript overrides
+    /// (verbosity toggles and font size) keyed by terminal id.
+    ///
+    /// These settings are optional per terminal; unset values fall back to the
+    /// global transcript preferences stored on the view model.
+	    @Published private var terminalTranscriptOverrides: [String: TerminalTranscriptOverrides] = [:]
     @Published var terminalFontSize: Double = TerminalAppearance.defaultFontSize {
         didSet {
             let clamped = TerminalAppearance.clampFontSize(terminalFontSize)
@@ -467,9 +473,185 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     private var transcriptCacheBySessionID: [String: TranscriptCache] = [:]
 
+    /// TerminalTranscriptOverrides captures per-terminal transcript settings.
+    private struct TerminalTranscriptOverrides: Codable, Equatable {
+        /// showToolUse overrides the global "Show tool use" setting.
+        var showToolUse: Bool?
+        /// showToolOutput overrides the global "Show tool output" setting.
+        var showToolOutput: Bool?
+        /// showReasoning overrides the global "Show reasoning summaries" setting.
+        var showReasoning: Bool?
+        /// fontSize overrides the global transcript font size for a terminal.
+        var fontSize: Double?
+    }
+
+    /// TranscriptVisibilitySnapshot captures the effective transcript settings
+    /// for a session at a point in time.
+    private struct TranscriptVisibilitySnapshot: Equatable {
+        let showToolUse: Bool
+        let showToolOutput: Bool
+        let showReasoning: Bool
+        let fontSize: Double
+    }
+
+    private enum TerminalTranscriptDefaults {
+        static let preferencesKeyPrefix = HarnessViewModel.settingsKeyPrefix + "terminalTranscript."
+    }
+
     private struct TranscriptDiskCache {
         static let directoryName = "transcripts"
         static let latestPageSuffix = "latest.json"
+    }
+
+    private func terminalTranscriptKey(terminalID: String) -> String {
+        TerminalTranscriptDefaults.preferencesKeyPrefix + terminalID
+    }
+
+    private func mainThreadRead<T>(_ work: () -> T) -> T {
+        if Thread.isMainThread {
+            return work()
+        }
+        return DispatchQueue.main.sync(execute: work)
+    }
+
+	    private func loadTerminalTranscriptOverrides(terminalID: String) -> TerminalTranscriptOverrides? {
+	        let trimmed = terminalID.trimmingCharacters(in: .whitespacesAndNewlines)
+	        guard !trimmed.isEmpty else { return nil }
+	        let key = terminalTranscriptKey(terminalID: trimmed)
+	        guard let data = settingsDefaults.data(forKey: key) else { return nil }
+	        if let decoded = try? JSONDecoder().decode(TerminalTranscriptOverrides.self, from: data) {
+	            return decoded
+	        }
+	        return nil
+	    }
+
+	    /// hasTerminalTranscriptOverrides returns true when a terminal has persisted
+	    /// transcript overrides stored in `UserDefaults`.
+	    func hasTerminalTranscriptOverrides(terminalID: String) -> Bool {
+	        let trimmed = terminalID.trimmingCharacters(in: .whitespacesAndNewlines)
+	        guard !trimmed.isEmpty else { return false }
+	        return settingsDefaults.data(forKey: terminalTranscriptKey(terminalID: trimmed)) != nil
+	    }
+
+    private func storeTerminalTranscriptOverrides(_ overrides: TerminalTranscriptOverrides?, terminalID: String) {
+        let trimmed = terminalID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let key = terminalTranscriptKey(terminalID: trimmed)
+
+        if let overrides {
+            if let data = try? JSONEncoder().encode(overrides) {
+                settingsDefaults.set(data, forKey: key)
+            }
+            terminalTranscriptOverrides[trimmed] = overrides
+        } else {
+            settingsDefaults.removeObject(forKey: key)
+            terminalTranscriptOverrides.removeValue(forKey: trimmed)
+        }
+    }
+
+    private func terminalID(forSessionID sessionID: String) -> String? {
+        sessions.first(where: { $0.id == sessionID })?.terminalID
+            ?? sessions.first(where: { $0.id == sessionID })?.metadata?.terminalId
+    }
+
+    /// transcriptVisibilitySnapshot returns effective transcript visibility + font size
+    /// for a given session id.
+    private func transcriptVisibilitySnapshot(forSessionID sessionID: String) -> TranscriptVisibilitySnapshot {
+        let globalShowToolUse = showToolUseInTranscript
+        let globalShowToolOutput = showToolOutputInTranscript
+        let globalShowReasoning = showReasoningSummariesInTranscript
+        let globalFontSize = terminalFontSize
+
+        guard let terminalID = terminalID(forSessionID: sessionID),
+              !terminalID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return TranscriptVisibilitySnapshot(
+                showToolUse: globalShowToolUse,
+                showToolOutput: globalShowToolOutput,
+                showReasoning: globalShowReasoning,
+                fontSize: globalFontSize
+            )
+        }
+
+        let overrides = loadTerminalTranscriptOverrides(terminalID: terminalID)
+        return TranscriptVisibilitySnapshot(
+            showToolUse: overrides?.showToolUse ?? globalShowToolUse,
+            showToolOutput: overrides?.showToolOutput ?? globalShowToolOutput,
+            showReasoning: overrides?.showReasoning ?? globalShowReasoning,
+            fontSize: overrides?.fontSize ?? globalFontSize
+        )
+    }
+
+    /// effectiveTerminalFontSize returns the effective transcript font size for
+    /// the provided session, falling back to the global setting.
+    func effectiveTerminalFontSize(for session: SessionSummary) -> Double {
+        let terminalID = session.terminalID ?? session.metadata?.terminalId
+        guard let terminalID, !terminalID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return terminalFontSize
+        }
+        let overrides = loadTerminalTranscriptOverrides(terminalID: terminalID)
+        return overrides?.fontSize ?? terminalFontSize
+    }
+
+    func effectiveShowToolUse(forTerminalID terminalID: String) -> Bool {
+        loadTerminalTranscriptOverrides(terminalID: terminalID)?.showToolUse ?? showToolUseInTranscript
+    }
+
+    func effectiveShowToolOutput(forTerminalID terminalID: String) -> Bool {
+        loadTerminalTranscriptOverrides(terminalID: terminalID)?.showToolOutput ?? showToolOutputInTranscript
+    }
+
+    func effectiveShowReasoning(forTerminalID terminalID: String) -> Bool {
+        loadTerminalTranscriptOverrides(terminalID: terminalID)?.showReasoning ?? showReasoningSummariesInTranscript
+    }
+
+    func setTerminalTranscriptShowToolUse(terminalID: String, value: Bool) {
+        var overrides = loadTerminalTranscriptOverrides(terminalID: terminalID) ?? TerminalTranscriptOverrides()
+        overrides.showToolUse = value
+        storeTerminalTranscriptOverrides(overrides, terminalID: terminalID)
+        rebuildIfSelectedTerminalMatches(terminalID: terminalID)
+    }
+
+    func setTerminalTranscriptShowToolOutput(terminalID: String, value: Bool) {
+        var overrides = loadTerminalTranscriptOverrides(terminalID: terminalID) ?? TerminalTranscriptOverrides()
+        overrides.showToolOutput = value
+        storeTerminalTranscriptOverrides(overrides, terminalID: terminalID)
+        rebuildIfSelectedTerminalMatches(terminalID: terminalID)
+    }
+
+    func setTerminalTranscriptShowReasoning(terminalID: String, value: Bool) {
+        var overrides = loadTerminalTranscriptOverrides(terminalID: terminalID) ?? TerminalTranscriptOverrides()
+        overrides.showReasoning = value
+        storeTerminalTranscriptOverrides(overrides, terminalID: terminalID)
+        rebuildIfSelectedTerminalMatches(terminalID: terminalID)
+    }
+
+    func setTerminalTranscriptFontSize(terminalID: String, value: Double) {
+        var overrides = loadTerminalTranscriptOverrides(terminalID: terminalID) ?? TerminalTranscriptOverrides()
+        overrides.fontSize = TerminalAppearance.clampFontSize(value)
+        storeTerminalTranscriptOverrides(overrides, terminalID: terminalID)
+        DispatchQueue.main.async {
+            self.objectWillChange.send()
+        }
+    }
+
+    func clearTerminalTranscriptOverrides(terminalID: String) {
+        storeTerminalTranscriptOverrides(nil, terminalID: terminalID)
+        rebuildIfSelectedTerminalMatches(terminalID: terminalID)
+    }
+
+    private func rebuildIfSelectedTerminalMatches(terminalID: String) {
+        let trimmed = terminalID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let shouldRebuild = mainThreadRead {
+            guard !self.sessionID.isEmpty else { return false }
+            return self.terminalID(forSessionID: self.sessionID) == trimmed
+        }
+        guard shouldRebuild else { return }
+
+        DispatchQueue.main.async {
+            self.rebuildUIEventTranscript()
+        }
     }
 
     private func serverCacheKey() -> String {
@@ -2196,7 +2378,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
-    private func handleUIEventUpdate(_ json: String) -> Bool {
+	    private func handleUIEventUpdate(_ json: String) -> Bool {
         guard let update = decodeUpdateEnvelope(json) else {
             return false
         }
@@ -2210,8 +2392,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             self.uiEventsByKey[key] = payload
         }
 
-        // Only mutate the visible transcript when the detail view is open for this session.
-        guard payload.sessionID == self.sessionID else { return true }
+	        // Only mutate the visible transcript when the detail view is open for this session.
+	        guard payload.sessionID == self.sessionID else { return true }
+	        let snapshot = transcriptVisibilitySnapshot(forSessionID: payload.sessionID)
 
         // If this is a "thinking end" event with no body, treat it as a state update only.
         if payload.kind == "thinking",
@@ -2222,50 +2405,50 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             return true
         }
 
-        // Respect transcript verbosity settings by hiding tool/reasoning UI event rows.
-        if !shouldDisplayUIEvent(payload) {
-            removeUIEventMessage(eventID: payload.eventID)
-            return true
-        }
+	        // Respect transcript verbosity settings by hiding tool/reasoning UI event rows.
+	        if !shouldDisplayUIEvent(payload, snapshot: snapshot) {
+	            removeUIEventMessage(eventID: payload.eventID)
+	            return true
+	        }
 
-        let markdown = uiEventMarkdown(payload)
-        if markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            // Even if the tool Markdown is empty, preserve a minimal "Tool use"
-            // indicator when tool details are hidden.
-            if payload.kind == "tool",
-               !showToolUseInTranscript,
-               !isPatchUIEvent(payload) {
-                applyUIEventMessage(payload, markdown: markdown)
-            }
-            return true
-        }
-        if payload.kind == "reasoning",
-           stripReasoningHeading(markdown).isEmpty {
-            removeUIEventMessage(eventID: payload.eventID)
-            return true
-        }
-        applyUIEventMessage(payload, markdown: markdown)
-        return true
-    }
+	        let markdown = uiEventMarkdown(payload, snapshot: snapshot)
+	        if markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+	            // Even if the tool Markdown is empty, preserve a minimal "Tool use"
+	            // indicator when tool details are hidden.
+	            if payload.kind == "tool",
+	               !snapshot.showToolUse,
+	               !isPatchUIEvent(payload) {
+	                applyUIEventMessage(payload, markdown: markdown, snapshot: snapshot)
+	            }
+	            return true
+	        }
+	        if payload.kind == "reasoning",
+	           stripReasoningHeading(markdown).isEmpty {
+	            removeUIEventMessage(eventID: payload.eventID)
+	            return true
+	        }
+	        applyUIEventMessage(payload, markdown: markdown, snapshot: snapshot)
+	        return true
+	    }
 
     private func uiEventKey(sessionID: String, eventID: String) -> String {
         "\(sessionID)|\(eventID)"
     }
 
-    private func uiEventMarkdown(_ payload: UIEventPayload) -> String {
-        let brief = payload.briefMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
-        let full = payload.fullMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+	    private func uiEventMarkdown(_ payload: UIEventPayload, snapshot: TranscriptVisibilitySnapshot) -> String {
+	        let brief = payload.briefMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+	        let full = payload.fullMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if payload.kind == "tool" {
+	        if payload.kind == "tool" {
             // Patches (file diffs) should always render their full content, even
             // when the user disables verbose tool logs. Users almost always want
             // to see what changed.
-            if isPatchUIEvent(payload) {
-                return full.isEmpty ? brief : full
-            }
-            if showToolOutputInTranscript {
-                return full.isEmpty ? brief : full
-            }
+	            if isPatchUIEvent(payload) {
+	                return full.isEmpty ? brief : full
+	            }
+	            if snapshot.showToolOutput {
+	                return full.isEmpty ? brief : full
+	            }
             // When tool output is hidden, still show the full tool invocation.
             // Some backends truncate `briefMarkdown` for compactness, while keeping
             // the full command in `fullMarkdown` (alongside an output section).
@@ -2273,8 +2456,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             if !noOutputFull.isEmpty {
                 return noOutputFull
             }
-            return brief.isEmpty ? full : brief
-        }
+	        return brief.isEmpty ? full : brief
+	    }
         if payload.kind == "reasoning" {
             // Older backends may send briefMarkdown="Reasoning" and store the actual
             // summary content in fullMarkdown.
@@ -2322,19 +2505,19 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     /// shouldDisplayUIEvent returns true if a UI event payload should be surfaced as
     /// a transcript entry given the user's verbosity preferences.
-    private func shouldDisplayUIEvent(_ payload: UIEventPayload) -> Bool {
-        switch payload.kind {
-        case "tool":
-            // Always keep a tool indicator visible (even when tool details are
-            // disabled) so the transcript doesn't look idle while the agent is
-            // still doing work.
-            return true
-        case "reasoning":
-            return showReasoningSummariesInTranscript
-        default:
-            return true
-        }
-    }
+	    private func shouldDisplayUIEvent(_ payload: UIEventPayload, snapshot: TranscriptVisibilitySnapshot) -> Bool {
+	        switch payload.kind {
+	        case "tool":
+	            // Always keep a tool indicator visible (even when tool details are
+	            // disabled) so the transcript doesn't look idle while the agent is
+	            // still doing work.
+	            return true
+	        case "reasoning":
+	            return snapshot.showReasoning
+	        default:
+	            return true
+	        }
+	    }
 
     /// isPatchUIEvent reports whether payload contains a patch/diff rendering.
     private func isPatchUIEvent(_ payload: UIEventPayload) -> Bool {
@@ -2351,11 +2534,15 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     /// Reasoning events are rendered as a muted callout with a lightbulb icon
     /// rather than raw Markdown headings. Other UI events use the Markdown
     /// parser so tool updates and patches render with code fences.
-    private func uiEventBlocks(_ payload: UIEventPayload, markdown: String) -> [MessageBlock] {
-        if payload.kind == "reasoning" {
-            let content = stripReasoningHeading(markdown)
-            return [
-                .callout(
+	    private func uiEventBlocks(
+	        _ payload: UIEventPayload,
+	        markdown: String,
+	        snapshot: TranscriptVisibilitySnapshot
+	    ) -> [MessageBlock] {
+	        if payload.kind == "reasoning" {
+	            let content = stripReasoningHeading(markdown)
+	            return [
+	                .callout(
                     CalloutSummary(
                         title: "Reasoning",
                         icon: "lightbulb",
@@ -2364,14 +2551,14 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     )
                 )
             ]
-        }
+	        }
 
-        if payload.kind == "tool",
-           !showToolUseInTranscript,
-           !isPatchUIEvent(payload) {
-            let icon: String
-            if let tool = extractToolCall(from: markdown) ?? extractToolCall(from: payload.briefMarkdown) {
-                icon = iconForToolTitle(tool.title)
+	        if payload.kind == "tool",
+	           !snapshot.showToolUse,
+	           !isPatchUIEvent(payload) {
+	            let icon: String
+	            if let tool = extractToolCall(from: markdown) ?? extractToolCall(from: payload.briefMarkdown) {
+	                icon = iconForToolTitle(tool.title)
             } else {
                 icon = "wrench.and.screwdriver"
             }
@@ -2387,11 +2574,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             ]
         }
 
-        if payload.kind == "tool",
-           !isPatchUIEvent(payload),
-           let summary = toolCalloutSummary(payload: payload, markdown: markdown) {
-            return [.toolCallout(summary)]
-        }
+	        if payload.kind == "tool",
+	           !isPatchUIEvent(payload),
+	           let summary = toolCalloutSummary(payload: payload, markdown: markdown, snapshot: snapshot) {
+	            return [.toolCallout(summary)]
+	        }
 
         let blocks = splitMarkdownBlocks(markdown)
         return blocks.isEmpty ? [.text(markdown)] : blocks
@@ -2453,9 +2640,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     /// some put it in `briefMarkdown` only and put the command/output in
     /// `fullMarkdown`. To keep tool UI event styling consistent, we extract the
     /// title from either source and always render through `ToolCalloutView`.
-    private func toolCalloutSummary(payload: UIEventPayload, markdown: String) -> ToolCalloutSummary? {
-        let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
+	    private func toolCalloutSummary(
+	        payload: UIEventPayload,
+	        markdown: String,
+	        snapshot: TranscriptVisibilitySnapshot
+	    ) -> ToolCalloutSummary? {
+	        let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+	        guard !trimmed.isEmpty else { return nil }
 
         let tool = extractToolCall(from: trimmed) ?? extractToolCall(from: payload.briefMarkdown)
         let title = tool?.title ?? "Tool"
@@ -2468,13 +2659,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let extraction = extractFirstCodeFence(from: bodySource) ?? extractFirstCodeFence(from: trimmed)
         let command = (extraction?.content ?? bodySource).trimmingCharacters(in: .whitespacesAndNewlines)
 
-        var outputBlocks: [ToolCalloutOutputBlock] = []
-        if showToolOutputInTranscript, let remainder = extraction?.remainder {
-            let outputMarkdown = extractToolOutputSection(remainder)
-            if !outputMarkdown.isEmpty {
-                outputBlocks = parseToolCalloutOutputBlocks(from: outputMarkdown)
-            }
-        }
+	        var outputBlocks: [ToolCalloutOutputBlock] = []
+	        if snapshot.showToolOutput, let remainder = extraction?.remainder {
+	            let outputMarkdown = extractToolOutputSection(remainder)
+	            if !outputMarkdown.isEmpty {
+	                outputBlocks = parseToolCalloutOutputBlocks(from: outputMarkdown)
+	            }
+	        }
 
         return ToolCalloutSummary(title: title, icon: icon, command: command, output: outputBlocks)
     }
@@ -2628,10 +2819,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func applyUIEventMessage(_ payload: UIEventPayload, markdown: String) {
-        let blocks = uiEventBlocks(payload, markdown: markdown)
-        let item = MessageItem(
-            id: "ui-\(payload.eventID)",
+	    private func applyUIEventMessage(_ payload: UIEventPayload, markdown: String, snapshot: TranscriptVisibilitySnapshot) {
+	        let blocks = uiEventBlocks(payload, markdown: markdown, snapshot: snapshot)
+	        let item = MessageItem(
+	            id: "ui-\(payload.eventID)",
             seq: nil,
             localID: nil,
             uuid: nil,
@@ -2665,17 +2856,18 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     ///
     /// This is invoked when transcript verbosity preferences change so the transcript
     /// immediately reflects toggles (e.g. hide reasoning summaries).
-    private func rebuildUIEventTranscript() {
-        let current = sessionID
-        guard !current.isEmpty else { return }
+	    private func rebuildUIEventTranscript() {
+	        let current = sessionID
+	        guard !current.isEmpty else { return }
 
-        DispatchQueue.main.async {
-            let baseMessages = self.messages.filter { !$0.id.hasPrefix("ui-") }
+	        DispatchQueue.main.async {
+	            let snapshot = self.transcriptVisibilitySnapshot(forSessionID: current)
+	            let baseMessages = self.messages.filter { !$0.id.hasPrefix("ui-") }
 
-            var desired: [MessageItem] = []
-            for (key, payload) in self.uiEventsByKey {
-                guard key.hasPrefix("\(current)|") else { continue }
-                guard self.shouldDisplayUIEvent(payload) else { continue }
+	            var desired: [MessageItem] = []
+	            for (key, payload) in self.uiEventsByKey {
+	                guard key.hasPrefix("\(current)|") else { continue }
+	                guard self.shouldDisplayUIEvent(payload, snapshot: snapshot) else { continue }
 
                 // Special-case "thinking end" events with empty bodies: treat them as
                 // state updates only and do not render a transcript entry.
@@ -2686,44 +2878,44 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     continue
                 }
 
-                let markdown = self.uiEventMarkdown(payload)
-                if markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    // Even if tool Markdown is empty, preserve a minimal "Tool use"
-                    // indicator when tool details are hidden.
-                    if payload.kind == "tool",
-                       !self.showToolUseInTranscript,
-                       !self.isPatchUIEvent(payload) {
-                        desired.append(
-                            MessageItem(
-                                id: "ui-\(payload.eventID)",
+	                let markdown = self.uiEventMarkdown(payload, snapshot: snapshot)
+	                if markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+	                    // Even if tool Markdown is empty, preserve a minimal "Tool use"
+	                    // indicator when tool details are hidden.
+	                    if payload.kind == "tool",
+	                       !snapshot.showToolUse,
+	                       !self.isPatchUIEvent(payload) {
+	                        desired.append(
+	                            MessageItem(
+	                                id: "ui-\(payload.eventID)",
                                 seq: nil,
                                 localID: nil,
-                                uuid: nil,
-                                role: .event,
-                                blocks: self.uiEventBlocks(payload, markdown: markdown),
-                                createdAt: payload.atMs
-                            )
-                        )
-                    }
-                    continue
-                }
+	                                uuid: nil,
+	                                role: .event,
+	                                blocks: self.uiEventBlocks(payload, markdown: markdown, snapshot: snapshot),
+	                                createdAt: payload.atMs
+	                            )
+	                        )
+	                    }
+	                    continue
+	                }
                 if payload.kind == "reasoning",
                    self.stripReasoningHeading(markdown).isEmpty {
                     continue
                 }
 
-                desired.append(
-                    MessageItem(
-                        id: "ui-\(payload.eventID)",
+	                desired.append(
+	                    MessageItem(
+	                        id: "ui-\(payload.eventID)",
                         seq: nil,
                         localID: nil,
-                        uuid: nil,
-                        role: .event,
-                        blocks: self.uiEventBlocks(payload, markdown: markdown),
-                        createdAt: payload.atMs
-                    )
-                )
-            }
+	                        uuid: nil,
+	                        role: .event,
+	                        blocks: self.uiEventBlocks(payload, markdown: markdown, snapshot: snapshot),
+	                        createdAt: payload.atMs
+	                    )
+	                )
+	            }
 
             var merged = baseMessages
             merged.append(contentsOf: desired)
@@ -3617,16 +3809,17 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 continue
             }
 
-            if let payload = extractDurableUIEventPayload(from: content) {
-                let key = uiEventKey(sessionID: payload.sessionID, eventID: payload.eventID)
-                uiEvents[key] = payload
-                if !shouldDisplayUIEvent(payload) {
-                    continue
-                }
-                let markdown = uiEventMarkdown(payload)
-                let blocks = uiEventBlocks(payload, markdown: markdown)
-                let uiItem = MessageItem(
-                    id: "ui-\(payload.eventID)",
+	            if let payload = extractDurableUIEventPayload(from: content) {
+	                let snapshot = transcriptVisibilitySnapshot(forSessionID: payload.sessionID)
+	                let key = uiEventKey(sessionID: payload.sessionID, eventID: payload.eventID)
+	                uiEvents[key] = payload
+	                if !shouldDisplayUIEvent(payload, snapshot: snapshot) {
+	                    continue
+	                }
+	                let markdown = uiEventMarkdown(payload, snapshot: snapshot)
+	                let blocks = uiEventBlocks(payload, markdown: markdown, snapshot: snapshot)
+	                let uiItem = MessageItem(
+	                    id: "ui-\(payload.eventID)",
                     seq: seq,
                     localID: nil,
                     uuid: nil,

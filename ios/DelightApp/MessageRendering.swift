@@ -34,6 +34,18 @@ struct MessageBubble: View {
         /// around non-code event messages so they don't visually stick to the
         /// neighboring chat bubbles.
         static let eventTextVerticalPadding: CGFloat = 4
+
+        /// baseRowVerticalPaddingEm is the baseline vertical padding applied
+        /// above and below each transcript row, expressed in "em" units.
+        ///
+        /// Note: this is per-side padding. At 0.5em, the total gap between
+        /// two adjacent rows is ~1em, which keeps the transcript readable
+        /// without feeling overly sparse.
+        static let baseRowVerticalPaddingEm: CGFloat = 0.7
+
+        /// minRowVerticalPadding is a floor for row padding so very small font
+        /// sizes still have comfortable separation.
+        static let minRowVerticalPadding: CGFloat = 6
     }
 
     var body: some View {
@@ -54,7 +66,7 @@ struct MessageBubble: View {
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
         .padding(.horizontal, Layout.bubbleHorizontalPadding)
-        .padding(.vertical, eventVerticalPadding(for: message))
+        .padding(.vertical, rowVerticalPadding(for: message, fontSize: fontSize))
     }
 
     /// eventVerticalPadding returns extra vertical spacing for tool/thinking
@@ -66,6 +78,16 @@ struct MessageBubble: View {
             return false
         }
         return hasCodeBlock ? Layout.eventCodeBlockVerticalPadding : Layout.eventTextVerticalPadding
+    }
+
+    /// rowVerticalPadding returns the per-side padding applied around each
+    /// transcript row.
+    private func rowVerticalPadding(for message: MessageItem, fontSize: CGFloat) -> CGFloat {
+        let base = max(fontSize * Layout.baseRowVerticalPaddingEm, Layout.minRowVerticalPadding)
+        if message.role == .event {
+            return max(base, eventVerticalPadding(for: message))
+        }
+        return base
     }
 }
 
@@ -142,12 +164,13 @@ private struct MarkdownText: View {
             // here, the desired value flows through that scaling path and is
             // applied consistently across paragraphs/headings.
             .markdownTextStyle {
+                FontFamily(.custom(TerminalAppearance.transcriptFontFamilyName))
                 FontSize(fontSize)
                 ForegroundColor(textColor)
                 BackgroundColor(nil)
             }
             .markdownTextStyle(\.code) {
-                FontFamilyVariant(.monospaced)
+                FontFamily(.custom(TerminalAppearance.transcriptFontFamilyName))
                 FontSize(max(fontSize * 0.9, 12))
                 ForegroundColor(Theme.codeText)
                 BackgroundColor(Theme.codeBackground)
@@ -170,7 +193,7 @@ private struct MarkdownText: View {
                         .background(Theme.codeBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .markdownTextStyle {
-                            FontFamilyVariant(.monospaced)
+                            FontFamily(.custom(TerminalAppearance.transcriptFontFamilyName))
                             FontSize(max(fontSize * 0.9, 12))
                             ForegroundColor(Theme.codeText)
                             BackgroundColor(nil)
@@ -287,7 +310,8 @@ private struct CalloutView: View {
                     .font(.system(size: bodyFontSize, weight: Layout.iconWeight))
                     .foregroundColor(Theme.mutedText)
                 Text(summary.title)
-                    .font(.custom("AvenirNext-DemiBold", size: bodyFontSize))
+                    .font(TerminalAppearance.swiftUIFont(size: bodyFontSize))
+                    .fontWeight(.semibold)
                     .foregroundColor(Theme.mutedText)
             }
 
@@ -333,7 +357,8 @@ private struct ToolCalloutView: View {
                     .font(.system(size: bodyFontSize, weight: Layout.iconWeight))
                     .foregroundColor(Theme.mutedText)
                 Text(summary.title)
-                    .font(.custom("AvenirNext-DemiBold", size: bodyFontSize))
+                    .font(TerminalAppearance.swiftUIFont(size: bodyFontSize))
+                    .fontWeight(.semibold)
                     .foregroundColor(Theme.mutedText)
             }
 
@@ -345,13 +370,16 @@ private struct ToolCalloutView: View {
                     content: trimmedCommand,
                     fontSize: bodyFontSize,
                     displayTextTransform: softWrapCodeForDisplay,
-                    chromeStyle: .borderless
+                    chromeStyle: .borderless,
+                    backgroundOverride: Theme.calloutBackground,
+                    horizontalPaddingOverride: 0
                 )
             }
 
             if !outputBlocks.isEmpty {
                 Text("Output")
-                    .font(.custom("AvenirNext-DemiBold", size: bodyFontSize))
+                    .font(TerminalAppearance.swiftUIFont(size: bodyFontSize))
+                    .fontWeight(.semibold)
                     .foregroundColor(Theme.mutedText)
                     .padding(.top, 2)
 
@@ -363,7 +391,9 @@ private struct ToolCalloutView: View {
                             content: content,
                             fontSize: bodyFontSize,
                             displayTextTransform: softWrapCodeForDisplay,
-                            chromeStyle: .borderless
+                            chromeStyle: .borderless,
+                            backgroundOverride: Theme.calloutBackground,
+                            horizontalPaddingOverride: 0
                         )
                     }
                 }
@@ -396,6 +426,10 @@ private struct CodeBlockView: View {
     let fontSize: CGFloat
     let displayTextTransform: ((String) -> String)?
     let chromeStyle: ChromeStyle
+    let backgroundOverride: Color?
+    let borderOverride: Color?
+    let horizontalPaddingOverride: CGFloat?
+    let verticalPaddingOverride: CGFloat?
 
     /// Preview limits keep large code/tool outputs from forcing expensive text
     /// layout work while scrolling the transcript.
@@ -412,6 +446,28 @@ private struct CodeBlockView: View {
 
     @State private var isShowingFull = false
 
+    init(
+        language: String?,
+        content: String,
+        fontSize: CGFloat,
+        displayTextTransform: ((String) -> String)?,
+        chromeStyle: ChromeStyle,
+        backgroundOverride: Color? = nil,
+        borderOverride: Color? = nil,
+        horizontalPaddingOverride: CGFloat? = nil,
+        verticalPaddingOverride: CGFloat? = nil
+    ) {
+        self.language = language
+        self.content = content
+        self.fontSize = fontSize
+        self.displayTextTransform = displayTextTransform
+        self.chromeStyle = chromeStyle
+        self.backgroundOverride = backgroundOverride
+        self.borderOverride = borderOverride
+        self.horizontalPaddingOverride = horizontalPaddingOverride
+        self.verticalPaddingOverride = verticalPaddingOverride
+    }
+
     var body: some View {
         let normalizedLanguage = language?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let codeFontSize = CGFloat(TerminalAppearance.codeFontSize(for: Double(fontSize)))
@@ -419,18 +475,27 @@ private struct CodeBlockView: View {
         let displayText = displayTextTransform?(preview.text) ?? preview.text
         let showsBackground = chromeStyle != .none
         let showsBorder = chromeStyle == .full
+        let resolvedBackground = backgroundOverride ?? Theme.codeBackground
+        let resolvedBorder = borderOverride ?? Theme.codeBorder
+        let resolvedPadding = EdgeInsets(
+            top: verticalPaddingOverride ?? 12,
+            leading: horizontalPaddingOverride ?? 12,
+            bottom: verticalPaddingOverride ?? 12,
+            trailing: horizontalPaddingOverride ?? 12
+        )
 
         VStack(alignment: .leading, spacing: 8) {
             if let language, !language.isEmpty {
                 Text(language)
-                    .font(.system(size: max(codeFontSize - 3, 10), weight: .semibold, design: .monospaced))
+                    .font(TerminalAppearance.swiftUIFont(size: max(codeFontSize - 3, 10)))
+                    .fontWeight(.semibold)
                     .foregroundColor(Theme.accent)
             }
             if normalizedLanguage == "diff" {
                 DiffCodePreviewView(text: preview.text, fontSize: codeFontSize)
             } else {
                 Text(displayText)
-                    .font(.system(size: codeFontSize, weight: .regular, design: .monospaced))
+                    .font(TerminalAppearance.swiftUIFont(size: codeFontSize))
                     .foregroundColor(Theme.codeText)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -440,25 +505,27 @@ private struct CodeBlockView: View {
                     Button("Show full") {
                         isShowingFull = true
                     }
-                    .font(.system(size: max(codeFontSize - 2, 12), weight: .semibold))
+                    .font(TerminalAppearance.swiftUIFont(size: max(codeFontSize - 2, 12)))
+                    .fontWeight(.semibold)
                     .foregroundColor(Theme.accent)
 
                     Button("Copy") {
                         UIPasteboard.general.string = content
                     }
-                    .font(.system(size: max(codeFontSize - 2, 12), weight: .semibold))
+                    .font(TerminalAppearance.swiftUIFont(size: max(codeFontSize - 2, 12)))
+                    .fontWeight(.semibold)
                     .foregroundColor(Theme.accent)
                 }
                 .padding(.top, 2)
             }
         }
-        .padding(showsBackground ? 12 : 0)
-        .background(showsBackground ? Theme.codeBackground : Color.clear)
+        .padding(showsBackground ? resolvedPadding : EdgeInsets())
+        .background(showsBackground ? resolvedBackground : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: showsBackground ? 12 : 0, style: .continuous))
         .overlay(
             Group {
                 if showsBorder {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Theme.codeBorder, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(resolvedBorder, lineWidth: 1)
                 }
             }
         )
@@ -552,7 +619,7 @@ private struct DiffCodePreviewView: View {
         VStack(alignment: .leading, spacing: DiffLayout.lineSpacing) {
             ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                 Text(line)
-                    .font(.system(size: fontSize, weight: .regular, design: .monospaced))
+                    .font(TerminalAppearance.swiftUIFont(size: fontSize))
                     .foregroundColor(color(for: line))
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -616,7 +683,7 @@ private struct DiffTextView: UIViewRepresentable {
     }
 
     private func makeAttributedString(text: String, fontSize: CGFloat) -> NSAttributedString {
-        let font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let font = TerminalAppearance.uiFont(size: fontSize, weight: .regular)
         let normalized = text
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
@@ -711,7 +778,7 @@ private struct CodeTextView: UIViewRepresentable {
         view.showsVerticalScrollIndicator = true
         view.showsHorizontalScrollIndicator = true
         view.text = text
-        view.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        view.font = TerminalAppearance.uiFont(size: fontSize, weight: .regular)
         view.textColor = textColor
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return view
@@ -721,7 +788,7 @@ private struct CodeTextView: UIViewRepresentable {
         if uiView.text != text {
             uiView.text = text
         }
-        uiView.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        uiView.font = TerminalAppearance.uiFont(size: fontSize, weight: .regular)
         uiView.textColor = textColor
         uiView.backgroundColor = backgroundColor
     }
@@ -750,7 +817,7 @@ private struct ToolChipView: View {
                     Image(systemName: summary.icon)
                         .font(.system(size: chipFontSize, weight: .semibold))
                     Text(summary.title)
-                        .font(.custom("AvenirNext-Medium", size: chipFontSize))
+                        .font(TerminalAppearance.swiftUIFont(size: chipFontSize))
                         .lineLimit(1)
                 }
                 .padding(.horizontal, 10)
@@ -773,7 +840,7 @@ struct ActivityChip: View {
         let label = stripTrailingEllipsis(text)
         HStack {
             Text(label)
-                .font(.custom("AvenirNext-Medium", size: fontSize))
+                .font(TerminalAppearance.swiftUIFont(size: fontSize))
                 .foregroundColor(Theme.accent)
             AnimatedDots(color: Theme.accent)
         }
