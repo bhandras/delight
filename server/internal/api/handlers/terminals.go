@@ -73,6 +73,8 @@ func (h *TerminalHandler) ListTerminals(c *gin.Context) {
 		return
 	}
 
+	logger.Debugf("ListTerminals: user=%s count=%d", userID, len(terminals))
+
 	response := make([]TerminalResponse, len(terminals))
 	for i, terminal := range terminals {
 		response[i] = h.toTerminalResponse(terminal)

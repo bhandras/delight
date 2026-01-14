@@ -103,6 +103,8 @@ func (h *SessionHandler) ListSessions(c *gin.Context) {
 		return
 	}
 
+	logger.Debugf("ListSessions: user=%s path=%s count=%d", userID, c.Request.URL.Path, len(sessions))
+
 	// Convert to response format
 	response := make([]SessionResponse, len(sessions))
 	sessionIDs := make([]string, 0, len(sessions))
