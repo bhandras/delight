@@ -3042,6 +3042,46 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         defaults.set(terminalFontSize, forKey: Self.settingsKeyPrefix + "terminalFontSize")
     }
 
+    /// FlexibleInt64 decodes JSON numbers that may be encoded as either an
+    /// integer, a floating-point number, or a numeric string.
+    ///
+    /// This is needed because some upstream JSON producers (including SDK
+    /// re-marshaling paths) may serialize millisecond timestamps using
+    /// scientific notation, which `Int64` Decodable will reject.
+    private struct FlexibleInt64: Decodable {
+        let value: Int64
+
+        init(_ value: Int64) {
+            self.value = value
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let raw = try? container.decode(Int64.self) {
+                self.value = raw
+                return
+            }
+            if let raw = try? container.decode(Double.self) {
+                self.value = Int64(raw)
+                return
+            }
+            if let raw = try? container.decode(String.self) {
+                if let parsed = Int64(raw) {
+                    self.value = parsed
+                    return
+                }
+                if let parsed = Double(raw) {
+                    self.value = Int64(parsed)
+                    return
+                }
+            }
+            throw DecodingError.typeMismatch(
+                Int64.self,
+                .init(codingPath: decoder.codingPath, debugDescription: "Expected int-like JSON value")
+            )
+        }
+    }
+
     private func persistKeys() {
         if !masterKey.isEmpty {
             KeychainStore.set(masterKey, for: "masterKey")
@@ -3064,9 +3104,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 	        struct SessionsResponse: Decodable {
 	            struct Session: Decodable {
 	                let id: String
-	                let updatedAt: Int64
+	                let updatedAt: FlexibleInt64
 	                let active: Bool
-	                let activeAt: Int64?
+	                let activeAt: FlexibleInt64?
 	                let metadata: String?
 	                let agentState: String?
 	                let terminalId: String?
@@ -3082,7 +3122,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
 
         guard let decoded = try? JSONCoding.decode(SessionsResponse.self, from: json) else {
-            log("Parse sessions error: invalid JSON payload")
+            log("Parse sessions error: invalid JSON payload (len=\(json.count))")
             return
         }
         // Decode UI state from the SDK-enriched JSON response.
@@ -3109,9 +3149,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 	                return SessionSummary(
 	                    id: session.id,
 	                    terminalID: terminalID,
-	                    updatedAt: session.updatedAt,
+	                    updatedAt: session.updatedAt.value,
 	                    active: session.active,
-	                    activeAt: session.activeAt,
+	                    activeAt: session.activeAt?.value,
 	                    title: title,
 	                    subtitle: metadata?.host
 	                        ?? terminalID,
@@ -3171,9 +3211,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             let id: String?
             let metadata: String?
             let daemonState: String?
-            let daemonStateVersion: Int64?
+            let daemonStateVersion: FlexibleInt64?
             let active: Bool?
-            let activeAt: Int64?
+            let activeAt: FlexibleInt64?
         }
         struct TerminalsResponse: Decodable {
             let terminals: [TerminalPayload]
@@ -3193,9 +3233,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             let id = item.id ?? UUID().uuidString
             let metadata = TerminalMetadata.fromJSON(item.metadata)
             let daemonState = DaemonState.fromJSON(item.daemonState)
-            let daemonStateVersion = item.daemonStateVersion ?? 0
+            let daemonStateVersion = item.daemonStateVersion?.value ?? 0
             let active = item.active ?? false
-            let activeAt = item.activeAt
+            let activeAt = item.activeAt?.value
             return TerminalInfo(
                 id: id,
                 metadata: metadata,
