@@ -593,10 +593,34 @@ struct ToolCallSummary: Hashable {
 }
 
 /// CalloutSummary describes an informational callout block, such as agent reasoning.
+enum CalloutStyle: Hashable {
+    /// inline renders the callout without a surrounding bubble.
+    case inline
+
+    /// bubble renders the callout in a rounded bubble with a border.
+    case bubble
+}
+
 struct CalloutSummary: Hashable {
     let title: String
     let icon: String
     let content: String
+    let style: CalloutStyle
+}
+
+/// ToolCalloutSummary describes a tool invocation shown as a callout.
+///
+/// We render tool commands in a single bubble (header + command) so the
+/// transcript doesn't split tool UI events into separate rows.
+enum ToolCalloutOutputBlock: Hashable {
+    case code(language: String?, content: String)
+}
+
+struct ToolCalloutSummary: Hashable {
+    let title: String
+    let icon: String
+    let command: String
+    let output: [ToolCalloutOutputBlock]
 }
 
 /// MessageBlock is a view-friendly parsed block for a message (text, code, or tool call).
@@ -605,6 +629,7 @@ enum MessageBlock: Hashable {
     case code(language: String?, content: String)
     case toolCall(ToolCallSummary)
     case callout(CalloutSummary)
+    case toolCallout(ToolCalloutSummary)
 }
 
 /// MessageItem is a rendered message row model used by the terminal detail view.

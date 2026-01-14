@@ -78,11 +78,19 @@ private struct MessageBlockView: View {
         case .text(let text):
             MarkdownText(text: text, fontSize: fontSize)
         case .code(let language, let content):
-            CodeBlockView(language: language, content: content, fontSize: fontSize)
+            CodeBlockView(
+                language: language,
+                content: content,
+                fontSize: fontSize,
+                displayTextTransform: nil,
+                chromeStyle: .full
+            )
         case .toolCall(let summary):
             ToolChipView(summary: summary, fontSize: fontSize)
         case .callout(let summary):
             CalloutView(summary: summary, fontSize: fontSize)
+        case .toolCallout(let summary):
+            ToolCalloutView(summary: summary, fontSize: fontSize)
         }
     }
 }
@@ -287,6 +295,80 @@ private struct CalloutView: View {
                 MarkdownText(text: summary.content, fontSize: bodyFontSize, textColor: Theme.muted)
             }
         }
+        .padding(summary.style == .bubble ? Layout.padding : 0)
+        .background(summary.style == .bubble ? Theme.calloutBackground : Color.clear)
+        .overlay(
+            Group {
+                if summary.style == .bubble {
+                    RoundedRectangle(cornerRadius: Layout.cornerRadius, style: .continuous)
+                        .stroke(Theme.calloutBorder, lineWidth: Layout.borderWidth)
+                }
+            }
+        )
+        .clipShape(RoundedRectangle(cornerRadius: summary.style == .bubble ? Layout.cornerRadius : 0, style: .continuous))
+    }
+}
+
+private struct ToolCalloutView: View {
+    let summary: ToolCalloutSummary
+    let fontSize: CGFloat
+
+    enum Layout {
+        static let cornerRadius: CGFloat = 14
+        static let borderWidth: CGFloat = 1
+        static let padding: CGFloat = 12
+        static let headerSpacing: CGFloat = 6
+        static let bodySpacing: CGFloat = 8
+        static let iconWeight: Font.Weight = .semibold
+    }
+
+    var body: some View {
+        let bodyFontSize = max(fontSize * 0.95, 12)
+        let trimmedCommand = summary.command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let outputBlocks = summary.output
+
+        VStack(alignment: .leading, spacing: Layout.bodySpacing) {
+            HStack(spacing: Layout.headerSpacing) {
+                Image(systemName: summary.icon)
+                    .font(.system(size: bodyFontSize, weight: Layout.iconWeight))
+                    .foregroundColor(Theme.mutedText)
+                Text(summary.title)
+                    .font(.custom("AvenirNext-DemiBold", size: bodyFontSize))
+                    .foregroundColor(Theme.mutedText)
+            }
+
+            if !trimmedCommand.isEmpty {
+                // Use our transcript code rendering rather than Markdown fenced
+                // code blocks, so long shell commands wrap and are readable.
+                CodeBlockView(
+                    language: nil,
+                    content: trimmedCommand,
+                    fontSize: bodyFontSize,
+                    displayTextTransform: softWrapCodeForDisplay,
+                    chromeStyle: .borderless
+                )
+            }
+
+            if !outputBlocks.isEmpty {
+                Text("Output")
+                    .font(.custom("AvenirNext-DemiBold", size: bodyFontSize))
+                    .foregroundColor(Theme.mutedText)
+                    .padding(.top, 2)
+
+                ForEach(Array(outputBlocks.enumerated()), id: \.offset) { _, block in
+                    switch block {
+                    case let .code(language, content):
+                        CodeBlockView(
+                            language: language,
+                            content: content,
+                            fontSize: bodyFontSize,
+                            displayTextTransform: softWrapCodeForDisplay,
+                            chromeStyle: .borderless
+                        )
+                    }
+                }
+            }
+        }
         .padding(Layout.padding)
         .background(Theme.calloutBackground)
         .overlay(
@@ -298,9 +380,22 @@ private struct CalloutView: View {
 }
 
 private struct CodeBlockView: View {
+    enum ChromeStyle: Hashable {
+        /// full renders a code block with padding, background, and border.
+        case full
+
+        /// borderless renders a code block with padding and background, but no border.
+        case borderless
+
+        /// none renders plain text with no chrome (used for inline embedding).
+        case none
+    }
+
     let language: String?
     let content: String
     let fontSize: CGFloat
+    let displayTextTransform: ((String) -> String)?
+    let chromeStyle: ChromeStyle
 
     /// Preview limits keep large code/tool outputs from forcing expensive text
     /// layout work while scrolling the transcript.
@@ -321,6 +416,10 @@ private struct CodeBlockView: View {
         let normalizedLanguage = language?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let codeFontSize = CGFloat(TerminalAppearance.codeFontSize(for: Double(fontSize)))
         let preview = codePreview(content, maxLines: PreviewLimits.maxInlineLines, maxChars: PreviewLimits.maxInlineCharacters)
+        let displayText = displayTextTransform?(preview.text) ?? preview.text
+        let showsBackground = chromeStyle != .none
+        let showsBorder = chromeStyle == .full
+
         VStack(alignment: .leading, spacing: 8) {
             if let language, !language.isEmpty {
                 Text(language)
@@ -330,7 +429,7 @@ private struct CodeBlockView: View {
             if normalizedLanguage == "diff" {
                 DiffCodePreviewView(text: preview.text, fontSize: codeFontSize)
             } else {
-                Text(preview.text)
+                Text(displayText)
                     .font(.system(size: codeFontSize, weight: .regular, design: .monospaced))
                     .foregroundColor(Theme.codeText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -353,12 +452,15 @@ private struct CodeBlockView: View {
                 .padding(.top, 2)
             }
         }
-        .padding(12)
-        .background(Theme.codeBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(showsBackground ? 12 : 0)
+        .background(showsBackground ? Theme.codeBackground : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: showsBackground ? 12 : 0, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Theme.codeBorder, lineWidth: 1)
+            Group {
+                if showsBorder {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Theme.codeBorder, lineWidth: 1)
+                }
+            }
         )
         .sheet(isPresented: $isShowingFull) {
             NavigationStack {
@@ -390,6 +492,38 @@ private struct CodeBlockView: View {
             }
         }
     }
+}
+
+/// softWrapCodeForDisplay adds invisible break opportunities for long "words"
+/// (like file paths and flags) so shell commands wrap instead of overflowing.
+private func softWrapCodeForDisplay(_ text: String) -> String {
+    guard !text.isEmpty else { return text }
+
+    // Zero-width space creates a soft wrap opportunity without changing
+    // the text the user copies (copy uses the unmodified content).
+    let zwsp = "\u{200B}"
+    let breakAfter: Set<Character> = [
+        "/",
+        "\\",
+        "-",
+        "_",
+        ".",
+        ":",
+        ",",
+        "?",
+        "&",
+        "=",
+    ]
+
+    var out = String()
+    out.reserveCapacity(text.count * 2)
+    for ch in text {
+        out.append(ch)
+        if breakAfter.contains(ch) {
+            out.append(contentsOf: zwsp)
+        }
+    }
+    return out
 }
 
 private struct DiffCodePreviewView: View {

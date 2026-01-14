@@ -338,6 +338,18 @@ private enum LogTiming {
 }
 
 final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
+    /// SettingsDefaults defines where we persist user-facing preferences.
+    ///
+    /// Unit tests should never read/write the real app defaults, because the
+    /// developer's local preferences would make tests flaky (for example if
+    /// "Show reasoning summaries" was toggled off).
+    private enum SettingsDefaults {
+        static let testSuiteName = "com.bhandras.delight.harness.tests"
+    }
+
+    /// settingsDefaults stores user-facing preferences (server URL, transcript
+    /// verbosity, appearance, etc).
+    private let settingsDefaults: UserDefaults
     @Published var serverURL: String = "http://localhost:3005" {
         didSet { persistSettings() }
     }
@@ -527,7 +539,20 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private let sdkCallQueueKey = DispatchSpecificKey<Void>()
 
     override init() {
-        let defaults = UserDefaults.standard
+        func isRunningUnitTests() -> Bool {
+            ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        }
+
+        let defaults: UserDefaults
+        if isRunningUnitTests(), let suite = UserDefaults(suiteName: SettingsDefaults.testSuiteName) {
+            // Ensure a deterministic starting point for each test run.
+            suite.removePersistentDomain(forName: SettingsDefaults.testSuiteName)
+            defaults = suite
+        } else {
+            defaults = UserDefaults.standard
+        }
+        self.settingsDefaults = defaults
+
         let loadedServerURL = defaults.string(forKey: Self.settingsKeyPrefix + "serverURL") ?? "http://localhost:3005"
         let loadedToken = defaults.string(forKey: Self.settingsKeyPrefix + "token") ?? ""
         let loadedAppearanceMode =
@@ -2205,6 +2230,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
         let markdown = uiEventMarkdown(payload)
         if markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Even if the tool Markdown is empty, preserve a minimal "Tool use"
+            // indicator when tool details are hidden.
+            if payload.kind == "tool",
+               !showToolUseInTranscript,
+               !isPatchUIEvent(payload) {
+                applyUIEventMessage(payload, markdown: markdown)
+            }
             return true
         }
         if payload.kind == "reasoning",
@@ -2293,9 +2325,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private func shouldDisplayUIEvent(_ payload: UIEventPayload) -> Bool {
         switch payload.kind {
         case "tool":
-            // File diffs are important enough to keep visible even if the user
-            // disables tool noise.
-            return showToolUseInTranscript || isPatchUIEvent(payload)
+            // Always keep a tool indicator visible (even when tool details are
+            // disabled) so the transcript doesn't look idle while the agent is
+            // still doing work.
+            return true
         case "reasoning":
             return showReasoningSummariesInTranscript
         default:
@@ -2322,24 +2355,42 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         if payload.kind == "reasoning" {
             let content = stripReasoningHeading(markdown)
             return [
-                .callout(CalloutSummary(title: "Reasoning", icon: "lightbulb", content: content))
+                .callout(
+                    CalloutSummary(
+                        title: "Reasoning",
+                        icon: "lightbulb",
+                        content: content,
+                        style: .inline
+                    )
+                )
+            ]
+        }
+
+        if payload.kind == "tool",
+           !showToolUseInTranscript,
+           !isPatchUIEvent(payload) {
+            let icon: String
+            if let tool = extractToolCall(from: markdown) ?? extractToolCall(from: payload.briefMarkdown) {
+                icon = iconForToolTitle(tool.title)
+            } else {
+                icon = "wrench.and.screwdriver"
+            }
+            return [
+                .callout(
+                    CalloutSummary(
+                        title: "Tool use",
+                        icon: icon,
+                        content: "",
+                        style: .inline
+                    )
+                )
             ]
         }
 
         if payload.kind == "tool",
            !isPatchUIEvent(payload),
-           let tool = extractToolCall(from: markdown) {
-            let body = stripToolCallTitle(from: tool.body)
-            let normalizedBody = stripLeadingFenceLanguage(body)
-            return [
-                .callout(
-                    CalloutSummary(
-                        title: tool.title,
-                        icon: iconForToolTitle(tool.title),
-                        content: normalizedBody
-                    )
-                )
-            ]
+           let summary = toolCalloutSummary(payload: payload, markdown: markdown) {
+            return [.toolCallout(summary)]
         }
 
         let blocks = splitMarkdownBlocks(markdown)
@@ -2396,6 +2447,38 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return (title: title.isEmpty ? "Tool" : title, body: String(remaining))
     }
 
+    /// toolCalloutSummary constructs a `ToolCalloutSummary` for tool UI events.
+    ///
+    /// Backends are inconsistent about where they place the "Tool:" header:
+    /// some put it in `briefMarkdown` only and put the command/output in
+    /// `fullMarkdown`. To keep tool UI event styling consistent, we extract the
+    /// title from either source and always render through `ToolCalloutView`.
+    private func toolCalloutSummary(payload: UIEventPayload, markdown: String) -> ToolCalloutSummary? {
+        let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let tool = extractToolCall(from: trimmed) ?? extractToolCall(from: payload.briefMarkdown)
+        let title = tool?.title ?? "Tool"
+        let icon = iconForToolTitle(title)
+
+        // Prefer extracting from the body that follows "Tool:" (when present),
+        // otherwise fall back to the resolved markdown we are displaying.
+        let bodyCandidate = tool.map { stripToolCallTitle(from: $0.body) } ?? trimmed
+        let bodySource = bodyCandidate.isEmpty ? trimmed : bodyCandidate
+        let extraction = extractFirstCodeFence(from: bodySource) ?? extractFirstCodeFence(from: trimmed)
+        let command = (extraction?.content ?? bodySource).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var outputBlocks: [ToolCalloutOutputBlock] = []
+        if showToolOutputInTranscript, let remainder = extraction?.remainder {
+            let outputMarkdown = extractToolOutputSection(remainder)
+            if !outputMarkdown.isEmpty {
+                outputBlocks = parseToolCalloutOutputBlocks(from: outputMarkdown)
+            }
+        }
+
+        return ToolCalloutSummary(title: title, icon: icon, command: command, output: outputBlocks)
+    }
+
     /// stripToolCallTitle drops an optional repeated title line from tool bodies.
     ///
     /// Some backends include both:
@@ -2415,25 +2498,119 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return String(remaining)
     }
 
-    /// stripLeadingFenceLanguage removes the language tag from the first fenced
-    /// code block, since the surrounding callout header already conveys context
-    /// (e.g. "shell") and we want to avoid a redundant "sh" badge.
-    private func stripLeadingFenceLanguage(_ markdown: String) -> String {
-        var remaining = markdown[...]
-        while remaining.first == "\n" { remaining = remaining.dropFirst() }
+    /// extractToolOutputSection extracts the Markdown representing the tool output
+    /// section from a tool UI event rendering (best-effort).
+    private func extractToolOutputSection(_ markdown: String) -> String {
+        let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
 
-        guard let fenceStart = remaining.range(of: "```") else { return markdown }
-        if fenceStart.lowerBound != remaining.startIndex { return markdown }
+        let patterns = [
+            "\n\nOutput:\n",
+            "\n\nOutput:\r\n",
+            "\nOutput:\n",
+            "\nOutput:\r\n",
+        ]
+        for pattern in patterns {
+            if let range = trimmed.range(of: pattern) {
+                return trimmed[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
 
-        remaining = remaining[fenceStart.upperBound...]
-        guard let lineEnd = remaining.firstIndex(of: "\n") else { return markdown }
+        // Some backends send output-only payloads starting with "Output:".
+        let normalized = stripLeadingOutputHeading(trimmed)
+        if normalized != trimmed {
+            return normalized
+        }
+        return ""
+    }
 
-        let language = remaining[..<lineEnd].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !language.isEmpty else { return markdown }
+    /// extractFirstCodeFenceContent returns the content of the first fenced code
+    /// block in markdown (best-effort).
+    private func extractFirstCodeFenceContent(from markdown: String) -> String? {
+        let raw = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
 
-        // Replace "```lang\n" with "```\n".
-        let afterLine = remaining[lineEnd...]
-        return "```\n" + afterLine.dropFirst(1)
+        var remaining = raw[...]
+        guard let start = remaining.range(of: "```") else { return nil }
+        remaining = remaining[start.upperBound...]
+
+        // Skip language line if present.
+        if let lineEnd = remaining.firstIndex(of: "\n") {
+            remaining = remaining[remaining.index(after: lineEnd)...]
+        }
+
+        guard let end = remaining.range(of: "```") else { return nil }
+        let content = remaining[..<end.lowerBound].trimmingCharacters(in: .newlines)
+        return String(content)
+    }
+
+    private struct CodeFenceExtraction: Hashable {
+        let language: String?
+        let content: String
+        let remainder: String
+    }
+
+    /// extractFirstCodeFence extracts the first fenced code block and returns the
+    /// extracted code plus the remaining markdown with that first fence removed.
+    private func extractFirstCodeFence(from markdown: String) -> CodeFenceExtraction? {
+        let raw = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+
+        let full = raw[...]
+        guard let fenceRange = full.range(of: "```") else { return nil }
+        let prefix = String(full[..<fenceRange.lowerBound])
+        var remaining = full[fenceRange.upperBound...]
+
+        let lineEnd = remaining.firstIndex(of: "\n") ?? remaining.endIndex
+        let languageLine = String(remaining[..<lineEnd]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let language = languageLine.isEmpty ? nil : languageLine
+        remaining = lineEnd == remaining.endIndex ? "" : remaining[remaining.index(after: lineEnd)...]
+
+        guard let endFence = remaining.range(of: "```") else { return nil }
+        let content = String(remaining[..<endFence.lowerBound]).trimmingCharacters(in: .newlines)
+        let suffix = String(remaining[endFence.upperBound...])
+        return CodeFenceExtraction(
+            language: language,
+            content: content,
+            remainder: (prefix + suffix).trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    /// stripLeadingOutputHeading removes a leading "Output:" heading (if present)
+    /// so the tool callout can render output with a consistent label.
+    private func stripLeadingOutputHeading(_ markdown: String) -> String {
+        var value = markdown.trimmingCharacters(in: .whitespacesAndNewlines)[...]
+        let lower = value.lowercased()
+        guard lower.hasPrefix("output:") || lower.hasPrefix("output") else {
+            return String(value)
+        }
+
+        let lineEnd = value.firstIndex(of: "\n") ?? value.endIndex
+        value = lineEnd == value.endIndex ? "" : value[value.index(after: lineEnd)...]
+        for _ in 0..<2 {
+            if value.first == "\n" { value = value.dropFirst() }
+        }
+        return String(value).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func parseToolCalloutOutputBlocks(from markdown: String) -> [ToolCalloutOutputBlock] {
+        let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        return splitMarkdownBlocks(trimmed).compactMap { block in
+            switch block {
+            case let .code(language, content):
+                let body = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !body.isEmpty else { return nil }
+                return .code(language: language, content: body)
+            case let .text(text):
+                let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !body.isEmpty else { return nil }
+                return .code(language: nil, content: body)
+            default:
+                return nil
+            }
+        }
     }
 
     /// stripReasoningHeading removes the leading "Reasoning" heading emitted by
@@ -2511,6 +2688,23 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
                 let markdown = self.uiEventMarkdown(payload)
                 if markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    // Even if tool Markdown is empty, preserve a minimal "Tool use"
+                    // indicator when tool details are hidden.
+                    if payload.kind == "tool",
+                       !self.showToolUseInTranscript,
+                       !self.isPatchUIEvent(payload) {
+                        desired.append(
+                            MessageItem(
+                                id: "ui-\(payload.eventID)",
+                                seq: nil,
+                                localID: nil,
+                                uuid: nil,
+                                role: .event,
+                                blocks: self.uiEventBlocks(payload, markdown: markdown),
+                                createdAt: payload.atMs
+                            )
+                        )
+                    }
                     continue
                 }
                 if payload.kind == "reasoning",
@@ -2835,7 +3029,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     private func persistSettings() {
-        let defaults = UserDefaults.standard
+        let defaults = settingsDefaults
         defaults.set(serverURL, forKey: Self.settingsKeyPrefix + "serverURL")
         defaults.set(token, forKey: Self.settingsKeyPrefix + "token")
         defaults.set(appearanceMode.rawValue, forKey: Self.settingsKeyPrefix + "appearanceMode")
@@ -3273,6 +3467,15 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 return "tool:\(normalizeText(summary.title))"
             case .callout(let summary):
                 return "callout:\(normalizeText(summary.title)):\(normalizeText(summary.content))"
+            case .toolCallout(let summary):
+                let out = summary.output.map { block in
+                    switch block {
+                    case let .code(language, content):
+                        let lang = (language ?? "").lowercased()
+                        return "out(\(lang)):\(normalizeText(content))"
+                    }
+                }.joined(separator: "|")
+                return "toolcallout:\(normalizeText(summary.title)):\(normalizeText(summary.command)):\(out)"
             }
         }
         return pieces.joined(separator: "\n")

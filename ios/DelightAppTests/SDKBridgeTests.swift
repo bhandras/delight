@@ -727,14 +727,14 @@ final class SDKBridgeTests: XCTestCase {
             }
 
             XCTAssertTrue(item.blocks.contains(where: { block in
-                if case let .callout(summary) = block {
-                    return summary.content.contains(fullCommand)
+                if case let .toolCallout(summary) = block {
+                    return summary.command.contains(fullCommand)
                 }
                 return false
             }))
 
             let text = item.blocks.compactMap { block -> String? in
-                if case let .callout(summary) = block { return summary.content }
+                if case let .toolCallout(summary) = block { return summary.command }
                 if case let .text(value) = block { return value }
                 return nil
             }.joined(separator: "\n")
@@ -742,6 +742,110 @@ final class SDKBridgeTests: XCTestCase {
             // The command itself contains "hello" and "world"; assert only that
             // the output block isn't present.
             XCTAssertFalse(text.contains("hello\nworld"))
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
+
+    func testToolUIEventShowsIndicatorWhenToolUseHidden() {
+        let model = HarnessViewModel()
+        model.sessionID = "s1"
+        model.showToolUseInTranscript = false
+        model.showToolOutputInTranscript = false
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 0,
+                active: true,
+                activeAt: nil,
+                title: "agent",
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: nil
+            )
+        ]
+
+        let json = """
+        {"type":"ui.event","id":"s1","eventId":"tool-hidden-1","kind":"tool","phase":"update","status":"running","briefMarkdown":"Tool: `echo hello`","fullMarkdown":"Tool: shell\\n\\n```sh\\necho hello\\n```\\n\\nOutput:\\n\\n```\\nhello\\n```","atMs":123}
+        """
+
+        let expectation = expectation(description: "tool event shows minimal indicator")
+        model.onUpdate(nil, updateJSON: json)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            guard let item = model.messages.first(where: { $0.id == "ui-tool-hidden-1" }) else {
+                XCTFail("expected tool ui event to be present")
+                expectation.fulfill()
+                return
+            }
+
+            XCTAssertTrue(item.blocks.contains(where: { block in
+                if case let .callout(summary) = block {
+                    return summary.title == "Tool use"
+                }
+                return false
+            }))
+
+            XCTAssertFalse(item.blocks.contains(where: { block in
+                if case .toolCallout = block { return true }
+                return false
+            }))
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1.0)
+    }
+
+    func testToolUIEventRendersOutputWhenEnabled() {
+        let model = HarnessViewModel()
+        model.sessionID = "s1"
+        model.showToolUseInTranscript = true
+        model.showToolOutputInTranscript = true
+        model.sessions = [
+            SessionSummary(
+                id: "s1",
+                terminalID: "t1",
+                updatedAt: 0,
+                active: true,
+                activeAt: nil,
+                title: "agent",
+                subtitle: nil,
+                metadata: nil,
+                agentState: nil,
+                uiState: nil
+            )
+        ]
+
+        let fullCommand = "echo hello && echo world"
+        let json = """
+        {"type":"ui.event","id":"s1","eventId":"tool-2","kind":"tool","phase":"update","status":"running","briefMarkdown":"Tool: `echo hello`","fullMarkdown":"Tool: shell\\n\\n```sh\\n\(fullCommand)\\n```\\n\\nOutput:\\n\\n```\\nhello\\nworld\\n```","atMs":123}
+        """
+
+        let expectation = expectation(description: "tool event renders command and output")
+        model.onUpdate(nil, updateJSON: json)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            guard let item = model.messages.first(where: { $0.id == "ui-tool-2" }) else {
+                XCTFail("expected tool ui event to be present")
+                expectation.fulfill()
+                return
+            }
+
+            guard let toolSummary = item.blocks.compactMap({ block -> ToolCalloutSummary? in
+                if case let .toolCallout(summary) = block { return summary }
+                return nil
+            }).first else {
+                XCTFail("expected tool callout block")
+                expectation.fulfill()
+                return
+            }
+
+            XCTAssertTrue(toolSummary.command.contains(fullCommand))
+            XCTAssertTrue(toolSummary.output.contains(where: { block in
+                if case let .code(_, content) = block {
+                    return content.contains("hello\nworld")
+                }
+                return false
+            }))
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1.0)
