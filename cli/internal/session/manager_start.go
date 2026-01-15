@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -69,7 +70,7 @@ func (m *Manager) Start(workDir string) error {
 		Path:           workDir,
 		Host:           hostname,
 		Version:        version.Version(),
-		OS:             "darwin", // TODO: detect OS
+		OS:             runtime.GOOS,
 		TerminalID:     terminalID,
 		HomeDir:        homeDir,
 		DelightHomeDir: m.cfg.DelightHome,
@@ -79,7 +80,7 @@ func (m *Manager) Start(workDir string) error {
 	// Initialize terminal metadata (best-effort)
 	m.terminalMetadata = &types.TerminalMetadata{
 		Host:              hostname,
-		Platform:          "darwin", // TODO: detect platform
+		Platform:          runtime.GOOS,
 		DelightCliVersion: version.Version(),
 		HomeDir:           homeDir,
 		DelightHomeDir:    m.cfg.DelightHome,
