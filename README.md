@@ -2,6 +2,7 @@
 
 [![Go Tests](https://github.com/bhandras/delight/actions/workflows/go-tests.yml/badge.svg?branch=main)](https://github.com/bhandras/delight/actions/workflows/go-tests.yml)
 [![Go Lint](https://github.com/bhandras/delight/actions/workflows/go-lint.yml/badge.svg?branch=main)](https://github.com/bhandras/delight/actions/workflows/go-lint.yml)
+[![iOS Tests](https://github.com/bhandras/delight/actions/workflows/ios-tests.yml/badge.svg?branch=main)](https://github.com/bhandras/delight/actions/workflows/ios-tests.yml)
 [![License](https://img.shields.io/github/license/bhandras/delight?style=flat)](LICENSE)
 
 Delight is a small stack for running agent sessions on your computer and
