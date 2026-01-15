@@ -1,0 +1,39 @@
+name: iOS Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios-tests:
+    name: iOS tests
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache: true
+          cache-dependency-path: |
+            cli/go.sum
+            shared/go.sum
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          gomobile init
+
+      - name: Run iOS tests
+        run: make ios-test
