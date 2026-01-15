@@ -406,6 +406,7 @@ private struct ToolCalloutView: View {
                 .stroke(Theme.calloutBorder, lineWidth: Layout.borderWidth)
         )
         .clipShape(RoundedRectangle(cornerRadius: Layout.cornerRadius, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -828,6 +829,7 @@ private struct ToolChipView: View {
             }
         }
         .padding(.vertical, Layout.blockVerticalPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
