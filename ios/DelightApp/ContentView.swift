@@ -1088,6 +1088,7 @@ enum Theme {
     static let muted = Color.secondary.opacity(0.8)
     static let mutedText = Color.secondary
     static let shadow = Color.black.opacity(0.12)
+    static let darkPrimaryTextWhite: CGFloat = 0.86
 
     static let background = LinearGradient(
         colors: [
@@ -1115,13 +1116,17 @@ enum Theme {
     static let codeFont = Font.system(size: 14, weight: .regular, design: .monospaced)
     static let codeLabel = Font.system(size: 11, weight: .semibold, design: .monospaced)
 
-    static let messageText = Color.primary
+    static let messageText = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: darkPrimaryTextWhite, alpha: 1.0)
+            : UIColor.label
+    })
     static let userBubble = Color(uiColor: .tertiarySystemFill)
     static let toolChipBackground = Color(uiColor: .tertiarySystemGroupedBackground)
-    static let toolChipText = Color.primary
+    static let toolChipText = messageText
     static let codeBackground = Color(uiColor: .secondarySystemBackground)
     static let codeBorder = Color(uiColor: .separator)
-    static let codeText = Color.primary
+    static let codeText = messageText
 
     static let calloutBackground = Color(uiColor: .tertiarySystemGroupedBackground)
     static let calloutBorder = Color(uiColor: .separator).opacity(0.35)
