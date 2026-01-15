@@ -8,6 +8,7 @@ import (
 
 	framework "github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/config"
+	"github.com/bhandras/delight/cli/internal/notify"
 	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
 	"github.com/bhandras/delight/cli/internal/session/runtime"
 	"github.com/bhandras/delight/cli/internal/storage"
@@ -54,7 +55,9 @@ type Manager struct {
 	workDir string
 
 	working bool
-	stopCh   chan struct{}
+	stopCh  chan struct{}
+
+	pushover *notify.PushoverNotifier
 
 	// Pending permission requests (for remote mode)
 	// pendingPermissions was previously used to coordinate synchronous tool

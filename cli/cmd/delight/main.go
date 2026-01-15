@@ -280,6 +280,7 @@ func parseFlags(cfg *config.Config, args []string) error {
 	logLevel := fs.String("log-level", "info", "Log level (trace|debug|info|warn|error)")
 	socketIOTransport := fs.String("socketio-transport", "websocket", "Socket.IO transport (websocket|polling)")
 	startingMode := fs.String("mode", "", "Starting mode (local|remote)")
+	pushoverMode := fs.String("pushover", "", "Pushover notifications (auto|on|off)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -314,6 +315,14 @@ func parseFlags(cfg *config.Config, args []string) error {
 			cfg.StartingMode = *startingMode
 		default:
 			return fmt.Errorf("invalid --mode %q (expected local or remote)", *startingMode)
+		}
+	}
+	if *pushoverMode != "" {
+		switch strings.TrimSpace(*pushoverMode) {
+		case "auto", "on", "off":
+			cfg.PushoverMode = strings.TrimSpace(*pushoverMode)
+		default:
+			return fmt.Errorf("invalid --pushover %q (expected auto, on, or off)", *pushoverMode)
 		}
 	}
 	if *forceNewSession {
@@ -361,6 +370,7 @@ Flags:
   --agent             Agent backend (acp|claude|codex)
   --mode              Starting mode (local|remote)
   --model             Model identifier (engine-specific)
+  --pushover          Pushover notifications (auto|on|off)
   --new-session       Force creation of a new session
   --socketio-transport Socket.IO transport (websocket|polling)
   --log-level         Log level (trace|debug|info|warn|error)

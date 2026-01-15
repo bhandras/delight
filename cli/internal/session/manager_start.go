@@ -290,6 +290,8 @@ func (m *Manager) initSessionActor() {
 		WithDelightHome(m.cfg.DelightHome).
 		WithEncryptFn(m.encrypt)
 
+	m.ensurePushoverNotifier()
+
 	hooks := framework.Hooks[sessionactor.State]{
 		OnInput: func(input framework.Input) {
 			logger.Tracef("session-actor input: %T", input)
@@ -302,6 +304,16 @@ func (m *Manager) initSessionActor() {
 						close(m.sessionActorClosed)
 					}
 				})
+			}
+			if prev.Working && !next.Working {
+				m.notifyTurnComplete()
+			}
+			if len(next.AgentState.Requests) > 0 {
+				for _, requestID := range newPendingRequestIDs(prev.AgentState.Requests, next.AgentState.Requests) {
+					if req, ok := next.AgentState.Requests[requestID]; ok {
+						m.notifyAttention(requestID, req)
+					}
+				}
 			}
 		},
 	}
