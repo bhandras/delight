@@ -3,6 +3,9 @@ SHELL := /bin/bash
 SIMULATOR_DEVICE ?= iPhone 16
 CONFIGURATION ?= Debug
 DERIVED_DATA ?= /tmp/delight-ios
+BUNDLED_GOCACHE ?= $(CURDIR)/.gocache
+BUNDLED_GOMODCACHE ?= $(CURDIR)/.gomodcache
+BUNDLED_GOLANGCI_CACHE ?= $(CURDIR)/.golangci-cache
 BUNDLE_ID ?= com.bhandras.delight.harness
 APP_PATH := $(DERIVED_DATA)/Build/Products/$(CONFIGURATION)-iphonesimulator/Delight.app
 SIMULATOR_UDID_FILE := $(DERIVED_DATA)/booted_simulator_udid
@@ -64,6 +67,7 @@ test:
 .PHONY: lint
 
 lint:
-	(cd shared && golangci-lint run ./...)
-	(cd cli && golangci-lint run ./...)
-	(cd server && golangci-lint run ./...)
+	@mkdir -p "$(BUNDLED_GOCACHE)" "$(BUNDLED_GOMODCACHE)" "$(BUNDLED_GOLANGCI_CACHE)"
+	(cd shared && GOCACHE="$(BUNDLED_GOCACHE)" GOMODCACHE="$(BUNDLED_GOMODCACHE)" GOLANGCI_LINT_CACHE="$(BUNDLED_GOLANGCI_CACHE)" golangci-lint run ./...)
+	(cd cli && GOCACHE="$(BUNDLED_GOCACHE)" GOMODCACHE="$(BUNDLED_GOMODCACHE)" GOLANGCI_LINT_CACHE="$(BUNDLED_GOLANGCI_CACHE)" golangci-lint run ./...)
+	(cd server && GOCACHE="$(BUNDLED_GOCACHE)" GOMODCACHE="$(BUNDLED_GOMODCACHE)" GOLANGCI_LINT_CACHE="$(BUNDLED_GOLANGCI_CACHE)" golangci-lint run ./...)

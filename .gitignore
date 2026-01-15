@@ -6,3 +6,6 @@ ios/DelightApp.xcodeproj/xcuserdata/
 .DS_Store
 deploy-data/
 .local-bin/
+.gocache/
+.gomodcache/
+.golangci-cache/
