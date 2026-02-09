@@ -31,6 +31,9 @@ const (
 )
 
 const (
+	// codexModel53 is the Codex 5.3 model identifier.
+	codexModel53 = "gpt-5.3-codex"
+
 	// defaultRemoteModel is the Codex model we select when no explicit model is
 	// configured. This keeps behavior stable across Codex config changes.
 	defaultRemoteModel = "gpt-5.2-codex"
@@ -381,6 +384,7 @@ func (e *Engine) Capabilities() agentengine.AgentCapabilities {
 
 	return agentengine.AgentCapabilities{
 		Models: []string{
+			codexModel53,
 			"gpt-5.2-codex",
 			"gpt-5.1-codex-max",
 			"gpt-5.1-codex-mini",

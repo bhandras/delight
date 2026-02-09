@@ -79,6 +79,21 @@ func TestBuildLocalCodexCommandIncludesSelectedConfig(t *testing.T) {
 	}
 }
 
+func TestBuildLocalCodexCommandSupportsCodex53Model(t *testing.T) {
+	cmd := buildLocalCodexCommand("", agentengine.AgentConfig{
+		Model:           codexModel53,
+		ReasoningEffort: "high",
+	})
+
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, " -m "+codexModel53+" ") {
+		t.Fatalf("expected codex 5.3 model in args, got: %s", args)
+	}
+	if !strings.Contains(args, `model_reasoning_effort="high"`) {
+		t.Fatalf("expected effort override in args, got: %s", args)
+	}
+}
+
 func TestBuildLocalCodexCommandDefaultsToMediumEffort(t *testing.T) {
 	cmd := buildLocalCodexCommand("", agentengine.AgentConfig{})
 	args := strings.Join(cmd.Args, " ")
@@ -93,6 +108,15 @@ func TestBuildLocalCodexCommandDefaultsToMediumEffort(t *testing.T) {
 	}
 	if !strings.Contains(args, " -a on-request ") {
 		t.Fatalf("expected default approval policy in args, got: %s", args)
+	}
+}
+
+func TestCapabilitiesIncludesCodex53Model(t *testing.T) {
+	engine := New("/tmp", nil, false)
+	caps := engine.Capabilities()
+
+	if !containsString(caps.Models, codexModel53) {
+		t.Fatalf("expected capabilities to include %q, got %#v", codexModel53, caps.Models)
 	}
 }
 
