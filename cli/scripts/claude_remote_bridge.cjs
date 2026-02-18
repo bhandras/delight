@@ -437,9 +437,18 @@ async function main() {
         const cliArgs = buildArgs();
         debugLog('Spawning Claude Code:', process.execPath, claudeCodePath, cliArgs.join(' '));
 
+        const childEnv = { ...process.env };
+        // Enable autocompact so Claude automatically compresses context when
+        // nearing the limit instead of stopping. The value is the percentage
+        // threshold (1-100) at which compaction fires.
+        if (!childEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) {
+            childEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '80';
+        }
+
         const child = spawn(process.execPath, [claudeCodePath, ...cliArgs], {
             cwd,
-            stdio: ['pipe', 'pipe', 'pipe']
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: childEnv
         });
         currentChild = child;
         configDirty = false;
@@ -490,35 +499,41 @@ async function main() {
                 || (msg.type === 'assistant' || msg.type === 'user');
 
             if (isTranscriptMessage) {
-                const role = msg.role || msg.type;
+                // Claude Code's stream-json wraps the API message in a
+                // `message` field, so content/model/role live there rather
+                // than at the top level.
+                const inner = msg.message;
+                const role = msg.role || inner?.role || msg.type;
                 if (role !== 'assistant' && role !== 'user') {
                     // Not a transcript message.
                     // Fall through to forwarding as-is.
                 } else {
-                const content = normalizeContentBlocks(msg.content);
+                const content = normalizeContentBlocks(inner?.content ?? msg.content);
                 if (role === 'assistant') {
                     if (content.some((block) => block && block.type === 'text' && typeof block.text === 'string' && block.text.trim().length > 0)) {
                         sawAssistantTextThisTurn = true;
                     }
                 }
-                const messageId = msg.id || crypto.randomUUID();
+                const messageId = inner?.id ?? msg.id ?? crypto.randomUUID();
+                const model = inner?.model ?? msg.model ?? 'unknown';
+                const usage = inner?.usage ?? msg.usage;
                 const rawRecord = {
                     role: 'agent',
                     content: {
                         type: 'output',
                         data: {
                             type: role === 'assistant' ? 'assistant' : 'user',
-                            isSidechain: false,
+                            isSidechain: !!msg.parent_tool_use_id,
                             isCompactSummary: false,
                             isMeta: false,
                             uuid: messageId,
-                            parentUuid: null,
+                            parentUuid: msg.parent_tool_use_id || null,
                             message: role === 'assistant'
                                 ? {
                                     role: 'assistant',
-                                    model: msg.model || 'unknown',
+                                    model,
                                     content,
-                                    ...(msg.usage ? { usage: msg.usage } : {})
+                                    ...(usage ? { usage } : {})
                                 }
                                 : {
                                     role: 'user',

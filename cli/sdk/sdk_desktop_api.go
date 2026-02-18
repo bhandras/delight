@@ -47,3 +47,18 @@ func (c *Client) ListTerminals() (string, error) {
 func (c *Client) GetSessionMessages(sessionID string, limit int) (string, error) {
 	return c.getSessionMessagesDispatch(sessionID, limit)
 }
+
+// GetSessionMessagesPage fetches a paginated session message page.
+func (c *Client) GetSessionMessagesPage(sessionID string, limit int, beforeSeq int64) (string, error) {
+	return c.getSessionMessagesPageDispatch(sessionID, limit, beforeSeq)
+}
+
+// DeleteTerminal deletes a terminal by id and returns JSON response.
+func (c *Client) DeleteTerminal(terminalID string) (string, error) {
+	return c.deleteTerminalDispatch(terminalID)
+}
+
+// CallRPC issues a websocket RPC method call and returns the raw ACK payload.
+func (c *Client) CallRPC(method string, paramsJSON string) (string, error) {
+	return c.callRPCDispatch(method, paramsJSON)
+}
