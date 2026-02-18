@@ -15,6 +15,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/agentengine"
 	"github.com/bhandras/delight/cli/internal/claude"
 	"github.com/bhandras/delight/cli/pkg/types"
+	"github.com/bhandras/delight/shared/logger"
 	"github.com/bhandras/delight/shared/wire"
 )
 
@@ -176,7 +177,8 @@ type Engine struct {
 	remoteSessionID string
 	remoteTurnID    string
 	remoteWorking   bool
-	remoteToolNames map[string]string
+	remoteToolNames  map[string]string
+	remoteToolInputs map[string]any
 
 	waitOnce sync.Once
 	waitErr  error
@@ -197,7 +199,8 @@ func New(workDir string, requester agentengine.PermissionRequester, debug bool) 
 		remoteCtx:       context.Background(),
 		localCancel:     func() {},
 		remoteCancel:    func() {},
-		remoteToolNames: make(map[string]string),
+		remoteToolNames:  make(map[string]string),
+		remoteToolInputs: make(map[string]any),
 	}
 }
 
@@ -898,15 +901,22 @@ func (e *Engine) emitRemoteUIEventsFromRaw(raw []byte, nowMs int64) {
 		return
 	}
 
+	if e.debug {
+		logger.Debugf("claude: emitRemoteUIEventsFromRaw: %d blocks", len(blocks))
+	}
+
 	for _, block := range blocks {
 		blockType := normalizeClaudeBlockType(block.Type)
+		if e.debug {
+			logger.Debugf("claude: block type=%q normalized=%q", block.Type, blockType)
+		}
 		switch blockType {
 		case "text":
 			// Do not clear busy/thinking on assistant text. "thinking" (busy) is
 			// tied to durable turn boundaries, and Claude streams text mid-turn.
 		case "thinking":
-			// Do not forward thinking content; treat it as a generic busy signal.
 			e.setRemoteWorking(true, nowMs)
+			e.emitClaudeThinkingUI(block, nowMs)
 		case "tool-use":
 			e.emitClaudeToolUIStart(block, nowMs)
 		case "tool-result":
@@ -949,7 +959,11 @@ func (e *Engine) emitClaudeToolUIStart(block wire.ContentBlock, nowMs int64) {
 	if e.remoteToolNames == nil {
 		e.remoteToolNames = make(map[string]string)
 	}
+	if e.remoteToolInputs == nil {
+		e.remoteToolInputs = make(map[string]any)
+	}
 	e.remoteToolNames[toolID] = name
+	e.remoteToolInputs[toolID] = input
 	e.mu.Unlock()
 
 	brief, full := renderToolMarkdown(name, input, nil, agentengine.UIEventStatusRunning)
@@ -987,13 +1001,15 @@ func (e *Engine) emitClaudeToolUIEnd(block wire.ContentBlock, nowMs int64) {
 
 	e.mu.Lock()
 	name := e.remoteToolNames[toolID]
+	toolInput := e.remoteToolInputs[toolID]
 	delete(e.remoteToolNames, toolID)
+	delete(e.remoteToolInputs, toolID)
 	e.mu.Unlock()
 	if strings.TrimSpace(name) == "" {
 		name = "tool"
 	}
 
-	brief, full := renderToolMarkdown(name, nil, output, status)
+	brief, full := renderToolMarkdown(name, toolInput, output, status)
 	e.tryEmit(agentengine.EvUIEvent{
 		Mode:          agentengine.ModeRemote,
 		EventID:       "tool-" + toolID,
@@ -1006,46 +1022,234 @@ func (e *Engine) emitClaudeToolUIEnd(block wire.ContentBlock, nowMs int64) {
 	})
 }
 
+func (e *Engine) emitClaudeThinkingUI(block wire.ContentBlock, nowMs int64) {
+	// Extract thinking text from the block. Claude's thinking blocks can have:
+	// - "thinking" field with the actual thinking text
+	// - "text" field as an alternative
+	// - summary field with a condensed version
+	var thinkingText string
+	if block.Fields != nil {
+		if raw, ok := block.Fields["thinking"]; ok {
+			thinkingText, _ = raw.(string)
+		}
+	}
+	if thinkingText == "" {
+		thinkingText = block.Text
+	}
+
+	thinkingText = strings.TrimSpace(thinkingText)
+	if thinkingText == "" {
+		return
+	}
+
+	// Generate a unique event ID for this thinking block
+	eventID := "thinking-" + types.NewCUID()
+
+	brief, full := renderThinkingMarkdown(thinkingText)
+	if brief == "" && full == "" {
+		return
+	}
+
+	e.tryEmit(agentengine.EvUIEvent{
+		Mode:          agentengine.ModeRemote,
+		EventID:       eventID,
+		Kind:          agentengine.UIEventReasoning,
+		Phase:         agentengine.UIEventPhaseEnd,
+		Status:        agentengine.UIEventStatusOK,
+		BriefMarkdown: brief,
+		FullMarkdown:  full,
+		AtMs:          nowMs,
+	})
+}
+
+func renderThinkingMarkdown(text string) (brief string, full string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", ""
+	}
+
+	// Extract first line for brief, truncated to 160 chars
+	lines := strings.SplitN(text, "\n", 2)
+	firstLine := strings.TrimSpace(lines[0])
+
+	// Check if the first line is just a "Reasoning" heading (with or without # prefix)
+	firstLineNormalized := strings.TrimSpace(strings.TrimLeft(firstLine, "# "))
+	isReasoningHeading := strings.EqualFold(firstLineNormalized, "Reasoning")
+
+	if isReasoningHeading {
+		if len(lines) < 2 || strings.TrimSpace(lines[1]) == "" {
+			return "", ""
+		}
+		// Use the second line as brief instead
+		secondLines := strings.SplitN(strings.TrimSpace(lines[1]), "\n", 2)
+		firstLine = strings.TrimSpace(secondLines[0])
+	}
+
+	if len(firstLine) > 160 {
+		brief = firstLine[:157] + "..."
+	} else {
+		brief = firstLine
+	}
+
+	full = "Reasoning\n\n" + text
+	return brief, strings.TrimSpace(full)
+}
+
 func renderToolMarkdown(name string, input any, output any, status agentengine.UIEventStatus) (brief string, full string) {
 	normalized := strings.TrimSpace(strings.ToLower(name))
 	if normalized == "" {
 		normalized = "tool"
 	}
 
-	prefix := "🔧"
-	switch status {
-	case agentengine.UIEventStatusOK:
-		prefix = "✅"
-	case agentengine.UIEventStatusError:
-		prefix = "❌"
+	// Edit/Write tools get special "Patch:" formatting so the iOS client's
+	// isPatchUIEvent detects them and renders via DiffCodePreviewView.
+	if b, f, ok := renderPatchMarkdown(normalized, input); ok {
+		return b, f
 	}
-	brief = prefix + " " + normalized
 
-	heading := "### Tool: " + normalized
-	if status != "" && status != agentengine.UIEventStatusRunning {
-		heading += " (" + string(status) + ")"
-	}
-	fullLines := []string{heading}
+	// Use the same "Tool: `name`" format as Codex so the iOS client's
+	// extractToolCall parser can recognise the heading and render a
+	// ToolCalloutView with the correct icon.
+	brief = fmt.Sprintf("Tool: `%s`", normalized)
+	full = fmt.Sprintf("Tool: `%s`", normalized)
 
-	if normalized == "bash" {
+	isShell := normalized == "bash" || normalized == "shell" ||
+		normalized == "sh" || normalized == "zsh"
+
+	if isShell {
 		if cmd := extractBashCommand(input); cmd != "" {
-			brief = prefix + " bash: " + cmd
-			fullLines = append(fullLines, "", "```sh", cmd, "```")
+			brief = fmt.Sprintf("Tool: `%s`\n\n```sh\n%s\n```", normalized, cmd)
+			full = fmt.Sprintf("Tool: `%s`\n\n```sh\n%s\n```", normalized, cmd)
 		}
 	} else if input != nil {
 		if pretty := prettyJSON(input, 2_000); pretty != "" {
-			fullLines = append(fullLines, "", "```json", pretty, "```")
+			full = fmt.Sprintf("%s\n\n```json\n%s\n```", full, pretty)
 		}
 	}
 
 	if status != agentengine.UIEventStatusRunning && output != nil {
 		if pretty := prettyJSON(output, 2_000); pretty != "" {
-			fullLines = append(fullLines, "", "```", pretty, "```")
+			full = fmt.Sprintf("%s\n\nOutput:\n\n```\n%s\n```", full, pretty)
 		}
 	}
 
-	full = strings.TrimSpace(strings.Join(fullLines, "\n"))
 	return brief, full
+}
+
+// renderPatchMarkdown returns Patch-prefixed markdown for file-editing tools
+// (Edit, MultiEdit, Write) so the iOS client's isPatchUIEvent recognises
+// them and renders via DiffCodePreviewView.
+func renderPatchMarkdown(normalized string, input any) (brief string, full string, ok bool) {
+	switch normalized {
+	case "edit":
+		return renderEditPatch(input)
+	case "multiedit", "multi_edit":
+		return renderMultiEditPatch(input)
+	case "write":
+		return renderWritePatch(input)
+	default:
+		return "", "", false
+	}
+}
+
+func renderEditPatch(input any) (brief string, full string, ok bool) {
+	m, mOK := input.(map[string]any)
+	if !mOK {
+		return "", "", false
+	}
+	filePath, _ := m["file_path"].(string)
+	if filePath == "" {
+		return "", "", false
+	}
+	oldStr, _ := m["old_string"].(string)
+	newStr, _ := m["new_string"].(string)
+	if oldStr == "" && newStr == "" {
+		return "", "", false
+	}
+	diff := buildSimpleDiff(oldStr, newStr)
+	brief = fmt.Sprintf("Patch: `%s`", filePath)
+	full = fmt.Sprintf("Patch: `%s`\n\n```diff\n%s\n```", filePath, diff)
+	return brief, full, true
+}
+
+func renderMultiEditPatch(input any) (brief string, full string, ok bool) {
+	m, mOK := input.(map[string]any)
+	if !mOK {
+		return "", "", false
+	}
+	filePath, _ := m["file_path"].(string)
+	if filePath == "" {
+		return "", "", false
+	}
+	edits, editsOK := m["edits"].([]any)
+	if !editsOK || len(edits) == 0 {
+		brief = fmt.Sprintf("Patch: `%s`", filePath)
+		return brief, brief, true
+	}
+	var parts []string
+	for _, edit := range edits {
+		em, emOK := edit.(map[string]any)
+		if !emOK {
+			continue
+		}
+		oldStr, _ := em["old_string"].(string)
+		newStr, _ := em["new_string"].(string)
+		if oldStr == "" && newStr == "" {
+			continue
+		}
+		parts = append(parts, buildSimpleDiff(oldStr, newStr))
+	}
+	brief = fmt.Sprintf("Patch: `%s`", filePath)
+	if len(parts) > 0 {
+		full = fmt.Sprintf("Patch: `%s`\n\n```diff\n%s\n```", filePath, strings.Join(parts, "\n...\n"))
+	} else {
+		full = brief
+	}
+	return brief, full, true
+}
+
+func renderWritePatch(input any) (brief string, full string, ok bool) {
+	m, mOK := input.(map[string]any)
+	if !mOK {
+		return "", "", false
+	}
+	filePath, _ := m["file_path"].(string)
+	if filePath == "" {
+		return "", "", false
+	}
+	brief = fmt.Sprintf("Patch: `%s`", filePath)
+	content, _ := m["content"].(string)
+	if content != "" {
+		var lines []string
+		for _, line := range strings.Split(content, "\n") {
+			lines = append(lines, "+"+line)
+		}
+		diff := strings.Join(lines, "\n")
+		if len(diff) > 2000 {
+			diff = diff[:2000] + "\n..."
+		}
+		full = fmt.Sprintf("Patch: `%s`\n\n```diff\n%s\n```", filePath, diff)
+	} else {
+		full = brief
+	}
+	return brief, full, true
+}
+
+// buildSimpleDiff produces a minimal unified-diff-style string with
+// - prefixed old lines and + prefixed new lines.
+func buildSimpleDiff(old, new string) string {
+	var lines []string
+	if old != "" {
+		for _, line := range strings.Split(old, "\n") {
+			lines = append(lines, "-"+line)
+		}
+	}
+	if new != "" {
+		for _, line := range strings.Split(new, "\n") {
+			lines = append(lines, "+"+line)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func extractBashCommand(input any) string {
@@ -1161,25 +1365,23 @@ func buildRawRecordBytesFromRemote(msg *claude.RemoteMessage) ([]byte, bool) {
 		}
 		return data, true
 	case "assistant":
-		text := ""
+		var contentBlocks []wire.ContentBlock
 		switch v := msg.Content.(type) {
 		case string:
-			text = v
+			text := strings.TrimSpace(v)
+			if text != "" {
+				contentBlocks = []wire.ContentBlock{{Type: "text", Text: text}}
+			}
 		default:
 			blocks, err := wire.DecodeContentBlocks(v)
-			if err == nil {
-				for _, block := range blocks {
-					if block.Type == "text" && block.Text != "" {
-						text = block.Text
-						break
-					}
-				}
+			if err == nil && len(blocks) > 0 {
+				contentBlocks = blocks
 			}
 		}
-		if text == "" && msg.Result != "" {
-			text = msg.Result
+		if len(contentBlocks) == 0 && strings.TrimSpace(msg.Result) != "" {
+			contentBlocks = []wire.ContentBlock{{Type: "text", Text: msg.Result}}
 		}
-		if text == "" {
+		if len(contentBlocks) == 0 {
 			return nil, false
 		}
 		model := msg.Model
@@ -1198,11 +1400,9 @@ func buildRawRecordBytesFromRemote(msg *claude.RemoteMessage) ([]byte, bool) {
 					UUID:             types.NewCUID(),
 					ParentUUID:       nil,
 					Message: wire.AgentMessage{
-						Role:  "assistant",
-						Model: model,
-						Content: []wire.ContentBlock{
-							{Type: "text", Text: text},
-						},
+						Role:    "assistant",
+						Model:   model,
+						Content: contentBlocks,
 					},
 				},
 			},
