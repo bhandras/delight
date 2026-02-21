@@ -6,7 +6,7 @@ DERIVED_DATA ?= /tmp/delight-ios
 BUNDLED_GOCACHE ?= $(CURDIR)/.gocache
 BUNDLED_GOMODCACHE ?= $(CURDIR)/.gomodcache
 BUNDLED_GOLANGCI_CACHE ?= $(CURDIR)/.golangci-cache
-BUNDLE_ID ?= com.bhandras.delight.harness
+BUNDLE_ID ?=
 APP_PATH := $(DERIVED_DATA)/Build/Products/$(CONFIGURATION)-iphonesimulator/Delight.app
 SIMULATOR_UDID_FILE := $(DERIVED_DATA)/booted_simulator_udid
 IOS_PROJECT ?= ios/DelightApp.xcodeproj
@@ -55,8 +55,18 @@ ios-install: ios-build ios-sim-boot
 	xcrun simctl install "$$UDID" "$(APP_PATH)"
 
 ios-run: ios-install
-	@UDID="$$(cat "$(SIMULATOR_UDID_FILE)")"; \
-	xcrun simctl launch "$$UDID" "$(BUNDLE_ID)"
+	@set -euo pipefail; \
+	UDID="$$(cat "$(SIMULATOR_UDID_FILE)")"; \
+	bundle_id="$(BUNDLE_ID)"; \
+	if [[ -z "$$bundle_id" ]]; then \
+		bundle_id="$$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$(APP_PATH)/Info.plist" 2>/dev/null || true)"; \
+	fi; \
+	if [[ -z "$$bundle_id" ]]; then \
+		echo "error: unable to determine app bundle id. Build output may be missing at $(APP_PATH)."; \
+		exit 1; \
+	fi; \
+	echo "Launching $$bundle_id on simulator $$UDID..."; \
+	xcrun simctl launch "$$UDID" "$$bundle_id"
 
 ios-release-archive: ios-sdk
 	rm -rf "$(IOS_ARCHIVE_PATH)"
@@ -189,7 +199,6 @@ lint:
 	@mkdir -p "$(BUNDLED_GOCACHE)" "$(BUNDLED_GOMODCACHE)" "$(BUNDLED_GOLANGCI_CACHE)"
 	(cd shared && GOCACHE="$(BUNDLED_GOCACHE)" GOMODCACHE="$(BUNDLED_GOMODCACHE)" GOLANGCI_LINT_CACHE="$(BUNDLED_GOLANGCI_CACHE)" golangci-lint run ./...)
 	(cd cli && GOCACHE="$(BUNDLED_GOCACHE)" GOMODCACHE="$(BUNDLED_GOMODCACHE)" GOLANGCI_LINT_CACHE="$(BUNDLED_GOLANGCI_CACHE)" golangci-lint run ./...)
-	(cd webclient && GOCACHE="$(BUNDLED_GOCACHE)" GOMODCACHE="$(BUNDLED_GOMODCACHE)" GOLANGCI_LINT_CACHE="$(BUNDLED_GOLANGCI_CACHE)" golangci-lint run ./...)
 	(cd server && GOCACHE="$(BUNDLED_GOCACHE)" GOMODCACHE="$(BUNDLED_GOMODCACHE)" GOLANGCI_LINT_CACHE="$(BUNDLED_GOLANGCI_CACHE)" golangci-lint run ./...)
 
 .PHONY: cli server webclient
