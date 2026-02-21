@@ -67,6 +67,25 @@ struct MessageBubble: View {
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
         .padding(.horizontal, Layout.bubbleHorizontalPadding)
         .padding(.vertical, rowVerticalPadding(for: message, fontSize: fontSize))
+        .contextMenuIf(canCopyOutput) {
+            Button {
+                UIPasteboard.general.string = copyableMessageText
+            } label: {
+                Label(copyActionTitle(for: message.role), systemImage: "doc.on.doc")
+            }
+        }
+    }
+
+    /// canCopyOutput gates transcript copy affordances to non-user rows that
+    /// contain at least one copyable block.
+    private var canCopyOutput: Bool {
+        message.role != .user && !copyableMessageText.isEmpty
+    }
+
+    /// copyableMessageText is the normalized plain-text export used for the
+    /// bubble-level "Copy Output" action.
+    private var copyableMessageText: String {
+        copyText(for: message).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// eventVerticalPadding returns extra vertical spacing for tool/thinking
@@ -88,6 +107,73 @@ struct MessageBubble: View {
             return max(base, eventVerticalPadding(for: message))
         }
         return base
+    }
+
+    /// copyText builds a plain-text representation of a message row that can
+    /// be pasted outside the app.
+    private func copyText(for message: MessageItem) -> String {
+        let parts = message.blocks.compactMap { block -> String? in
+            let blockText = copyText(for: block).trimmingCharacters(in: .whitespacesAndNewlines)
+            if blockText.isEmpty {
+                return nil
+            }
+            return blockText
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
+    /// copyText extracts the raw payload for each block type so copy/paste
+    /// preserves meaningful output beyond visible Markdown formatting.
+    private func copyText(for block: MessageBlock) -> String {
+        switch block {
+        case .text(let text):
+            return text
+        case let .code(_, content):
+            return content
+        case .toolCall(let summary):
+            if let subtitle = summary.subtitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !subtitle.isEmpty {
+                return "\(summary.title)\n\(subtitle)"
+            }
+            return summary.title
+        case .callout(let summary):
+            let content = summary.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if content.isEmpty {
+                return summary.title
+            }
+            return "\(summary.title)\n\(content)"
+        case .toolCallout(let summary):
+            var parts: [String] = []
+            let title = summary.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !title.isEmpty {
+                parts.append(title)
+            }
+
+            let command = summary.command.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !command.isEmpty {
+                parts.append(command)
+            }
+
+            let output = summary.output.compactMap { block -> String? in
+                switch block {
+                case let .code(_, content):
+                    let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return trimmed.isEmpty ? nil : trimmed
+                }
+            }.joined(separator: "\n\n")
+            if !output.isEmpty {
+                parts.append(output)
+            }
+            return parts.joined(separator: "\n")
+        }
+    }
+
+    /// copyActionTitle returns a role-aware menu title for transcript copy.
+    private func copyActionTitle(for role: MessageRole) -> String {
+        if role == .assistant {
+            return "Copy Output"
+        }
+        return "Copy Message"
     }
 }
 
@@ -868,6 +954,17 @@ private extension View {
     func clipIf(_ condition: Bool, transform: (Self) -> some View) -> some View {
         if condition {
             transform(self)
+        } else {
+            self
+        }
+    }
+
+    /// contextMenuIf conditionally attaches a context menu without changing
+    /// the original view type when disabled.
+    @ViewBuilder
+    func contextMenuIf(_ condition: Bool, @ViewBuilder menuItems: () -> some View) -> some View {
+        if condition {
+            self.contextMenu(menuItems: menuItems)
         } else {
             self
         }
