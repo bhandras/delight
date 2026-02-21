@@ -218,6 +218,17 @@ private struct SettingsView: View {
                                         )
                                     }
                                 }
+                                Divider()
+                                NavigationLink {
+                                    AboutDetailView()
+                                } label: {
+                                    SettingMenuRow(
+                                        title: "About",
+                                        subtitle: "Version, source, and license",
+                                        systemImage: "info.circle",
+                                        tint: Color(red: 0.24, green: 0.62, blue: 0.5)
+                                    )
+                                }
                             }
                         }
 
@@ -900,6 +911,92 @@ private struct AccountKeyImportSheet: View {
                 }
             }
         }
+    }
+}
+
+/// AboutLinks contains static links used in the About settings screen.
+private enum AboutLinks {
+    static let repository = URL(string: "https://github.com/bhandras/delight")!
+    static let license = URL(string: "https://github.com/bhandras/delight/blob/main/LICENSE")!
+}
+
+private struct AboutDetailView: View {
+    /// versionLabel renders a human-friendly version/build string from Info.plist.
+    private var versionLabel: String {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let shortVersion = (info["CFBundleShortVersionString"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let buildNumber = (info["CFBundleVersion"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let version = shortVersion?.isEmpty == false ? shortVersion! : "Unknown"
+        if let buildNumber, !buildNumber.isEmpty {
+            return "\(version) (\(buildNumber))"
+        }
+        return version
+    }
+
+    var body: some View {
+        ZStack {
+            Theme.background.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    FeatureListCard {
+                        VStack(alignment: .leading, spacing: 0) {
+                            AccountDetailRow(title: "Version", value: versionLabel)
+                            Divider()
+                            Link(destination: AboutLinks.repository) {
+                                AboutExternalLinkRow(
+                                    title: "GitHub",
+                                    subtitle: "github.com/bhandras/delight",
+                                    systemImage: "link",
+                                    tint: Theme.accent
+                                )
+                            }
+                            Divider()
+                            Link(destination: AboutLinks.license) {
+                                AboutExternalLinkRow(
+                                    title: "License",
+                                    subtitle: "MIT",
+                                    systemImage: "doc.text",
+                                    tint: Theme.mutedText
+                                )
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                .padding()
+            }
+        }
+        .navigationTitle("About")
+    }
+}
+
+private struct AboutExternalLinkRow: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: systemImage)
+                .font(.system(size: 24))
+                .foregroundColor(tint)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(Theme.body)
+                    .foregroundColor(Theme.messageText)
+                Text(subtitle)
+                    .font(Theme.caption)
+                    .foregroundColor(Theme.mutedText)
+            }
+            Spacer()
+            Image(systemName: "arrow.up.right.square")
+                .foregroundColor(Theme.mutedText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .padding(.vertical, 12)
     }
 }
 
