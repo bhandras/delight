@@ -694,6 +694,26 @@ struct MessageItem: Identifiable, Hashable {
     let createdAt: Int64?
 }
 
+/// ComposerAttachment is an attachment selected in the message composer.
+struct ComposerAttachment: Identifiable, Hashable {
+    /// UploadState describes attachment upload lifecycle.
+    enum UploadState: String, Hashable {
+        case uploading
+        case ready
+        case failed
+    }
+
+    let id: String
+    let sessionID: String
+    let fileName: String
+    let mimeType: String
+    let sizeBytes: Int64
+    var bytesUploaded: Int64
+    var remotePath: String?
+    var state: UploadState
+    var errorMessage: String?
+}
+
 /// ScrollRequest requests a scroll in the terminal message list.
 struct ScrollRequest: Identifiable, Hashable {
     enum Target: Hashable {

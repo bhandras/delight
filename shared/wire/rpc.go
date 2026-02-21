@@ -18,6 +18,55 @@ type PermissionResponseRequest struct {
 	Message string `json:"message"`
 }
 
+// AttachmentUploadBeginRequest starts an attachment upload stream for the
+// current session.
+type AttachmentUploadBeginRequest struct {
+	// UploadID is a client-generated unique upload identifier.
+	UploadID string `json:"uploadId"`
+	// FileName is the original file name (best-effort).
+	FileName string `json:"fileName"`
+	// MIMEType is the best-effort media type.
+	MIMEType string `json:"mimeType"`
+	// SizeBytes is the expected total file size in bytes.
+	SizeBytes int64 `json:"sizeBytes"`
+}
+
+// AttachmentUploadChunkRequest appends one chunk of file data to an upload.
+type AttachmentUploadChunkRequest struct {
+	// UploadID identifies the upload initialized by begin.
+	UploadID string `json:"uploadId"`
+	// ChunkIndex is the zero-based chunk ordinal.
+	ChunkIndex int64 `json:"chunkIndex"`
+	// DataBase64 is the chunk payload as base64 bytes.
+	DataBase64 string `json:"dataBase64"`
+}
+
+// AttachmentUploadCommitRequest finalizes an upload and returns a local path.
+type AttachmentUploadCommitRequest struct {
+	// UploadID identifies the upload initialized by begin.
+	UploadID string `json:"uploadId"`
+}
+
+// AttachmentUploadCancelRequest cancels and deletes an in-flight upload.
+type AttachmentUploadCancelRequest struct {
+	// UploadID identifies the upload initialized by begin.
+	UploadID string `json:"uploadId"`
+}
+
+// AttachmentUploadResponse is a generic response for upload RPC methods.
+type AttachmentUploadResponse struct {
+	// Success indicates whether the operation succeeded.
+	Success bool `json:"success"`
+	// Error contains a user-visible error message on failure.
+	Error string `json:"error,omitempty"`
+	// UploadID echoes the upload identifier when relevant.
+	UploadID string `json:"uploadId,omitempty"`
+	// Path is the finalized local filesystem path after commit.
+	Path string `json:"path,omitempty"`
+	// BytesReceived is the total bytes written so far for begin/chunk/commit.
+	BytesReceived int64 `json:"bytesReceived,omitempty"`
+}
+
 // SetAgentConfigRequest updates durable agent configuration for a session.
 //
 // This is a session-scoped RPC (mobile -> server -> CLI). Values are optional;

@@ -1,4 +1,6 @@
+import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// TerminalsView lists available terminal sessions and links into their detail view.
 struct TerminalsView: View {
@@ -1279,110 +1281,191 @@ private struct MessageComposer: View {
     let isShowingStop: Bool
     let placeholder: String
     @State private var showAgentSettingsSheet = false
+    @State private var showAttachmentSourceDialog = false
+    @State private var showFileImporter = false
+    @State private var showPhotoPicker = false
+    @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var isFetchingSettings = false
 
     private enum Layout {
         static let composerSpacing: CGFloat = 12
+        static let attachmentButtonSize: CGFloat = 34
+        static let attachmentIconSize: CGFloat = 14
         static let settingsButtonSize: CGFloat = 34
         static let settingsIconSize: CGFloat = 14
+        static let controlsBorderOpacity: Double = 0.65
+        static let attachmentChipSpacing: CGFloat = 8
+        static let attachmentChipVerticalPadding: CGFloat = 4
         static let textFieldHorizontalPadding: CGFloat = 12
         static let textFieldVerticalPadding: CGFloat = 10
         static let textFieldCornerRadius: CGFloat = 18
         static let textFieldBorderOpacity: Double = 0.16
-        static let settingsBorderOpacity: Double = 0.65
     }
 
     var body: some View {
         let isWorking = isShowingStop
         let trimmedMessage = model.messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasMessage = !trimmedMessage.isEmpty
+        let composerAttachments = model.composerAttachments.filter { $0.sessionID == session.id }
+        let hasReadyAttachments = composerAttachments.contains {
+            $0.state == .ready
+                && (($0.remotePath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) == false)
+        }
+        let hasSendableContent = hasMessage || hasReadyAttachments
         let ui = session.uiState
         let isOnline = (ui?.connected ?? false) && (ui?.online ?? false)
         let isLocked = (ui?.working ?? false)
         let canOpenAgentSettings = canControlSession && isOnline && !isLocked && !isFetchingSettings
+        let canAddAttachments = isInputEnabled && canControlSession && isOnline && !isLocked
 
-        HStack(spacing: Layout.composerSpacing) {
-            Button {
-                isFetchingSettings = true
-                model.fetchAgentCapabilities(sessionID: session.id, suppressErrors: false) {
-                    isFetchingSettings = false
-                    showAgentSettingsSheet = true
-                }
-            } label: {
-                ZStack {
-                    Circle()
-                        .fill(Color(uiColor: .secondarySystemBackground))
-                    if isFetchingSettings {
-                        ProgressView()
-                            .tint(Theme.accent)
-                            .scaleEffect(0.75)
-                    } else {
-                        Image(systemName: "lightbulb")
-                            .font(.system(size: Layout.settingsIconSize, weight: .semibold))
-                            .foregroundColor(canOpenAgentSettings ? Theme.accent : Theme.mutedText)
+        VStack(alignment: .leading, spacing: Layout.attachmentChipVerticalPadding) {
+            if !composerAttachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: Layout.attachmentChipSpacing) {
+                        ForEach(composerAttachments) { attachment in
+                            ComposerAttachmentChip(attachment: attachment) {
+                                model.removeComposerAttachment(uploadID: attachment.id)
+                            }
+                        }
                     }
+                    .padding(.horizontal, 1)
                 }
-                .frame(width: Layout.settingsButtonSize, height: Layout.settingsButtonSize)
+            }
+
+            HStack(spacing: Layout.composerSpacing) {
+                Button {
+                    showAttachmentSourceDialog = true
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(Color(uiColor: .secondarySystemBackground))
+                        Image(systemName: "paperclip")
+                            .font(.system(size: Layout.attachmentIconSize, weight: .semibold))
+                            .foregroundColor(canAddAttachments ? Theme.accent : Theme.mutedText)
+                    }
+                    .frame(width: Layout.attachmentButtonSize, height: Layout.attachmentButtonSize)
+                    .overlay(
+                        Circle()
+                            .stroke(Color(uiColor: .separator).opacity(Layout.controlsBorderOpacity), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Add attachment")
+                .disabled(!canAddAttachments)
+
+                Button {
+                    isFetchingSettings = true
+                    model.fetchAgentCapabilities(sessionID: session.id, suppressErrors: false) {
+                        isFetchingSettings = false
+                        showAgentSettingsSheet = true
+                    }
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(Color(uiColor: .secondarySystemBackground))
+                        if isFetchingSettings {
+                            ProgressView()
+                                .tint(Theme.accent)
+                                .scaleEffect(0.75)
+                        } else {
+                            Image(systemName: "lightbulb")
+                                .font(.system(size: Layout.settingsIconSize, weight: .semibold))
+                                .foregroundColor(canOpenAgentSettings ? Theme.accent : Theme.mutedText)
+                        }
+                    }
+                    .frame(width: Layout.settingsButtonSize, height: Layout.settingsButtonSize)
+                    .overlay(
+                        Circle()
+                            .stroke(Color(uiColor: .separator).opacity(Layout.controlsBorderOpacity), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Agent settings")
+                .disabled(!canOpenAgentSettings)
+
+                TextField(text: $model.messageText, axis: .vertical) {
+                    Text(placeholder)
+                        .foregroundColor(Color(uiColor: .secondaryLabel))
+                }
+                .font(Theme.body)
+                .foregroundColor(Theme.messageText)
+                .tint(Theme.accent)
+                .padding(.horizontal, Layout.textFieldHorizontalPadding)
+                .padding(.vertical, Layout.textFieldVerticalPadding)
+                .background(Color(uiColor: .secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: Layout.textFieldCornerRadius, style: .continuous))
                 .overlay(
-                    Circle()
-                        .stroke(Color(uiColor: .separator).opacity(Layout.settingsBorderOpacity), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: Layout.textFieldCornerRadius, style: .continuous)
+                        .stroke(Theme.accent.opacity(Layout.textFieldBorderOpacity), lineWidth: 1)
                 )
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Agent settings")
-            .disabled(!canOpenAgentSettings)
+                .disabled(!isInputEnabled)
 
-            TextField(text: $model.messageText, axis: .vertical) {
-                Text(placeholder)
-                    .foregroundColor(Color(uiColor: .secondaryLabel))
+                if isWorking {
+                    Button {
+                        model.abortCurrentTurn()
+                    } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 16, weight: .bold))
+                            .padding(10)
+                            .background(Theme.warning)
+                            .foregroundColor(.white)
+                            .clipShape(Circle())
+                    }
+                    .disabled(!canControlSession || model.sessionID.isEmpty)
+                } else if hasSendableContent {
+                    Button {
+                        model.sendMessage()
+                    } label: {
+                        Image(systemName: "paperplane.fill")
+                            .font(.system(size: 16, weight: .bold))
+                            .padding(10)
+                            .background(Theme.accent)
+                            .foregroundColor(.white)
+                            .clipShape(Circle())
+                    }
+                    .disabled(
+                        !isInputEnabled
+                            || model.sessionID.isEmpty
+                            || !hasSendableContent
+                    )
+                    .transition(.scale.combined(with: .opacity))
+                }
             }
-            .font(Theme.body)
-            .foregroundColor(Theme.messageText)
-            .tint(Theme.accent)
-            .padding(.horizontal, Layout.textFieldHorizontalPadding)
-            .padding(.vertical, Layout.textFieldVerticalPadding)
-            .background(Color(uiColor: .secondarySystemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: Layout.textFieldCornerRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: Layout.textFieldCornerRadius, style: .continuous)
-                    .stroke(Theme.accent.opacity(Layout.textFieldBorderOpacity), lineWidth: 1)
-            )
-            .disabled(!isInputEnabled)
-
-            if isWorking {
-                Button {
-                    model.abortCurrentTurn()
-                } label: {
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 16, weight: .bold))
-                        .padding(10)
-                        .background(Theme.warning)
-                        .foregroundColor(.white)
-                        .clipShape(Circle())
+            .confirmationDialog("Add Attachment", isPresented: $showAttachmentSourceDialog, titleVisibility: .visible) {
+                Button("Photo Library") {
+                    showPhotoPicker = true
                 }
-                .disabled(!canControlSession || model.sessionID.isEmpty)
-            } else if hasMessage {
-                Button {
-                    model.sendMessage()
-                    model.messageText = ""
-                } label: {
-                    Image(systemName: "paperplane.fill")
-                        .font(.system(size: 16, weight: .bold))
-                        .padding(10)
-                        .background(Theme.accent)
-                        .foregroundColor(.white)
-                        .clipShape(Circle())
+                Button("Files") {
+                    showFileImporter = true
                 }
-                .disabled(
-                    !isInputEnabled
-                        || model.sessionID.isEmpty
-                        || trimmedMessage.isEmpty
-                )
-                .transition(.scale.combined(with: .opacity))
+                Button("Cancel", role: .cancel) {}
             }
         }
         .padding()
-        .animation(.easeInOut(duration: 0.15), value: hasMessage)
+        .animation(.easeInOut(duration: 0.15), value: hasSendableContent)
+        .onChange(of: selectedPhotoItem) { newItem in
+            guard let newItem else {
+                return
+            }
+            Task {
+                await importSelectedPhotoItem(newItem)
+                await MainActor.run {
+                    selectedPhotoItem = nil
+                }
+            }
+        }
+        .photosPicker(
+            isPresented: $showPhotoPicker,
+            selection: $selectedPhotoItem,
+            matching: .images
+        )
+        .fileImporter(
+            isPresented: $showFileImporter,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: false
+        ) { result in
+            handleFileImport(result)
+        }
         .sheet(isPresented: $showAgentSettingsSheet) {
             let fresh = model.agentEngineSettings[session.id]
             TerminalAgentSettingsSheet(
@@ -1401,6 +1484,139 @@ private struct MessageComposer: View {
                     )
                 }
             )
+        }
+    }
+
+    /// importSelectedPhotoItem converts one photo picker result into an upload.
+    private func importSelectedPhotoItem(_ item: PhotosPickerItem) async {
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self) else {
+                return
+            }
+            let type = item.supportedContentTypes.first
+            let ext = type?.preferredFilenameExtension ?? "jpg"
+            let mime = type?.preferredMIMEType
+            let filename = "photo-\(Int(Date().timeIntervalSince1970)).\(ext)"
+            await MainActor.run {
+                model.addComposerAttachmentFromData(data, fileName: filename, mimeType: mime)
+            }
+        } catch {
+            return
+        }
+    }
+
+    /// handleFileImport forwards one imported file URL to the attachment upload flow.
+    private func handleFileImport(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let fileURL = urls.first else {
+            return
+        }
+        model.addComposerAttachmentFromFileURL(fileURL)
+    }
+}
+
+private struct ComposerAttachmentChip: View {
+    let attachment: ComposerAttachment
+    let onRemove: () -> Void
+
+    private enum Layout {
+        static let cornerRadius: CGFloat = 12
+        static let horizontalPadding: CGFloat = 10
+        static let verticalPadding: CGFloat = 6
+        static let removeButtonSize: CGFloat = 20
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: iconName(for: attachment))
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(iconColor(for: attachment))
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(attachment.fileName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Theme.messageText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(attachmentStatusText(for: attachment))
+                    .font(.system(size: 11))
+                    .foregroundColor(statusColor(for: attachment))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+
+            Button {
+                onRemove()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(Theme.mutedText)
+                    .frame(width: Layout.removeButtonSize, height: Layout.removeButtonSize)
+                    .background(Color(uiColor: .tertiarySystemFill))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove \(attachment.fileName)")
+        }
+        .padding(.horizontal, Layout.horizontalPadding)
+        .padding(.vertical, Layout.verticalPadding)
+        .background(Color(uiColor: .secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: Layout.cornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Layout.cornerRadius, style: .continuous)
+                .stroke(Color(uiColor: .separator).opacity(0.45), lineWidth: 1)
+        )
+    }
+
+    /// iconName returns a best-effort icon for the attachment media type.
+    private func iconName(for attachment: ComposerAttachment) -> String {
+        if attachment.mimeType.hasPrefix("image/") {
+            return "photo"
+        }
+        if attachment.mimeType == "application/pdf" {
+            return "doc.richtext"
+        }
+        return "doc"
+    }
+
+    /// iconColor maps attachment upload state to icon tint color.
+    private func iconColor(for attachment: ComposerAttachment) -> Color {
+        switch attachment.state {
+        case .uploading:
+            return Theme.accent
+        case .ready:
+            return Theme.success
+        case .failed:
+            return Theme.warning
+        }
+    }
+
+    /// statusColor maps attachment upload state to subtitle text color.
+    private func statusColor(for attachment: ComposerAttachment) -> Color {
+        switch attachment.state {
+        case .uploading:
+            return Theme.mutedText
+        case .ready:
+            return Theme.success
+        case .failed:
+            return Theme.warning
+        }
+    }
+
+    /// attachmentStatusText returns a compact status summary for one chip.
+    private func attachmentStatusText(for attachment: ComposerAttachment) -> String {
+        let total = ByteCountFormatter.string(fromByteCount: attachment.sizeBytes, countStyle: .file)
+        switch attachment.state {
+        case .uploading:
+            let uploaded = ByteCountFormatter.string(fromByteCount: attachment.bytesUploaded, countStyle: .file)
+            return "Uploading \(uploaded) / \(total)"
+        case .ready:
+            return "Ready • \(total)"
+        case .failed:
+            let error = attachment.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !error.isEmpty {
+                return error
+            }
+            return "Upload failed"
         }
     }
 }

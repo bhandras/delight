@@ -3,6 +3,7 @@ import SwiftUI
 import UIKit
 import DelightSDK
 import CryptoKit
+import UniformTypeIdentifiers
 
 /// PermissionDecisionParams is the payload sent to `sessionID:permission` RPC calls.
 private struct PermissionDecisionParams: Encodable {
@@ -83,6 +84,79 @@ private struct SwitchControlResponse: Decodable {
 private struct AbortRPCResponse: Decodable {
     let success: Bool?
     let error: String?
+}
+
+/// AttachmentUploadBeginParams starts a session-scoped attachment upload.
+private struct AttachmentUploadBeginParams: Encodable {
+    let uploadId: String
+    let fileName: String
+    let mimeType: String
+    let sizeBytes: Int64
+}
+
+/// AttachmentUploadChunkParams appends one chunk to an attachment upload.
+private struct AttachmentUploadChunkParams: Encodable {
+    let uploadId: String
+    let chunkIndex: Int64
+    let dataBase64: String
+}
+
+/// AttachmentUploadCommitParams finalizes a session-scoped attachment upload.
+private struct AttachmentUploadCommitParams: Encodable {
+    let uploadId: String
+}
+
+/// AttachmentUploadCancelParams cancels a session-scoped attachment upload.
+private struct AttachmentUploadCancelParams: Encodable {
+    let uploadId: String
+}
+
+/// AttachmentUploadRPCResponse is the best-effort response schema for
+/// attachment upload RPC calls.
+private struct AttachmentUploadRPCResponse: Decodable {
+    /// Result contains the RPC payload when the SDK wraps it in `{result: ...}`.
+    struct Result: Decodable {
+        let success: Bool?
+        let error: String?
+        let uploadId: String?
+        let path: String?
+        let bytesReceived: Int64?
+    }
+
+    /// result is the wrapped payload for standard SDK RPC responses.
+    let result: Result?
+
+    /// error is a top-level RPC transport/handler error, if present.
+    let error: String?
+
+    /// The following fields support fallback decoding when a backend returns a
+    /// non-wrapped payload.
+    let success: Bool?
+    let uploadId: String?
+    let path: String?
+    let bytesReceived: Int64?
+
+    /// resolvedSuccess returns success across wrapped and flat response shapes.
+    var resolvedSuccess: Bool? { result?.success ?? success }
+
+    /// resolvedError returns the first non-empty error across transport and payload.
+    var resolvedError: String? {
+        let payloadError = result?.error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !payloadError.isEmpty {
+            return payloadError
+        }
+        let topLevelError = error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !topLevelError.isEmpty {
+            return topLevelError
+        }
+        return nil
+    }
+
+    /// resolvedPath returns path across wrapped and flat response shapes.
+    var resolvedPath: String? { result?.path ?? path }
+
+    /// resolvedBytesReceived returns upload progress across response shapes.
+    var resolvedBytesReceived: Int64? { result?.bytesReceived ?? bytesReceived }
 }
 
 /// RawUserMessageRecord is the schema used by the CLI to represent a user chat message.
@@ -332,6 +406,16 @@ private enum KeyFormat {
     static let masterKeyBytes: Int = 32
 }
 
+/// AttachmentUpload limits and RPC method names for composer uploads.
+private enum AttachmentUpload {
+    static let maxFileBytes: Int64 = 24 * 1024 * 1024
+    static let chunkBytes: Int = 64 * 1024
+    static let beginMethodSuffix = "attachment-upload-begin"
+    static let chunkMethodSuffix = "attachment-upload-chunk"
+    static let commitMethodSuffix = "attachment-upload-commit"
+    static let cancelMethodSuffix = "attachment-upload-cancel"
+}
+
 /// LogLimits defines the maximum log buffer size retained in memory.
 private enum LogLimits {
     static let maxLines = 100
@@ -375,6 +459,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var terminalURL: String = ""
     @Published var sessionID: String = ""
     @Published var messageText: String = ""
+    @Published var composerAttachments: [ComposerAttachment] = []
     @Published var status: String = "disconnected"
     @Published var logs: String = ""
     @Published var lastLogLine: String = ""
@@ -1904,19 +1989,388 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
+    /// addComposerAttachmentFromFileURL loads and uploads one file attachment.
+    func addComposerAttachmentFromFileURL(_ url: URL) {
+        let sessionIDSnapshot = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sessionIDSnapshot.isEmpty else {
+            log("Select a terminal session before adding attachments.")
+            return
+        }
+
+        let startedSecurity = url.startAccessingSecurityScopedResource()
+        defer {
+            if startedSecurity {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let values = try url.resourceValues(forKeys: [.nameKey, .fileSizeKey, .typeIdentifierKey])
+            let fileName = values.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? url.lastPathComponent
+            let fileData = try Data(contentsOf: url)
+            let mimeType = attachmentMIMEType(url: url, typeIdentifier: values.typeIdentifier)
+            addComposerAttachmentFromData(
+                fileData,
+                fileName: fileName,
+                mimeType: mimeType,
+                sessionID: sessionIDSnapshot
+            )
+        } catch {
+            log("Attachment load error: \(error)")
+        }
+    }
+
+    /// addComposerAttachmentFromData queues one in-memory attachment for upload.
+    func addComposerAttachmentFromData(_ data: Data, fileName: String, mimeType: String?) {
+        let sessionIDSnapshot = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sessionIDSnapshot.isEmpty else {
+            log("Select a terminal session before adding attachments.")
+            return
+        }
+        addComposerAttachmentFromData(
+            data,
+            fileName: fileName,
+            mimeType: mimeType,
+            sessionID: sessionIDSnapshot
+        )
+    }
+
+    /// removeComposerAttachment removes an attachment and cancels remote upload.
+    func removeComposerAttachment(uploadID: String) {
+        removeComposerAttachment(uploadID: uploadID, alsoCancelRemote: true)
+    }
+
+    /// clearComposerAttachments removes all composer attachments and best-effort
+    /// cancels their remote upload handles.
+    func clearComposerAttachments() {
+        let ids = composerAttachments.map(\.id)
+        for uploadID in ids {
+            removeComposerAttachment(uploadID: uploadID, alsoCancelRemote: true)
+        }
+    }
+
+    /// addComposerAttachmentFromData queues one attachment and starts upload.
+    private func addComposerAttachmentFromData(
+        _ data: Data,
+        fileName: String,
+        mimeType: String?,
+        sessionID: String
+    ) {
+        let sanitizedName = sanitizeAttachmentFileName(fileName)
+        let resolvedMime = attachmentMIMEType(fileName: sanitizedName, fallback: mimeType)
+        let sizeBytes = Int64(data.count)
+        if sizeBytes <= 0 {
+            log("Attachment error: empty file.")
+            return
+        }
+        if sizeBytes > AttachmentUpload.maxFileBytes {
+            log("Attachment error: file is too large.")
+            return
+        }
+
+        let uploadID = UUID().uuidString.lowercased()
+        let attachment = ComposerAttachment(
+            id: uploadID,
+            sessionID: sessionID,
+            fileName: sanitizedName,
+            mimeType: resolvedMime,
+            sizeBytes: sizeBytes,
+            bytesUploaded: 0,
+            remotePath: nil,
+            state: .uploading,
+            errorMessage: nil
+        )
+        composerAttachments.append(attachment)
+
+        sdkCallAsync {
+            do {
+                try self.uploadComposerAttachment(
+                    uploadID: uploadID,
+                    data: data,
+                    fileName: sanitizedName,
+                    mimeType: resolvedMime,
+                    sessionID: sessionID
+                )
+            } catch {
+                self.cancelAttachmentUpload(uploadID: uploadID, sessionID: sessionID)
+                let failureMessage = self.attachmentFailureMessage(from: error)
+                DispatchQueue.main.async {
+                    self.updateComposerAttachment(uploadID: uploadID) { item in
+                        item.state = .failed
+                        item.errorMessage = failureMessage
+                    }
+                }
+                self.log("Attachment upload error: \(failureMessage)")
+            }
+        }
+    }
+
+    /// uploadComposerAttachment streams one attachment to the terminal session.
+    private func uploadComposerAttachment(
+        uploadID: String,
+        data: Data,
+        fileName: String,
+        mimeType: String,
+        sessionID: String
+    ) throws {
+        let beginMethod = sessionID + ":" + AttachmentUpload.beginMethodSuffix
+        let beginParams = AttachmentUploadBeginParams(
+            uploadId: uploadID,
+            fileName: fileName,
+            mimeType: mimeType,
+            sizeBytes: Int64(data.count)
+        )
+        let begin = try callAttachmentRPC(method: beginMethod, params: beginParams)
+        if begin.resolvedSuccess != true {
+            throw NSError(
+                domain: "DelightAttachment",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: begin.resolvedError ?? "upload begin failed"]
+            )
+        }
+
+        var offset = 0
+        var chunkIndex: Int64 = 0
+        while offset < data.count {
+            let end = min(offset + AttachmentUpload.chunkBytes, data.count)
+            let chunk = data.subdata(in: offset..<end)
+            let chunkParams = AttachmentUploadChunkParams(
+                uploadId: uploadID,
+                chunkIndex: chunkIndex,
+                dataBase64: chunk.base64EncodedString()
+            )
+            let chunkMethod = sessionID + ":" + AttachmentUpload.chunkMethodSuffix
+            let chunkResp = try callAttachmentRPC(method: chunkMethod, params: chunkParams)
+            if chunkResp.resolvedSuccess != true {
+                throw NSError(
+                    domain: "DelightAttachment",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: chunkResp.resolvedError ?? "upload chunk failed"]
+                )
+            }
+
+            let uploaded = Int64(end)
+            DispatchQueue.main.async {
+                self.updateComposerAttachment(uploadID: uploadID) { item in
+                    item.bytesUploaded = uploaded
+                }
+            }
+
+            offset = end
+            chunkIndex += 1
+        }
+
+        let commitMethod = sessionID + ":" + AttachmentUpload.commitMethodSuffix
+        let commitParams = AttachmentUploadCommitParams(uploadId: uploadID)
+        let commit = try callAttachmentRPC(method: commitMethod, params: commitParams)
+        if commit.resolvedSuccess != true {
+            throw NSError(
+                domain: "DelightAttachment",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: commit.resolvedError ?? "upload commit failed"]
+            )
+        }
+        let path = commit.resolvedPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if path.isEmpty {
+            throw NSError(
+                domain: "DelightAttachment",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "upload commit returned empty path"]
+            )
+        }
+
+        DispatchQueue.main.async {
+            self.updateComposerAttachment(uploadID: uploadID) { item in
+                item.state = .ready
+                item.remotePath = path
+                item.bytesUploaded = item.sizeBytes
+                item.errorMessage = nil
+            }
+            self.log("Attachment ready: \(fileName)")
+        }
+    }
+
+    /// callAttachmentRPC issues an attachment upload RPC and decodes the result.
+    private func callAttachmentRPC<T: Encodable>(method: String, params: T) throws -> AttachmentUploadRPCResponse {
+        let paramsJSON = try JSONCoding.encode(params)
+        let responseBuf = try sdkCallSync {
+            try client.callRPCBuffer(method, paramsJSON: paramsJSON)
+        }
+        guard let responseJSON = stringFromBuffer(responseBuf) else {
+            throw NSError(
+                domain: "DelightAttachment",
+                code: 5,
+                userInfo: [NSLocalizedDescriptionKey: "unable to decode attachment RPC response"]
+            )
+        }
+        if let decoded = try? JSONCoding.decode(AttachmentUploadRPCResponse.self, from: responseJSON) {
+            if let errorText = decoded.resolvedError,
+               decoded.resolvedSuccess != true,
+               decoded.result == nil,
+               decoded.success == nil {
+                throw NSError(
+                    domain: "DelightAttachment",
+                    code: 7,
+                    userInfo: [NSLocalizedDescriptionKey: errorText]
+                )
+            }
+            return decoded
+        }
+        throw NSError(
+            domain: "DelightAttachment",
+            code: 6,
+            userInfo: [NSLocalizedDescriptionKey: "invalid attachment RPC response: \(responseJSON)"]
+        )
+    }
+
+    /// cancelAttachmentUpload requests remote cleanup for an upload ID.
+    private func cancelAttachmentUpload(uploadID: String, sessionID: String) {
+        let method = sessionID + ":" + AttachmentUpload.cancelMethodSuffix
+        let params = AttachmentUploadCancelParams(uploadId: uploadID)
+        do {
+            _ = try callAttachmentRPC(method: method, params: params)
+        } catch {
+            log("Attachment cancel error: \(error)")
+        }
+    }
+
+    /// removeComposerAttachment removes one attachment and optionally cancels it remotely.
+    private func removeComposerAttachment(uploadID: String, alsoCancelRemote: Bool) {
+        guard let index = composerAttachments.firstIndex(where: { $0.id == uploadID }) else {
+            return
+        }
+        let attachment = composerAttachments[index]
+        composerAttachments.remove(at: index)
+        if !alsoCancelRemote {
+            return
+        }
+
+        sdkCallAsync {
+            self.cancelAttachmentUpload(uploadID: attachment.id, sessionID: attachment.sessionID)
+        }
+    }
+
+    /// updateComposerAttachment mutates one attachment item in-place by id.
+    private func updateComposerAttachment(uploadID: String, mutate: (inout ComposerAttachment) -> Void) {
+        guard let index = composerAttachments.firstIndex(where: { $0.id == uploadID }) else {
+            return
+        }
+        var item = composerAttachments[index]
+        mutate(&item)
+        composerAttachments[index] = item
+    }
+
+    /// sanitizeAttachmentFileName removes path separators and unsafe characters.
+    private func sanitizeAttachmentFileName(_ value: String) -> String {
+        var candidate = URL(fileURLWithPath: value).lastPathComponent
+        candidate = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        if candidate.isEmpty {
+            return "attachment.bin"
+        }
+
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        let filteredScalars = candidate.unicodeScalars.map { scalar -> Character in
+            if allowed.contains(scalar) {
+                return Character(scalar)
+            }
+            return "_"
+        }
+        let filtered = String(filteredScalars)
+        let trimmed = filtered.trimmingCharacters(in: CharacterSet(charactersIn: "._"))
+        return trimmed.isEmpty ? "attachment.bin" : trimmed
+    }
+
+    /// attachmentMIMEType resolves a best-effort MIME type from a file URL.
+    private func attachmentMIMEType(url: URL, typeIdentifier: String?) -> String {
+        if let typeIdentifier,
+           let type = UTType(typeIdentifier),
+           let mime = type.preferredMIMEType {
+            return mime
+        }
+        let ext = url.pathExtension
+        if !ext.isEmpty, let type = UTType(filenameExtension: ext), let mime = type.preferredMIMEType {
+            return mime
+        }
+        return "application/octet-stream"
+    }
+
+    /// attachmentMIMEType resolves a best-effort MIME type from a file name.
+    private func attachmentMIMEType(fileName: String, fallback: String?) -> String {
+        let trimmedFallback = fallback?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedFallback.isEmpty {
+            return trimmedFallback
+        }
+        let ext = (fileName as NSString).pathExtension
+        if !ext.isEmpty, let type = UTType(filenameExtension: ext), let mime = type.preferredMIMEType {
+            return mime
+        }
+        return "application/octet-stream"
+    }
+
+    /// attachmentContextText renders a stable text preface for uploaded files.
+    private func attachmentContextText(_ attachments: [ComposerAttachment]) -> String {
+        var lines: [String] = []
+        lines.append("Attached files on terminal machine:")
+        for attachment in attachments {
+            let path = attachment.remotePath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if path.isEmpty {
+                continue
+            }
+            lines.append("- \(path) (\(attachment.mimeType))")
+        }
+        lines.append("Use these files as needed when answering.")
+        return lines.joined(separator: "\n")
+    }
+
+    /// attachmentFailureMessage normalizes upload errors to user-facing text.
+    private func attachmentFailureMessage(from error: Error) -> String {
+        let raw = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.isEmpty {
+            return "Upload failed"
+        }
+        let lower = raw.lowercased()
+        if lower.contains("unknown method")
+            || lower.contains("method not found")
+            || lower.contains("handler")
+        {
+            return "Terminal CLI missing upload support. Rebuild and restart delight."
+        }
+        if lower.contains("size")
+            || lower.contains("too large")
+        {
+            return "File too large"
+        }
+        return raw
+    }
+
     func sendMessage() {
         guard !sessionID.isEmpty else {
             log("Session ID required")
             return
         }
-        guard !messageText.isEmpty else {
-            log("Message required")
+        let activeSessionID = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !activeSessionID.isEmpty else {
+            log("Session ID required")
+            return
+        }
+        let trimmedMessage = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sessionAttachments = composerAttachments.filter { $0.sessionID == activeSessionID }
+        let readyAttachments = sessionAttachments.filter {
+            $0.state == .ready && (($0.remotePath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) == false)
+        }
+        if trimmedMessage.isEmpty && readyAttachments.isEmpty {
+            if sessionAttachments.contains(where: { $0.state == .uploading }) {
+                log("Attachment still uploading. Please wait.")
+            } else {
+                log("Message or attachment required")
+            }
             return
         }
 
         // Require explicit "Take Control" before sending from phone, and block
         // sending while a turn is in-flight to avoid queued prompts.
-        if let session = sessions.first(where: { $0.id == sessionID }) {
+        if let session = sessions.first(where: { $0.id == activeSessionID }) {
             let ui = session.uiState
             let controlledByDesktop = (ui?.mode ?? "") != "remote"
             if controlledByDesktop {
@@ -1929,10 +2383,21 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             }
         }
 
-        let outgoingText = messageText
-        recordPromptHistory(outgoingText, sessionID: sessionID)
+        var outgoingText = trimmedMessage
+        if !readyAttachments.isEmpty {
+            let attachmentText = attachmentContextText(readyAttachments)
+            if outgoingText.isEmpty {
+                outgoingText = attachmentText
+            } else {
+                outgoingText += "\n\n" + attachmentText
+            }
+        }
+        if !trimmedMessage.isEmpty {
+            recordPromptHistory(trimmedMessage, sessionID: activeSessionID)
+        }
         messageText = ""
         let localID = UUID().uuidString
+        let sentAttachmentIDs = Set(readyAttachments.map(\.id))
 
         // Optimistic UI: show the user's message immediately.
         let optimistic = MessageItem(
@@ -1961,9 +2426,12 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             sdkCallAsync {
                 do {
                     try self.sdkCallSync {
-                        try self.client.sendMessage(withLocalID: self.sessionID, localID: localID, rawRecordJSON: json)
+                        try self.client.sendMessage(withLocalID: activeSessionID, localID: localID, rawRecordJSON: json)
                     }
 
+                    DispatchQueue.main.async {
+                        self.composerAttachments.removeAll(where: { sentAttachmentIDs.contains($0.id) })
+                    }
                     self.log("Sent message")
                     // Pull latest state after send to incorporate server ordering + assistant reply.
                     //

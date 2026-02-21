@@ -80,6 +80,12 @@ type Manager struct {
 	sessionActorClosed     chan struct{}
 
 	lastTerminalKeepAliveSkipAt time.Time
+
+	// attachmentUploads tracks in-flight and recently committed attachment
+	// uploads for session-scoped upload RPC methods.
+	attachmentMu          sync.Mutex
+	attachmentUploads     map[string]*attachmentUploadState
+	lastAttachmentPruneAt time.Time
 }
 
 // NewManager creates a new session manager.
@@ -106,6 +112,7 @@ func NewManager(cfg *config.Config, token string, debug bool) (*Manager, error) 
 		stopCh:       make(chan struct{}),
 		// Permission requests are owned by the SessionActor.
 		sessionActorClosed: make(chan struct{}),
+		attachmentUploads:  make(map[string]*attachmentUploadState),
 	}, nil
 }
 

@@ -100,6 +100,60 @@ func (m *Manager) registerRPCHandlers() {
 		})
 	})
 
+	// Attachment upload handlers - stream file chunks directly to the CLI
+	// machine (no server-side DB persistence).
+	m.rpcManager.RegisterHandler(prefix+"attachment-upload-begin", func(params json.RawMessage) (json.RawMessage, error) {
+		wire.DumpToTestdata("rpc_session_attachment_upload_begin", params)
+		var req wire.AttachmentUploadBeginRequest
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, err
+		}
+		resp, err := m.attachmentUploadBegin(req)
+		if err != nil {
+			return json.Marshal(wire.AttachmentUploadResponse{Success: false, Error: err.Error()})
+		}
+		return json.Marshal(resp)
+	})
+
+	m.rpcManager.RegisterHandler(prefix+"attachment-upload-chunk", func(params json.RawMessage) (json.RawMessage, error) {
+		wire.DumpToTestdata("rpc_session_attachment_upload_chunk", params)
+		var req wire.AttachmentUploadChunkRequest
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, err
+		}
+		resp, err := m.attachmentUploadChunk(req)
+		if err != nil {
+			return json.Marshal(wire.AttachmentUploadResponse{Success: false, Error: err.Error()})
+		}
+		return json.Marshal(resp)
+	})
+
+	m.rpcManager.RegisterHandler(prefix+"attachment-upload-commit", func(params json.RawMessage) (json.RawMessage, error) {
+		wire.DumpToTestdata("rpc_session_attachment_upload_commit", params)
+		var req wire.AttachmentUploadCommitRequest
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, err
+		}
+		resp, err := m.attachmentUploadCommit(req)
+		if err != nil {
+			return json.Marshal(wire.AttachmentUploadResponse{Success: false, Error: err.Error()})
+		}
+		return json.Marshal(resp)
+	})
+
+	m.rpcManager.RegisterHandler(prefix+"attachment-upload-cancel", func(params json.RawMessage) (json.RawMessage, error) {
+		wire.DumpToTestdata("rpc_session_attachment_upload_cancel", params)
+		var req wire.AttachmentUploadCancelRequest
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, err
+		}
+		resp, err := m.attachmentUploadCancel(req)
+		if err != nil {
+			return json.Marshal(wire.AttachmentUploadResponse{Success: false, Error: err.Error()})
+		}
+		return json.Marshal(resp)
+	})
+
 	// Agent-capabilities handler - query supported settings + current config.
 	m.rpcManager.RegisterHandler(prefix+"agent-capabilities", func(params json.RawMessage) (json.RawMessage, error) {
 		wire.DumpToTestdata("rpc_session_agent_capabilities", params)
