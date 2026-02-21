@@ -8,6 +8,7 @@ struct TerminalsView: View {
 
     var body: some View {
         let isLoggedIn = !model.token.isEmpty
+        let terminalsByID = Dictionary(uniqueKeysWithValues: model.terminals.map { ($0.id, $0) })
         NavigationStack {
             ZStack {
                 Theme.background.ignoresSafeArea()
@@ -18,24 +19,45 @@ struct TerminalsView: View {
                         }
                         if !isLoggedIn {
                             LoggedOutTerminalEmptyState(model: model)
-                        } else if model.sessions.isEmpty {
+                        } else if model.sessions.isEmpty &&
+                                    model.terminals.isEmpty &&
+                                    model.lastTerminalPairingReceipt == nil {
                             SettingSection(title: "Pair Terminal") {
                                 PairTerminalForm(model: model, showScanner: $showScanner)
                             }
                         } else {
-                            ForEach(terminalGroups(from: model.sessions, terminals: model.terminals), id: \.id) { group in
+                            ForEach(
+                                terminalGroups(
+                                    from: model.sessions,
+                                    terminals: model.terminals,
+                                    pairingReceipt: model.lastTerminalPairingReceipt
+                                ),
+                                id: \.id
+                            ) { group in
                                 Text(group.name)
                                     .font(.system(size: 13, weight: .semibold))
                                     .foregroundColor(Theme.mutedText)
                                 FeatureListCard {
-                                    ForEach(Array(group.sessions.enumerated()), id: \.element.id) { index, session in
-                                        NavigationLink {
-                                            TerminalDetailView(model: model, session: session)
-                                        } label: {
-                                            TerminalRow(session: session)
+                                    ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
+                                        switch item {
+                                        case .session(let session):
+                                            NavigationLink {
+                                                TerminalDetailView(model: model, session: session)
+                                            } label: {
+                                                TerminalRow(
+                                                    session: session,
+                                                    gitStatus: gitStatus(for: session, terminalsByID: terminalsByID)
+                                                )
+                                            }
+                                            .buttonStyle(.plain)
+                                        case .pairedTerminalWithoutSessions(let terminal):
+                                            TerminalNoActiveSessionsRow(
+                                                terminal: terminal,
+                                                gitStatus: gitStatus(for: terminal.metadata)
+                                            )
                                         }
-                                        .buttonStyle(.plain)
-                                        if index < group.sessions.count - 1 {
+
+                                        if index < group.items.count - 1 {
                                             Divider()
                                         }
                                     }
@@ -127,6 +149,7 @@ private struct PairTerminalSheet: View {
 
 private struct TerminalRow: View {
     let session: SessionSummary
+    let gitStatus: TerminalGitStatus?
 
     var body: some View {
         let status = statusInfo(for: session)
@@ -145,6 +168,9 @@ private struct TerminalRow: View {
                     .foregroundColor(Theme.mutedText)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if let gitStatus {
+                    TerminalGitStatusLine(status: gitStatus)
+                }
             }
             .layoutPriority(1)
             Spacer()
@@ -155,6 +181,154 @@ private struct TerminalRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .padding(.vertical, 12)
+    }
+}
+
+private struct TerminalNoActiveSessionsRow: View {
+    let terminal: TerminalInfo
+    let gitStatus: TerminalGitStatus?
+
+    var body: some View {
+        let host = terminal.metadata?.host?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let title = host.isEmpty ? "Paired terminal" : host
+
+        HStack(spacing: 12) {
+            Circle()
+                .fill(Theme.muted)
+                .frame(width: 12, height: 12)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 16, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text("No active terminals")
+                    .font(.system(size: 13))
+                    .foregroundColor(Theme.mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let gitStatus {
+                    TerminalGitStatusLine(status: gitStatus)
+                }
+            }
+            .layoutPriority(1)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .padding(.vertical, 12)
+    }
+}
+
+private struct TerminalGitStatusLine: View {
+    let status: TerminalGitStatus
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(status.inRepo ? Theme.accent : Theme.mutedText)
+            if !status.inRepo {
+                Text("Not in git")
+                    .foregroundColor(Theme.mutedText)
+            } else {
+                Text(status.branch)
+                    .foregroundColor(Theme.mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .layoutPriority(1)
+                if status.added > 0 || status.removed > 0 {
+                    Text("+\(status.added)")
+                        .foregroundColor(Theme.success)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    Text("-\(status.removed)")
+                        .foregroundColor(Theme.danger)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                } else if status.dirty {
+                    Text("dirty")
+                        .foregroundColor(Theme.warning)
+                }
+            }
+        }
+        .font(.system(size: 12))
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(Color.secondary.opacity(0.12), in: Capsule())
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct TerminalGitStatusHeaderLine: View {
+    let status: TerminalGitStatus
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(status.inRepo ? Theme.accent : Theme.mutedText)
+            if !status.inRepo {
+                Text("Not in git")
+                    .foregroundColor(Theme.mutedText)
+            } else {
+                Text(status.branch)
+                    .foregroundColor(Theme.mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .layoutPriority(1)
+                if status.added > 0 || status.removed > 0 {
+                    Text("+\(status.added)")
+                        .foregroundColor(Theme.success)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    Text("-\(status.removed)")
+                        .foregroundColor(Theme.danger)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                } else if status.dirty {
+                    Text("dirty")
+                        .foregroundColor(Theme.warning)
+                }
+            }
+        }
+        .font(.system(size: 11))
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct TerminalNavHeader: View {
+    let online: Bool
+    let agentLabel: String
+    let path: String?
+    let gitStatus: TerminalGitStatus?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    StatusDot(color: online ? Theme.success : Theme.muted, isPulsing: false, size: 7)
+                        .accessibilityLabel(online ? "online" : "offline")
+                    Text(agentLabel)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(Theme.messageText)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .layoutPriority(2)
+                if let gitStatus {
+                    TerminalGitStatusHeaderLine(status: gitStatus)
+                        .layoutPriority(1)
+                }
+            }
+            if let path, !path.isEmpty {
+                Text(path)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -195,7 +369,10 @@ struct TerminalDetailView: View {
 
 	    var body: some View {
 	        let currentSession = model.sessions.first(where: { $0.id == session.id }) ?? session
+        let terminalsByID = Dictionary(uniqueKeysWithValues: model.terminals.map { ($0.id, $0) })
+        let headerGitStatus = gitStatus(for: currentSession, terminalsByID: terminalsByID)
 	        let agentLabel = terminalAgentLabel(for: currentSession)
+        let online = isSessionOnline(currentSession)
 	        let ui = currentSession.uiState
 	        let uiState = ui?.state ?? "disconnected"
 	        let transcriptFontSize = model.effectiveTerminalFontSize(for: currentSession)
@@ -261,7 +438,7 @@ struct TerminalDetailView: View {
                     .background(Theme.cardBackground)
             }
         }
-        .navigationTitle(session.title ?? "Terminal")
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .alert("Error", isPresented: $model.showErrorAlert) {
@@ -270,22 +447,13 @@ struct TerminalDetailView: View {
             Text(model.errorAlertMessage)
         }
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                let online = isSessionOnline(currentSession)
-                VStack(spacing: 2) {
-                    HStack(spacing: 6) {
-                        StatusDot(color: online ? Theme.success : Theme.muted, isPulsing: false, size: 7)
-                            .accessibilityLabel(online ? "online" : "offline")
-                        Text(agentLabel)
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundColor(Theme.messageText)
-                    }
-                    if let path = sessionDisplayPath(for: session) {
-                        Text(path)
-                            .font(.system(size: 12))
-                            .foregroundColor(Theme.mutedText)
-                    }
-                }
+            ToolbarItem(placement: .topBarLeading) {
+                TerminalNavHeader(
+                    online: online,
+                    agentLabel: agentLabel,
+                    path: sessionDisplayPath(for: currentSession),
+                    gitStatus: headerGitStatus
+                )
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 ToolbarIconButton(systemImage: "textformat.size", accessibilityLabel: "Text Size") {
@@ -1317,10 +1485,61 @@ private func sessionDisplayPath(for session: SessionSummary) -> String? {
     return path
 }
 
+private struct TerminalGitStatus: Equatable {
+    let inRepo: Bool
+    let branch: String
+    let added: Int
+    let removed: Int
+    let dirty: Bool
+}
+
+private func gitStatus(for session: SessionSummary, terminalsByID: [String: TerminalInfo]) -> TerminalGitStatus? {
+    let terminalID = session.terminalID ?? session.metadata?.terminalId ?? ""
+    guard !terminalID.isEmpty else { return nil }
+    return gitStatus(for: terminalsByID[terminalID]?.metadata)
+}
+
+private func gitStatus(for metadata: TerminalMetadata?) -> TerminalGitStatus? {
+    guard let metadata else { return nil }
+    guard let inRepo = metadata.gitInRepo else { return nil }
+    if !inRepo {
+        return TerminalGitStatus(
+            inRepo: false,
+            branch: "",
+            added: 0,
+            removed: 0,
+            dirty: false
+        )
+    }
+
+    let rawBranch = metadata.gitBranch?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return TerminalGitStatus(
+        inRepo: true,
+        branch: rawBranch.isEmpty ? "Git repo" : rawBranch,
+        added: metadata.gitAdded ?? 0,
+        removed: metadata.gitRemoved ?? 0,
+        dirty: metadata.gitDirty == true
+    )
+}
+
 private struct TerminalGroup: Identifiable {
     let id: String
     let name: String
-    let sessions: [SessionSummary]
+    let items: [TerminalGroupItem]
+}
+
+private enum TerminalGroupItem: Identifiable {
+    case session(SessionSummary)
+    case pairedTerminalWithoutSessions(TerminalInfo)
+
+    var id: String {
+        switch self {
+        case .session(let session):
+            return "session:\(session.id)"
+        case .pairedTerminalWithoutSessions(let terminal):
+            return "terminal:\(terminal.id)"
+        }
+    }
 }
 
 private func terminalsListSortKey(for session: SessionSummary) -> (String, String, String) {
@@ -1329,20 +1548,106 @@ private func terminalsListSortKey(for session: SessionSummary) -> (String, Strin
     return (path, agent, session.id)
 }
 
-private func terminalGroups(from sessions: [SessionSummary], terminals: [TerminalInfo]) -> [TerminalGroup] {
+private func terminalWithoutSessionsSortKey(for terminal: TerminalInfo) -> (String, String) {
+    let host = terminal.metadata?.host?.lowercased() ?? ""
+    return (host, terminal.id)
+}
+
+private func terminalGroupItemSortKey(_ item: TerminalGroupItem) -> (Int, String, String, String) {
+    switch item {
+    case .session(let session):
+        let key = terminalsListSortKey(for: session)
+        return (0, key.0, key.1, key.2)
+    case .pairedTerminalWithoutSessions(let terminal):
+        let key = terminalWithoutSessionsSortKey(for: terminal)
+        return (1, key.0, "", key.1)
+    }
+}
+
+private func terminalGroups(
+    from sessions: [SessionSummary],
+    terminals: [TerminalInfo],
+    pairingReceipt: TerminalPairingReceipt?
+) -> [TerminalGroup] {
     let terminalsByID = Dictionary(uniqueKeysWithValues: terminals.map { ($0.id, $0) })
-    let grouped = Dictionary(grouping: sessions) { session in
+    let sessionsByTerminalID = Dictionary(grouping: sessions) { session in
+        session.terminalID ?? session.metadata?.terminalId ?? ""
+    }
+
+    var grouped: [String: [TerminalGroupItem]] = [:]
+
+    func appendItem(host: String, item: TerminalGroupItem) {
+        grouped[host, default: []].append(item)
+    }
+
+    for session in sessions {
         let terminalID = session.terminalID ?? session.metadata?.terminalId ?? ""
         let host = terminalsByID[terminalID]?.metadata?.host?.trimmingCharacters(in: .whitespacesAndNewlines)
         let sessionHost = session.metadata?.host?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (host?.isEmpty == false ? host! : (sessionHost?.isEmpty == false ? sessionHost! : "unknown"))
+        let resolvedHost = host?.isEmpty == false ? host! : (sessionHost?.isEmpty == false ? sessionHost! : "unknown")
+        appendItem(host: resolvedHost, item: .session(session))
     }
+
+    // Surface paired terminals even before they have a created/active session.
+    for terminal in terminals {
+        if let existing = sessionsByTerminalID[terminal.id], !existing.isEmpty {
+            continue
+        }
+        let terminalHost = terminal.metadata?.host?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedHost = terminalHost?.isEmpty == false ? terminalHost! : "unknown"
+        appendItem(host: resolvedHost, item: .pairedTerminalWithoutSessions(terminal))
+    }
+
+    // Surface the most recent pairing immediately, even before the CLI daemon
+    // creates a terminal row on the server.
+    if let pairingReceipt {
+        let receiptTerminalID = pairingReceipt.terminalID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let receiptHost = pairingReceipt.host?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let hasRealTerminalByID = !receiptTerminalID.isEmpty && terminals.contains(where: { $0.id == receiptTerminalID })
+        let hasSessionByTerminalID = !receiptTerminalID.isEmpty && (sessionsByTerminalID[receiptTerminalID]?.isEmpty == false)
+
+        var hasHostCollision = false
+        if !receiptHost.isEmpty {
+            let normalizedReceiptHost = receiptHost.lowercased()
+            hasHostCollision = terminals.contains {
+                ($0.metadata?.host?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "") == normalizedReceiptHost
+            }
+        }
+
+        if !hasRealTerminalByID && !hasSessionByTerminalID && !hasHostCollision {
+            let syntheticIDSource = !receiptTerminalID.isEmpty ? receiptTerminalID : (receiptHost.isEmpty ? "unknown" : receiptHost)
+            let syntheticTerminal = TerminalInfo(
+                id: "paired-placeholder:\(syntheticIDSource)",
+                metadata: TerminalMetadata(
+                    host: receiptHost.isEmpty ? nil : receiptHost,
+                    platform: nil,
+                    cliVersion: nil,
+                    homeDir: nil,
+                    delightHomeDir: nil,
+                    gitInRepo: nil,
+                    gitBranch: nil,
+                    gitAdded: nil,
+                    gitRemoved: nil,
+                    gitDirty: nil
+                ),
+                daemonState: nil,
+                daemonStateVersion: 0,
+                active: false,
+                activeAt: nil
+            )
+
+            let resolvedHost = receiptHost.isEmpty ? "unknown" : receiptHost
+            appendItem(host: resolvedHost, item: .pairedTerminalWithoutSessions(syntheticTerminal))
+        }
+    }
+
     return grouped
-        .map { host, value in
+        .map { host, items in
             TerminalGroup(
                 id: host,
                 name: host,
-                sessions: value.sorted(by: { terminalsListSortKey(for: $0) < terminalsListSortKey(for: $1) })
+                items: items.sorted(by: { terminalGroupItemSortKey($0) < terminalGroupItemSortKey($1) })
             )
         }
         .sorted(by: { lhs, rhs in

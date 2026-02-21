@@ -40,6 +40,12 @@ func (m *Manager) handleRuntimeCommand(cmd runtime.Command) {
 
 	switch c := cmd.(type) {
 	case runtime.EmitActivityCommand:
+		wasWorking := m.working
+		m.working = c.Working
 		m.broadcastWorking(c.Working)
+		// On turn completion, run one final git refresh and publish metadata.
+		if wasWorking && !c.Working {
+			m.refreshTerminalGitMetadata(true, "turn-complete")
+		}
 	}
 }

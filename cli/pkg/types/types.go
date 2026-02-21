@@ -118,6 +118,11 @@ type TerminalMetadata struct {
 	DelightCliVersion string `json:"cliVersion"`
 	HomeDir           string `json:"homeDir"`
 	DelightHomeDir    string `json:"delightHomeDir"`
+	GitInRepo         bool   `json:"gitInRepo"`
+	GitBranch         string `json:"gitBranch,omitempty"`
+	GitAdded          int    `json:"gitAdded,omitempty"`
+	GitRemoved        int    `json:"gitRemoved,omitempty"`
+	GitDirty          bool   `json:"gitDirty,omitempty"`
 }
 
 // DaemonState represents daemon runtime state

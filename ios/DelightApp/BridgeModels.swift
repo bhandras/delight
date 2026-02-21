@@ -411,6 +411,11 @@ struct TerminalMetadata {
     let cliVersion: String?
     let homeDir: String?
     let delightHomeDir: String?
+    let gitInRepo: Bool?
+    let gitBranch: String?
+    let gitAdded: Int?
+    let gitRemoved: Int?
+    let gitDirty: Bool?
 
     /// fromJSON parses a plaintext JSON metadata payload.
     static func fromJSON(_ json: String?) -> TerminalMetadata? {
@@ -425,7 +430,12 @@ struct TerminalMetadata {
             platform: payload.platform,
             cliVersion: payload.cliVersion,
             homeDir: payload.homeDir,
-            delightHomeDir: payload.delightHomeDir
+            delightHomeDir: payload.delightHomeDir,
+            gitInRepo: payload.gitInRepo,
+            gitBranch: payload.gitBranch,
+            gitAdded: payload.gitAdded?.value,
+            gitRemoved: payload.gitRemoved?.value,
+            gitDirty: payload.gitDirty
         )
     }
 }
@@ -592,6 +602,11 @@ private struct TerminalMetadataPayload: Decodable {
     let cliVersion: String?
     let homeDir: String?
     let delightHomeDir: String?
+    let gitInRepo: Bool?
+    let gitBranch: String?
+    let gitAdded: IntOrString?
+    let gitRemoved: IntOrString?
+    let gitDirty: Bool?
 }
 
 /// DaemonStatePayload decodes daemon state JSON.

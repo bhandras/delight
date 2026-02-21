@@ -85,6 +85,9 @@ func (m *Manager) Start(workDir string) error {
 		HomeDir:           homeDir,
 		DelightHomeDir:    m.cfg.DelightHome,
 	}
+	// Seed git metadata once on startup so newly-created terminals show
+	// repository status before the first turn begins.
+	m.refreshTerminalGitMetadata(false, "startup")
 
 	// Initialize daemon state
 	m.terminalState = &types.DaemonState{
@@ -1020,8 +1023,10 @@ func (m *Manager) handleSessionUpdate(data map[string]interface{}) {
 func (m *Manager) keepAliveLoop() {
 	terminalTicker := time.NewTicker(20 * time.Second)
 	sessionTicker := time.NewTicker(30 * time.Second)
+	gitTicker := time.NewTicker(gitPollInterval)
 	defer terminalTicker.Stop()
 	defer sessionTicker.Stop()
+	defer gitTicker.Stop()
 
 	for {
 		select {
@@ -1056,6 +1061,16 @@ func (m *Manager) keepAliveLoop() {
 				}
 				// AgentState persistence retries are actor-owned; do not attempt to
 				// repersist from here.
+			}
+		case <-gitTicker.C:
+			// Poll git metadata only while a turn is active to avoid background
+			// metadata churn from idle daemons.
+			working := m.working
+			if m.sessionActor != nil {
+				working = m.sessionActor.State().Working
+			}
+			if working {
+				m.refreshTerminalGitMetadata(true, "working-poll")
 			}
 		}
 	}
