@@ -175,21 +175,19 @@ struct TerminalDetailView: View {
     /// should be driven by `SessionUIState.working`.
     struct TerminalComposerState: Equatable {
         let isInputEnabled: Bool
-        let isHistoryEnabled: Bool
+        let canControlSession: Bool
         let isShowingStop: Bool
 
         static func make(ui: SessionUIState?, controlledByDesktop: Bool) -> TerminalComposerState {
             let canSendFromPhone = (ui?.canSend ?? false) && !controlledByDesktop
             let isTurnInFlight = (ui?.working ?? false)
 
-            // Keep prompt history usable even while a turn is running.
-            let isHistoryEnabled = canSendFromPhone
             let isInputEnabled = canSendFromPhone && !isTurnInFlight
             let isShowingStop = canSendFromPhone && isTurnInFlight
 
             return TerminalComposerState(
                 isInputEnabled: isInputEnabled,
-                isHistoryEnabled: isHistoryEnabled,
+                canControlSession: canSendFromPhone,
                 isShowingStop: isShowingStop
             )
         }
@@ -205,7 +203,6 @@ struct TerminalDetailView: View {
 	        // Even if the backend accidentally marks `canSend=true` while in local mode,
 	        // keep the UX consistent: user must tap "Take Control" first.
 	        let controlledByDesktop = ui?.mode != "remote"
-        let isPhoneControlled = (ui?.mode == "remote") && (ui?.connected ?? false) && (ui?.online ?? false)
         let composerState = TerminalComposerState.make(
             ui: ui,
             controlledByDesktop: controlledByDesktop
@@ -253,12 +250,11 @@ struct TerminalDetailView: View {
 	                // so composer interactions (including paste) don't immediately
 	                // resign first responder.
 	                .dismissKeyboardOnTap()
-                TerminalAgentConfigControls(model: model, session: currentSession, isEnabled: isPhoneControlled)
-                    .background(Theme.cardBackground)
                 MessageComposer(
                     model: model,
+                    session: currentSession,
                     isInputEnabled: composerState.isInputEnabled,
-                    isHistoryEnabled: composerState.isHistoryEnabled,
+                    canControlSession: composerState.canControlSession,
                     isShowingStop: composerState.isShowingStop,
                     placeholder: placeholder
                 )
@@ -357,131 +353,6 @@ private func terminalAgentLabel(for session: SessionSummary) -> String {
         ?? session.metadata?.agent
         ?? "terminal"
     return agent.isEmpty ? "terminal" : agent
-}
-
-private struct TerminalAgentConfigControls: View {
-    @ObservedObject var model: HarnessViewModel
-    let session: SessionSummary
-    let isEnabled: Bool
-    @State private var showModelSheet = false
-    @State private var showPermissionsSheet = false
-    @State private var isFetchingSettings = false
-
-    private enum PendingSheet {
-        case model
-        case permissions
-    }
-
-    @State private var pendingSheet: PendingSheet?
-
-    var body: some View {
-        let settings = model.agentEngineSettings[session.id]
-        let ui = session.uiState
-        let isOnline = (ui?.connected ?? false) && (ui?.online ?? false)
-        // Disable model/permission changes while the agent is actively working.
-        // SessionUIState.online reflects keep-alive/online-ness, not turn state.
-        let isLocked = (ui?.working ?? false)
-        let vibe: String? = {
-            // If the CLI goes offline, hide the activity chip entirely. Otherwise,
-            // stale "thinking" state can linger visually after disconnects.
-            if !isOnline { return nil }
-            if session.agentState?.hasPendingRequests == true {
-                return "permission required"
-            }
-            if ui?.working == true { return vibingMessage(for: session.id) }
-            if isFetchingSettings {
-                return "loading…"
-            }
-            if pendingSheet != nil && settings == nil {
-                return "loading…"
-            }
-            return nil
-        }()
-
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 14) {
-                Button {
-                    pendingSheet = .model
-                    isFetchingSettings = true
-                    model.fetchAgentCapabilities(sessionID: session.id, suppressErrors: false) {
-                        isFetchingSettings = false
-                        showModelSheet = true
-                    }
-                } label: {
-                    Image(systemName: "lightbulb")
-                        .font(.system(size: 15, weight: .semibold))
-                }
-                .disabled(!isEnabled || !isOnline || isFetchingSettings || isLocked)
-
-                Button {
-                    pendingSheet = .permissions
-                    isFetchingSettings = true
-                    model.fetchAgentCapabilities(sessionID: session.id, suppressErrors: false) {
-                        isFetchingSettings = false
-                        showPermissionsSheet = true
-                    }
-                } label: {
-                    Image(systemName: "exclamationmark.circle")
-                        .font(.system(size: 15, weight: .semibold))
-                }
-                .disabled(!isEnabled || !isOnline || isFetchingSettings || isLocked)
-
-                Spacer()
-
-                if let vibe {
-                    ActivityChip(text: vibe, fontSize: 12)
-                }
-            }
-            .foregroundColor(Theme.mutedText)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-        .sheet(isPresented: $showModelSheet) {
-            let fresh = model.agentEngineSettings[session.id]
-            TerminalModelEffortSheet(
-                model: model,
-                sessionID: session.id,
-                currentModel: fresh?.desiredConfig.model?.trimmingCharacters(in: .whitespacesAndNewlines),
-                currentEffort: fresh?.desiredConfig.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines),
-                isLocked: isLocked,
-                onApply: { modelSelection, effortSelection in
-                    model.setAgentConfig(
-                        model: modelSelection,
-                        permissionMode: nil,
-                        reasoningEffort: effortSelection,
-                        sessionID: session.id
-                    )
-                }
-            )
-        }
-        .sheet(isPresented: $showPermissionsSheet) {
-            let fresh = model.agentEngineSettings[session.id]
-            let caps = fresh?.capabilities
-            TerminalPermissionsSheet(
-                currentPermissionMode: fresh?.desiredConfig.permissionMode?.trimmingCharacters(in: .whitespacesAndNewlines),
-                isLocked: isLocked,
-                onApply: { selected in
-                    model.setAgentConfig(
-                        model: nil,
-                        permissionMode: selected,
-                        reasoningEffort: nil,
-                        sessionID: session.id
-                    )
-                },
-                permissionModes: caps?.permissionModes ?? []
-            )
-        }
-        .onChange(of: showModelSheet) { newValue in
-            if !newValue {
-                pendingSheet = nil
-            }
-        }
-        .onChange(of: showPermissionsSheet) { newValue in
-            if !newValue {
-                pendingSheet = nil
-            }
-        }
-    }
 }
 
 private struct TerminalPropertiesSheet: View {
@@ -944,17 +815,21 @@ private struct SheetActionButton: View {
     }
 }
 
-private struct TerminalModelEffortSheet: View {
+/// TerminalAgentSettingsSheet presents model, effort, and permissions in one
+/// sheet so the composer can keep a compact messenger-style layout.
+private struct TerminalAgentSettingsSheet: View {
     @ObservedObject var model: HarnessViewModel
     let sessionID: String
     let currentModel: String?
     let currentEffort: String?
+    let currentPermissionMode: String?
     let isLocked: Bool
-    let onApply: (String?, String?) -> Void
+    let onApply: (String?, String?, String?) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedModel: String = ""
     @State private var selectedEffort: String = ""
+    @State private var selectedPermissionMode: String = ""
     @State private var isRefreshing = false
 
     private var availableModels: [String] {
@@ -965,17 +840,47 @@ private struct TerminalModelEffortSheet: View {
         model.agentEngineSettings[sessionID]?.capabilities.reasoningEfforts ?? []
     }
 
+    private var availablePermissionModes: [String] {
+        model.agentEngineSettings[sessionID]?.capabilities.permissionModes ?? []
+    }
+
+    private var isApplyDisabled: Bool {
+        if isLocked { return true }
+        if availableModels.isEmpty && availableReasoningEfforts.isEmpty && availablePermissionModes.isEmpty {
+            return true
+        }
+        if !availableModels.isEmpty && selectedModel.isEmpty {
+            return true
+        }
+        if !availablePermissionModes.isEmpty && selectedPermissionMode.isEmpty {
+            return true
+        }
+        return false
+    }
+
     var body: some View {
         NavigationStack {
             Form {
                 if isLocked {
                     Section {
-                        Text("Agent is currently running. Model and permission settings are locked until the turn completes.")
+                        Text("Agent is currently running. Settings are locked until the turn completes.")
                             .foregroundColor(Theme.mutedText)
                     }
                 }
+                if isRefreshing {
+                    Section {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("Refreshing settings…")
+                                .foregroundColor(Theme.mutedText)
+                        }
+                    }
+                }
                 Section("Model") {
-                    if !availableModels.isEmpty {
+                    if availableModels.isEmpty {
+                        Text("Model selection is not available for this agent.")
+                            .foregroundColor(Theme.mutedText)
+                    } else {
                         ForEach(availableModels, id: \.self) { item in
                             Button {
                                 selectedModel = item
@@ -993,14 +898,13 @@ private struct TerminalModelEffortSheet: View {
                             .buttonStyle(.plain)
                             .disabled(isLocked)
                         }
-                    } else {
-                        Text("Model selection is not available for this agent.")
-                            .foregroundColor(Theme.mutedText)
                     }
                 }
-
                 Section("Reasoning effort") {
-                    if !availableReasoningEfforts.isEmpty {
+                    if availableReasoningEfforts.isEmpty {
+                        Text("Reasoning effort is not available for this agent.")
+                            .foregroundColor(Theme.mutedText)
+                    } else {
                         ForEach(availableReasoningEfforts, id: \.self) { effort in
                             Button {
                                 selectedEffort = effort
@@ -1018,13 +922,34 @@ private struct TerminalModelEffortSheet: View {
                             .buttonStyle(.plain)
                             .disabled(isLocked)
                         }
-                    } else {
-                        Text("Reasoning effort is not available for this agent.")
+                    }
+                }
+                Section("Permission level") {
+                    if availablePermissionModes.isEmpty {
+                        Text("Permission selection is not available for this agent.")
                             .foregroundColor(Theme.mutedText)
+                    } else {
+                        ForEach(availablePermissionModes, id: \.self) { mode in
+                            Button {
+                                selectedPermissionMode = mode
+                            } label: {
+                                HStack {
+                                    Text(mode)
+                                    Spacer()
+                                    if selectedPermissionMode == mode {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isLocked)
+                        }
                     }
                 }
             }
-            .navigationTitle("Model & Effort")
+            .navigationTitle("Agent Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -1032,17 +957,17 @@ private struct TerminalModelEffortSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Apply") {
-                        let nextModel: String? = selectedModel.isEmpty ? nil : selectedModel
-                        let nextEffort: String? =
+                        let nextModel = availableModels.isEmpty ? nil : (selectedModel.isEmpty ? nil : selectedModel)
+                        let nextEffort =
                             availableReasoningEfforts.isEmpty ? nil : (selectedEffort.isEmpty ? nil : selectedEffort)
-                        onApply(nextModel, nextEffort)
+                        let nextPermission =
+                            availablePermissionModes.isEmpty
+                            ? nil
+                            : (selectedPermissionMode.isEmpty ? nil : selectedPermissionMode)
+                        onApply(nextModel, nextEffort, nextPermission)
                         dismiss()
                     }
-                    .disabled(
-                        isLocked
-                            || (availableModels.isEmpty && availableReasoningEfforts.isEmpty)
-                            || (!availableModels.isEmpty && selectedModel.isEmpty)
-                    )
+                    .disabled(isApplyDisabled)
                 }
             }
             .onAppear {
@@ -1051,6 +976,9 @@ private struct TerminalModelEffortSheet: View {
                 }
                 if selectedEffort.isEmpty {
                     selectedEffort = currentEffort ?? availableReasoningEfforts.first ?? ""
+                }
+                if selectedPermissionMode.isEmpty {
+                    selectedPermissionMode = currentPermissionMode ?? availablePermissionModes.first ?? ""
                 }
             }
             .onChange(of: selectedModel) { newValue in
@@ -1071,72 +999,13 @@ private struct TerminalModelEffortSheet: View {
                     selectedEffort = availableReasoningEfforts.first ?? ""
                 }
             }
-        }
-    }
-}
-
-private struct TerminalPermissionsSheet: View {
-    let currentPermissionMode: String?
-    let isLocked: Bool
-    let onApply: (String) -> Void
-    let permissionModes: [String]
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var selected: String = "default"
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                if isLocked {
-                    Section {
-                        Text("Agent is currently running. Permission settings are locked until the turn completes.")
-                            .foregroundColor(Theme.mutedText)
-                    }
+            .onChange(of: availablePermissionModes) { _ in
+                if selectedPermissionMode.isEmpty {
+                    selectedPermissionMode = availablePermissionModes.first ?? ""
+                    return
                 }
-                Section("Permission level") {
-                    if permissionModes.isEmpty {
-                        Text("Permission selection is not available for this agent.")
-                            .foregroundColor(Theme.mutedText)
-                    } else {
-                        ForEach(permissionModes, id: \.self) { mode in
-                            Button {
-                                selected = mode
-                            } label: {
-                                HStack {
-                                    Text(mode)
-                                    Spacer()
-                                    if selected == mode {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(isLocked)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Permissions")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Apply") {
-                        onApply(selected)
-                        dismiss()
-                    }
-                    .disabled(isLocked || permissionModes.isEmpty)
-                }
-            }
-            .onAppear {
-                if let currentPermissionMode, !currentPermissionMode.isEmpty {
-                    selected = currentPermissionMode
-                } else if selected.isEmpty, let first = permissionModes.first {
-                    selected = first
+                if !availablePermissionModes.contains(selectedPermissionMode) {
+                    selectedPermissionMode = availablePermissionModes.first ?? ""
                 }
             }
         }
@@ -1236,41 +1105,65 @@ private struct StatusDot: View {
 
 private struct MessageComposer: View {
     @ObservedObject var model: HarnessViewModel
+    let session: SessionSummary
     let isInputEnabled: Bool
-    let isHistoryEnabled: Bool
+    let canControlSession: Bool
     let isShowingStop: Bool
     let placeholder: String
+    @State private var showAgentSettingsSheet = false
+    @State private var isFetchingSettings = false
+
+    private enum Layout {
+        static let composerSpacing: CGFloat = 12
+        static let settingsButtonSize: CGFloat = 34
+        static let settingsIconSize: CGFloat = 14
+        static let textFieldHorizontalPadding: CGFloat = 12
+        static let textFieldVerticalPadding: CGFloat = 10
+        static let textFieldCornerRadius: CGFloat = 18
+        static let textFieldBorderOpacity: Double = 0.16
+        static let settingsBorderOpacity: Double = 0.65
+    }
 
     var body: some View {
         let isWorking = isShowingStop
-        let hasHistory = model.hasPromptHistory()
+        let trimmedMessage = model.messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasMessage = !trimmedMessage.isEmpty
+        let ui = session.uiState
+        let isOnline = (ui?.connected ?? false) && (ui?.online ?? false)
+        let isLocked = (ui?.working ?? false)
+        let canOpenAgentSettings = canControlSession && isOnline && !isLocked && !isFetchingSettings
 
-        HStack(spacing: 12) {
-            VStack(spacing: 6) {
-                Button {
-                    model.stepPromptHistory(direction: -1)
-                } label: {
-                    Image(systemName: "chevron.up")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(Theme.mutedText)
-                        .frame(width: 30, height: 30)
-                        .background(Color(uiColor: .tertiarySystemBackground))
-                        .clipShape(Circle())
+        HStack(spacing: Layout.composerSpacing) {
+            Button {
+                isFetchingSettings = true
+                model.fetchAgentCapabilities(sessionID: session.id, suppressErrors: false) {
+                    isFetchingSettings = false
+                    showAgentSettingsSheet = true
                 }
-                .disabled(!isHistoryEnabled || !hasHistory)
-
-                Button {
-                    model.stepPromptHistory(direction: 1)
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(Theme.mutedText)
-                        .frame(width: 30, height: 30)
-                        .background(Color(uiColor: .tertiarySystemBackground))
-                        .clipShape(Circle())
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(Color(uiColor: .secondarySystemBackground))
+                    if isFetchingSettings {
+                        ProgressView()
+                            .tint(Theme.accent)
+                            .scaleEffect(0.75)
+                    } else {
+                        Image(systemName: "lightbulb")
+                            .font(.system(size: Layout.settingsIconSize, weight: .semibold))
+                            .foregroundColor(canOpenAgentSettings ? Theme.accent : Theme.mutedText)
+                    }
                 }
-                .disabled(!isHistoryEnabled || !hasHistory)
+                .frame(width: Layout.settingsButtonSize, height: Layout.settingsButtonSize)
+                .overlay(
+                    Circle()
+                        .stroke(Color(uiColor: .separator).opacity(Layout.settingsBorderOpacity), lineWidth: 1)
+                )
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Agent settings")
+            .disabled(!canOpenAgentSettings)
+
             TextField(text: $model.messageText, axis: .vertical) {
                 Text(placeholder)
                     .foregroundColor(Color(uiColor: .secondaryLabel))
@@ -1278,13 +1171,13 @@ private struct MessageComposer: View {
             .font(Theme.body)
             .foregroundColor(Theme.messageText)
             .tint(Theme.accent)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Color(uiColor: .tertiarySystemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .padding(.horizontal, Layout.textFieldHorizontalPadding)
+            .padding(.vertical, Layout.textFieldVerticalPadding)
+            .background(Color(uiColor: .secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: Layout.textFieldCornerRadius, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(Color(uiColor: .separator).opacity(0.7), lineWidth: 1)
+                RoundedRectangle(cornerRadius: Layout.textFieldCornerRadius, style: .continuous)
+                    .stroke(Theme.accent.opacity(Layout.textFieldBorderOpacity), lineWidth: 1)
             )
             .disabled(!isInputEnabled)
 
@@ -1299,8 +1192,8 @@ private struct MessageComposer: View {
                         .foregroundColor(.white)
                         .clipShape(Circle())
                 }
-                .disabled(!isHistoryEnabled || model.sessionID.isEmpty)
-            } else {
+                .disabled(!canControlSession || model.sessionID.isEmpty)
+            } else if hasMessage {
                 Button {
                     model.sendMessage()
                     model.messageText = ""
@@ -1315,16 +1208,32 @@ private struct MessageComposer: View {
                 .disabled(
                     !isInputEnabled
                         || model.sessionID.isEmpty
-                        || model.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || trimmedMessage.isEmpty
                 )
-                .opacity(
-                    (!isInputEnabled || model.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        ? 0.5
-                        : 1.0
-                )
+                .transition(.scale.combined(with: .opacity))
             }
         }
         .padding()
+        .animation(.easeInOut(duration: 0.15), value: hasMessage)
+        .sheet(isPresented: $showAgentSettingsSheet) {
+            let fresh = model.agentEngineSettings[session.id]
+            TerminalAgentSettingsSheet(
+                model: model,
+                sessionID: session.id,
+                currentModel: fresh?.desiredConfig.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+                currentEffort: fresh?.desiredConfig.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines),
+                currentPermissionMode: fresh?.desiredConfig.permissionMode?.trimmingCharacters(in: .whitespacesAndNewlines),
+                isLocked: isLocked,
+                onApply: { modelSelection, effortSelection, permissionSelection in
+                    model.setAgentConfig(
+                        model: modelSelection,
+                        permissionMode: permissionSelection,
+                        reasoningEffort: effortSelection,
+                        sessionID: session.id
+                    )
+                }
+            )
+        }
     }
 }
 
@@ -1394,12 +1303,6 @@ private func statusInfo(for session: SessionSummary, workingOverride: Bool? = ni
     )
 }
 
-private func vibingMessage(for sessionID: String) -> String {
-    let messages = vibingMessages
-    let index = Int(sessionID.hashValue.magnitude % UInt(messages.count))
-    return messages[index].lowercased()
-}
-
 private func sessionDisplayPath(for session: SessionSummary) -> String? {
     guard let path = session.metadata?.path else {
         return nil
@@ -1451,21 +1354,3 @@ private func terminalGroups(from sessions: [SessionSummary], terminals: [Termina
             return left < right
         })
 }
-
-private let vibingMessages = [
-    "Accomplishing", "Actioning", "Actualizing", "Baking", "Booping", "Brewing",
-    "Calculating", "Cerebrating", "Channelling", "Churning", "Clauding", "Coalescing",
-    "Cogitating", "Computing", "Combobulating", "Concocting", "Conjuring", "Considering",
-    "Contemplating", "Cooking", "Crafting", "Creating", "Crunching", "Deciphering",
-    "Deliberating", "Determining", "Discombobulating", "Divining", "Doing", "Effecting",
-    "Elucidating", "Enchanting", "Envisioning", "Finagling", "Flibbertigibbeting",
-    "Forging", "Forming", "Frolicking", "Generating", "Germinating", "Hatching",
-    "Herding", "Honking", "Ideating", "Imagining", "Incubating", "Inferring",
-    "Manifesting", "Marinating", "Meandering", "Moseying", "Mulling", "Mustering",
-    "Musing", "Noodling", "Percolating", "Perusing", "Philosophising", "Pontificating",
-    "Pondering", "Processing", "Puttering", "Puzzling", "Reticulating", "Ruminating",
-    "Scheming", "Schlepping", "Shimmying", "Simmering", "Smooshing", "Spelunking",
-    "Spinning", "Stewing", "Sussing", "Synthesizing", "Thinking", "Tinkering",
-    "Transmuting", "Unfurling", "Unravelling", "Vibing", "Wandering", "Whirring",
-    "Wibbling", "Wizarding", "Working", "Wrangling"
-]
