@@ -17,7 +17,8 @@ func GenerateMasterKeyBase64() (string, error) {
 }
 
 // ParseTerminalURL extracts the terminal public key from a QR URL.
-// Accepts delight://terminal?<pubkey>.
+// Accepts delight://terminal?<pubkey> and
+// delight://terminal?key=<pubkey>[&host=<name>].
 func ParseTerminalURL(qrURL string) (string, error) {
 	return parseTerminalURL(qrURL)
 }

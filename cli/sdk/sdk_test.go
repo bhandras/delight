@@ -334,6 +334,12 @@ func TestParseTerminalURL(t *testing.T) {
 	decoded, _ := base64.StdEncoding.DecodeString(parsed)
 	require.Len(t, decoded, 32)
 
+	parsedWithMetadata, err := ParseTerminalURL("delight://terminal?key=" + query + "&host=example-host")
+	require.NoError(t, err)
+	decodedWithMetadata, _ := base64.StdEncoding.DecodeString(parsedWithMetadata)
+	require.Len(t, decodedWithMetadata, 32)
+	require.Equal(t, decoded, decodedWithMetadata)
+
 	_, err = ParseTerminalURL("http://terminal?" + query)
 	require.Error(t, err)
 	_, err = ParseTerminalURL("delight://nope?" + query)

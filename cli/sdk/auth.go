@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/bhandras/delight/cli/internal/crypto"
 )
@@ -266,11 +267,23 @@ func parseTerminalURL(qrURL string) (string, error) {
 	if parsed.Host != "terminal" {
 		return "", fmt.Errorf("unsupported host: %s", parsed.Host)
 	}
-	raw := parsed.RawQuery
+	raw := strings.TrimSpace(parsed.RawQuery)
 	if raw == "" {
 		return "", fmt.Errorf("missing public key in URL")
 	}
-	pubBytes, err := decodeBase64URL(raw)
+
+	// Backward-compatible URL formats:
+	// - delight://terminal?<base64url-public-key>
+	// - delight://terminal?key=<base64url-public-key>[&host=<name>]
+	keyB64URL := strings.TrimSpace(parsed.Query().Get("key"))
+	if keyB64URL == "" {
+		keyB64URL = raw
+		if strings.Contains(keyB64URL, "=") {
+			return "", fmt.Errorf("missing public key in URL")
+		}
+	}
+
+	pubBytes, err := decodeBase64URL(keyB64URL)
 	if err != nil {
 		return "", fmt.Errorf("decode public key: %w", err)
 	}

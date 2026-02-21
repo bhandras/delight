@@ -80,9 +80,18 @@ func AuthCommand(cfg *config.Config) error {
 		logger.Debugf("Auth request created: state=%s, id=%s", state, requestID)
 	}
 
-	// Build QR code data - format: delight://terminal?[base64url-encoded-public-key]
-	publicKeyB64url := toBase64URL(publicKeyB64)
-	qrData := fmt.Sprintf("delight://terminal?%s", publicKeyB64url)
+	// Build QR code data in a metadata-friendly format:
+	// delight://terminal?key=<base64url-public-key>[&host=<hostname>]
+	publicKeyB64url := base64.RawURLEncoding.EncodeToString(publicKey[:])
+	query := url.Values{}
+	query.Set("key", publicKeyB64url)
+	if hostname, err := os.Hostname(); err == nil {
+		trimmedHost := strings.TrimSpace(hostname)
+		if trimmedHost != "" {
+			query.Set("host", trimmedHost)
+		}
+	}
+	qrData := fmt.Sprintf("delight://terminal?%s", query.Encode())
 
 	// Generate QR code
 	printAuthLine("")
@@ -372,13 +381,4 @@ func saveCredentials(cfg *config.Config, secret []byte, token string) error {
 	}
 
 	return nil
-}
-
-// toBase64URL converts standard base64 to base64url (RFC 4648)
-func toBase64URL(s string) string {
-	// Replace + with -, / with _, and remove padding
-	s = strings.ReplaceAll(s, "+", "-")
-	s = strings.ReplaceAll(s, "/", "_")
-	s = strings.TrimRight(s, "=")
-	return s
 }
