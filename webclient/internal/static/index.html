@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Delight Web Client</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header>
+      <div class="header-main">
+        <h1>delight</h1>
+        <div id="statusBar">
+          <span id="connectionBadge" class="badge">disconnected</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="openTerminalsBtn" class="subtle icon-btn terminal-icon-btn" aria-label="Terminals" title="Terminals">&gt;_</button>
+        <button id="openSettingsBtn" class="subtle icon-btn" aria-label="Settings" title="Settings">&#9881;</button>
+      </div>
+    </header>
+
+    <div class="sr-only-status" aria-hidden="true">
+      <span id="streamBadge" class="badge">stream: idle</span>
+      <span id="refreshBadge" class="badge">auto: on</span>
+      <span id="actionBadge" class="badge" data-level="idle">action: idle</span>
+    </div>
+
+    <main>
+      <section class="layout-grid hidden" aria-hidden="true">
+        <article class="panel">
+          <h2>Sessions</h2>
+          <div class="row">
+            <button id="refreshSessionsBtn">Refresh</button>
+          </div>
+          <div id="sessionsList" class="list"></div>
+        </article>
+
+        <article class="panel">
+          <h2>Terminals</h2>
+          <div class="row">
+            <button id="refreshTerminalsBtn">Refresh</button>
+          </div>
+          <div id="terminalsList" class="list"></div>
+        </article>
+      </section>
+
+      <section class="session-panel">
+        <div id="sessionIdentity" class="session-identity">No session selected</div>
+        <div class="messages-wrap">
+          <div id="messages" class="messages"></div>
+          <button id="scrollBottomBtn" class="floating-scroll" aria-label="Scroll to bottom" title="Scroll to bottom">&#8964;</button>
+        </div>
+        <div class="composer-row">
+          <textarea id="messageInput" rows="3" placeholder="Type a message"></textarea>
+          <button id="sendBtn">Send</button>
+        </div>
+      </section>
+    </main>
+
+    <section id="settingsScreen" class="settings-screen hidden" aria-hidden="true">
+      <div class="settings-shell">
+        <div class="settings-header">
+          <h2>Settings</h2>
+          <button id="closeSettingsBtn" class="subtle">Close</button>
+        </div>
+
+        <div class="settings-content">
+          <section class="panel settings-panel">
+            <h2>Account & Server</h2>
+            <label>Server URL
+              <input id="serverURL" type="text" placeholder="http://127.0.0.1:3005" />
+            </label>
+            <label>Master Key
+              <input id="masterKey" type="text" placeholder="base64 master key" />
+            </label>
+            <div class="row">
+              <button id="generateKeyBtn">Generate Key</button>
+              <button id="createAccountBtn">Create Account</button>
+              <button id="connectToggleBtn">Connect</button>
+              <button id="logoutBtn">Logout</button>
+              <button id="resetKeyBtn" class="warn">Reset Keys</button>
+            </div>
+          </section>
+
+          <section class="panel settings-panel">
+            <h2>Preferences</h2>
+            <div class="row">
+              <label>Appearance
+                <select id="appearanceSelect">
+                  <option value="system">System</option>
+                  <option value="light">Light</option>
+                  <option value="dark">Dark</option>
+                </select>
+              </label>
+              <label>Font Size
+                <input id="fontSizeInput" type="number" min="10" max="28" step="1" value="14" />
+              </label>
+            </div>
+            <div class="row">
+              <label><input id="showToolUse" type="checkbox" checked /> Show Tool Use</label>
+              <label><input id="showToolOutput" type="checkbox" checked /> Show Tool Output</label>
+              <label><input id="showReasoning" type="checkbox" checked /> Show Reasoning Summaries</label>
+            </div>
+            <div class="row">
+              <button id="savePrefsBtn">Save Preferences</button>
+            </div>
+          </section>
+
+          <section class="panel settings-panel">
+            <h2>Debug</h2>
+            <pre id="debugLogs" class="mono log-box"></pre>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section id="terminalsScreen" class="settings-screen hidden" aria-hidden="true">
+      <div class="settings-shell">
+        <div class="settings-header">
+          <h2>Terminals</h2>
+          <button id="closeTerminalsBtn" class="subtle">Close</button>
+        </div>
+        <div class="settings-content">
+          <section class="panel settings-panel">
+            <h2>Pair Terminal</h2>
+            <label>QR URL
+              <input id="pairURL" type="text" placeholder="delight://terminal?..." />
+            </label>
+            <div class="row">
+              <button id="pairBtn">Approve Pairing</button>
+              <button id="scanBtn">Scan QR</button>
+              <button id="stopScanBtn" class="subtle">Stop Scan</button>
+            </div>
+            <video id="scanVideo" autoplay playsinline hidden></video>
+            <pre id="pairReceipt" class="mono"></pre>
+          </section>
+
+          <section class="panel settings-panel">
+            <div class="row">
+              <button id="refreshTerminalPickerBtn">Refresh</button>
+            </div>
+            <div id="terminalPickerList" class="list"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <dialog id="permissionDialog">
+      <form method="dialog">
+        <h3>Permission Request</h3>
+        <div id="permissionBody" class="mono"></div>
+        <label>Message
+          <input id="permissionMessage" type="text" placeholder="Optional note" />
+        </label>
+        <menu>
+          <button id="denyPermissionBtn" value="cancel" class="warn">Deny</button>
+          <button id="allowPermissionBtn" value="default">Allow</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="modelDialog">
+      <form method="dialog">
+        <h3>Model Settings</h3>
+        <div class="row">
+          <label>Model
+            <select id="modelSelect"></select>
+          </label>
+        </div>
+        <div class="row">
+          <label>Reasoning Effort
+            <select id="reasoningSelect"></select>
+          </label>
+        </div>
+        <div class="row">
+          <label>Permission Mode
+            <select id="permissionModeSelect"></select>
+          </label>
+        </div>
+        <menu>
+          <button id="refreshCapabilitiesBtn" type="button" class="subtle">Refresh</button>
+          <button id="applyAgentConfigBtn" type="button">Apply</button>
+          <button id="closeModelBtn" value="cancel" class="subtle">Close</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <footer class="hidden" aria-hidden="true">
+      <pre id="activityLog" class="mono"></pre>
+    </footer>
+
+    <script defer src="/app.js"></script>
+  </body>
+</html>
