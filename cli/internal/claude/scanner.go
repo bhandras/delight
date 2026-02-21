@@ -2,6 +2,7 @@ package claude
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -223,4 +224,61 @@ func WaitForSessionFile(projectPath, sessionID string, timeout time.Duration) bo
 		time.Sleep(100 * time.Millisecond)
 	}
 	return false
+}
+
+// WatchForNewSession watches the project directory for new .jsonl session files.
+// This is a fallback mechanism when FD3 UUID interception doesn't work.
+// Returns the session ID (filename without .jsonl) of the first new file detected.
+func WatchForNewSession(ctx context.Context, projectPath string, debug bool) string {
+	projectDir := getProjectDir(projectPath)
+
+	// Record existing files
+	existingFiles := make(map[string]bool)
+	if entries, err := os.ReadDir(projectDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
+				existingFiles[entry.Name()] = true
+			}
+		}
+	}
+
+	if debug {
+		logger.Debugf("WatchForNewSession: watching %s (existing: %d files)", projectDir, len(existingFiles))
+	}
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-ticker.C:
+			entries, err := os.ReadDir(projectDir)
+			if err != nil {
+				// Directory may not exist yet, keep waiting
+				continue
+			}
+
+			for _, entry := range entries {
+				if entry.IsDir() {
+					continue
+				}
+				name := entry.Name()
+				if !strings.HasSuffix(name, ".jsonl") {
+					continue
+				}
+				if existingFiles[name] {
+					continue
+				}
+
+				// New session file found
+				sessionID := strings.TrimSuffix(name, ".jsonl")
+				if debug {
+					logger.Debugf("WatchForNewSession: detected new session file: %s", sessionID)
+				}
+				return sessionID
+			}
+		}
+	}
 }

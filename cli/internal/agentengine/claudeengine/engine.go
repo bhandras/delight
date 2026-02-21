@@ -702,40 +702,81 @@ func (e *Engine) watchLocalSession(ctx context.Context, workDir string, proc *cl
 		return
 	}
 
+	if e.debug {
+		logger.Debugf("claude: watchLocalSession started for workDir=%s", workDir)
+	}
+
+	// Try to get session ID from FD3 interception first, with a fallback to
+	// watching the project directory for new session files.
+	sessionIDCh := proc.SessionID()
+	fallbackCh := make(chan string, 1)
+
+	// Start fallback watcher in case FD3 interception doesn't work
+	// (e.g., if Claude Code no longer uses crypto.randomUUID for session IDs)
+	go func() {
+		sessionID := claude.WatchForNewSession(ctx, workDir, e.debug)
+		if sessionID != "" {
+			select {
+			case fallbackCh <- sessionID:
+			default:
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case sessionID, ok := <-proc.SessionID():
+		case sessionID, ok := <-sessionIDCh:
 			if !ok || strings.TrimSpace(sessionID) == "" {
-				return
+				// Channel closed without receiving ID, wait for fallback
+				sessionIDCh = nil
+				continue
 			}
 			if !claude.WaitForSessionFile(workDir, sessionID, localSessionFileWaitTimeout) {
 				continue
 			}
-
-			e.tryEmit(agentengine.EvSessionIdentified{Mode: agentengine.ModeLocal, ResumeToken: sessionID})
-
-			scanner := claude.NewScanner(workDir, sessionID, e.debug)
-			scanner.Start()
-
-			e.mu.Lock()
-			// If this local runner is no longer current, stop immediately.
-			if e.localProc != proc {
-				e.mu.Unlock()
-				scanner.Stop()
-				return
+			e.startLocalScanner(ctx, workDir, proc, sessionID)
+			return
+		case sessionID := <-fallbackCh:
+			if strings.TrimSpace(sessionID) == "" {
+				continue
 			}
-			if e.localScanner != nil {
-				e.localScanner.Stop()
+			if e.debug {
+				logger.Debugf("claude: using fallback session ID detection: %s", sessionID)
 			}
-			e.localScanner = scanner
-			e.mu.Unlock()
-
-			go e.forwardScannerMessages(ctx, scanner)
+			e.startLocalScanner(ctx, workDir, proc, sessionID)
 			return
 		}
 	}
+}
+
+func (e *Engine) startLocalScanner(ctx context.Context, workDir string, proc *claude.Process, sessionID string) {
+	if e.debug {
+		logger.Debugf("claude: startLocalScanner called with sessionID=%s workDir=%s", sessionID, workDir)
+	}
+	e.tryEmit(agentengine.EvSessionIdentified{Mode: agentengine.ModeLocal, ResumeToken: sessionID})
+
+	scanner := claude.NewScanner(workDir, sessionID, e.debug)
+	if e.debug {
+		logger.Debugf("claude: scanner created, path=%s", scanner.SessionFilePath())
+	}
+	scanner.Start()
+
+	e.mu.Lock()
+	// If this local runner is no longer current, stop immediately.
+	if e.localProc != proc {
+		e.mu.Unlock()
+		scanner.Stop()
+		return
+	}
+	if e.localScanner != nil {
+		e.localScanner.Stop()
+	}
+	e.localScanner = scanner
+	e.mu.Unlock()
+
+	go e.forwardScannerMessages(ctx, scanner)
 }
 
 func (e *Engine) forwardScannerMessages(ctx context.Context, scanner *claude.Scanner) {
@@ -743,13 +784,26 @@ func (e *Engine) forwardScannerMessages(ctx context.Context, scanner *claude.Sca
 		return
 	}
 
+	if e.debug {
+		logger.Debugf("claude: forwardScannerMessages started")
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
+			if e.debug {
+				logger.Debugf("claude: forwardScannerMessages context done")
+			}
 			return
 		case msg, ok := <-scanner.Messages():
 			if !ok || msg == nil {
+				if e.debug {
+					logger.Debugf("claude: forwardScannerMessages channel closed or nil msg")
+				}
 				return
+			}
+			if e.debug {
+				logger.Debugf("claude: forwardScannerMessages received msg type=%s uuid=%s", msg.Type, msg.UUID)
 			}
 
 			// Deep copy the message to detach from scanner buffers.
@@ -773,6 +827,9 @@ func (e *Engine) forwardScannerMessages(ctx context.Context, scanner *claude.Sca
 				userText = extractClaudeUserText(copyMsg.Message)
 			}
 
+			if e.debug {
+				logger.Debugf("claude: forwardScannerMessages emitting EvOutboundRecord localID=%s bytes=%d", copyMsg.UUID, len(plaintext))
+			}
 			e.tryEmit(agentengine.EvOutboundRecord{
 				Mode:               agentengine.ModeLocal,
 				LocalID:            copyMsg.UUID,

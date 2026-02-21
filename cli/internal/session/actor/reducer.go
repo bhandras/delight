@@ -2,13 +2,18 @@ package actor
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 
 	"github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/agentengine"
 	"github.com/bhandras/delight/cli/pkg/types"
+	"github.com/bhandras/delight/shared/logger"
 	"github.com/bhandras/delight/shared/wire"
 )
+
+// reducerDebug enables verbose reducer logging when DELIGHT_DEBUG is set.
+var reducerDebug = os.Getenv("DELIGHT_DEBUG") != ""
 
 const (
 	// persistDebounceTimerName is the timer key used to debounce agent-state persistence.
@@ -203,15 +208,27 @@ func reduceInboundUserMessage(state State, cmd cmdInboundUserMessage) (State, []
 
 // reduceOutboundMessageReady handles a runtime-produced outbound session message.
 func reduceOutboundMessageReady(state State, ev evOutboundMessageReady) (State, []actor.Effect) {
+	if reducerDebug {
+		logger.Debugf("reducer: reduceOutboundMessageReady ev.Gen=%d state.RunnerGen=%d localID=%s", ev.Gen, state.RunnerGen, ev.LocalID)
+	}
 	if ev.Gen != 0 && ev.Gen != state.RunnerGen {
+		if reducerDebug {
+			logger.Debugf("reducer: reduceOutboundMessageReady DROPPED due to gen mismatch (ev.Gen=%d state.RunnerGen=%d)", ev.Gen, state.RunnerGen)
+		}
 		return state, nil
 	}
 	if ev.Ciphertext == "" {
+		if reducerDebug {
+			logger.Debugf("reducer: reduceOutboundMessageReady DROPPED due to empty ciphertext")
+		}
 		return state, nil
 	}
 
 	// If this is a user message originating from remote injection, suppress it.
 	if ev.UserTextNormalized != "" && state.isRecentlyInjectedRemoteInput(ev.UserTextNormalized, ev.NowMs) {
+		if reducerDebug {
+			logger.Debugf("reducer: reduceOutboundMessageReady DROPPED due to recent remote injection")
+		}
 		return state, nil
 	}
 
@@ -219,6 +236,9 @@ func reduceOutboundMessageReady(state State, ev evOutboundMessageReady) (State, 
 		state.rememberOutboundUserLocalID(ev.LocalID, ev.NowMs)
 	}
 
+	if reducerDebug {
+		logger.Debugf("reducer: reduceOutboundMessageReady EMITTING effEmitMessage localID=%s", ev.LocalID)
+	}
 	return state, []actor.Effect{
 		effEmitMessage{LocalID: ev.LocalID, Ciphertext: ev.Ciphertext},
 	}

@@ -149,12 +149,20 @@ func (r *Runtime) handleEngineEvent(ev agentengine.Event, emit func(framework.In
 		r.mu.Lock()
 		encryptFn := r.encryptFn
 		localActive := r.engineLocalInteractive
+		debug := r.debug
 		r.mu.Unlock()
+
+		if debug {
+			logger.Debugf("runtime: EvOutboundRecord received mode=%s gen=%d localID=%s bytes=%d", mode, gen, v.LocalID, len(v.Payload))
+		}
 
 		if mode == ModeRemote && !localActive {
 			r.printRemoteRecordIfApplicable(v.Payload)
 		}
 		if len(v.Payload) == 0 {
+			if debug {
+				logger.Debugf("runtime: EvOutboundRecord skipped (empty payload)")
+			}
 			return
 		}
 		if encryptFn == nil {
@@ -171,6 +179,9 @@ func (r *Runtime) handleEngineEvent(ev agentengine.Event, emit func(framework.In
 		nowMs := v.AtMs
 		if nowMs == 0 {
 			nowMs = time.Now().UnixMilli()
+		}
+		if debug {
+			logger.Debugf("runtime: EvOutboundRecord emitting evOutboundMessageReady gen=%d localID=%s", gen, v.LocalID)
 		}
 		emit(evOutboundMessageReady{
 			Gen:                gen,
