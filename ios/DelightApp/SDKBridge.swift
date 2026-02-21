@@ -314,6 +314,8 @@ private enum UpdateTiming {
     static let sessionRefreshDelaySeconds: TimeInterval = 0.35
     static let foregroundRefreshMinIntervalSeconds: TimeInterval = 0.5
     static let sessionRefreshMinIntervalSeconds: TimeInterval = 1.0
+    static let pairingDiscoveryPollIntervalSeconds: TimeInterval = 2.0
+    static let pairingDiscoveryMaxAttempts: Int = 30
 }
 
 /// AuthTiming collects authentication-related constants.
@@ -462,6 +464,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     /// fight "jump to bottom" actions.
     private var messagesFetchGeneration: Int = 0
     private var scheduledSessionRefresh: DispatchWorkItem?
+    private var scheduledPairingDiscoveryRefresh: DispatchWorkItem?
+    private var pairingDiscoveryAttemptsRemaining: Int = 0
     private var lastSessionRefreshAt: Date = .distantPast
     private var lastForegroundRefreshAt: Date = .distantPast
 
@@ -825,6 +829,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             self.needsSessionRefresh = true
             self.disconnect()
             self.connect()
+            if self.lastTerminalPairingReceipt != nil {
+                self.startPairingDiscoveryRefresh()
+            }
 
             // Proactively refresh the visible transcript so the UI shows a
             // loading state immediately after wake (even if connect/reconnect
@@ -964,12 +971,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     private func prepareClientForAuthenticatedRequest(
         serverURL: String,
         tokenSnapshot: String,
-        masterKeySnapshot: String
+        masterKeySnapshot: String,
+        forceTokenRefresh: Bool = false
     ) throws {
         client.setServerURL(serverURL)
 
         var effectiveToken = tokenSnapshot
-        if effectiveToken.isEmpty || isTokenLikelyExpired(effectiveToken) {
+        if forceTokenRefresh || effectiveToken.isEmpty || isTokenLikelyExpired(effectiveToken) {
             guard !masterKeySnapshot.isEmpty else {
                 // Without a master key we can't rotate the token; we'll attempt
                 // requests with the existing token and surface any errors.
@@ -1040,6 +1048,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         messages = []
         sessions = []
         terminals = []
+        scheduledPairingDiscoveryRefresh?.cancel()
+        scheduledPairingDiscoveryRefresh = nil
+        pairingDiscoveryAttemptsRemaining = 0
         permissionQueue = []
         activePermissionRequest = nil
         showPermissionPrompt = false
@@ -1451,12 +1462,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             }
             do {
                 try self.sdkCallSync {
-                    try self.prepareClientForAuthenticatedRequest(
-                        serverURL: self.serverURL,
-                        tokenSnapshot: self.token,
-                        masterKeySnapshot: self.masterKey
-                    )
-                    try self.client.approveTerminalAuth(terminalKey, masterKeyB64: self.masterKey)
+                try self.prepareClientForAuthenticatedRequest(
+                    serverURL: self.serverURL,
+                    tokenSnapshot: self.token,
+                    masterKeySnapshot: self.masterKey,
+                    forceTokenRefresh: true
+                )
+                try self.client.approveTerminalAuth(terminalKey, masterKeyB64: self.masterKey)
                 }
                 DispatchQueue.main.async {
                     self.lastTerminalPairingReceipt = TerminalPairingReceipt(
@@ -1469,6 +1481,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     self.isApprovingTerminal = false
                     self.terminalURL = ""
                     self.listSessions()
+                    self.startPairingDiscoveryRefresh()
                     self.log("Approved terminal auth")
                 }
             } catch {
@@ -1504,7 +1517,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 try self.prepareClientForAuthenticatedRequest(
                     serverURL: serverURLSnapshot,
                     tokenSnapshot: tokenSnapshot,
-                    masterKeySnapshot: masterKeySnapshot
+                    masterKeySnapshot: masterKeySnapshot,
+                    forceTokenRefresh: true
                 )
                 // The listener is already installed at init, but re-setting it
                 // is safe and helps when reconnecting after crashes.
@@ -2999,6 +3013,74 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         scheduleSessionsRefreshDebounced(minIntervalSeconds: 0, delaySeconds: 0)
     }
 
+    /// startPairingDiscoveryRefresh polls sessions/terminals for a short window
+    /// after pairing so a newly authorized CLI appears without requiring a full
+    /// app restart.
+    private func startPairingDiscoveryRefresh() {
+        DispatchQueue.main.async {
+            self.scheduledPairingDiscoveryRefresh?.cancel()
+            self.scheduledPairingDiscoveryRefresh = nil
+            self.pairingDiscoveryAttemptsRemaining = UpdateTiming.pairingDiscoveryMaxAttempts
+            self.runPairingDiscoveryRefreshTick()
+        }
+    }
+
+    /// runPairingDiscoveryRefreshTick performs one poll cycle and re-schedules
+    /// itself until the paired terminal is visible or attempts are exhausted.
+    private func runPairingDiscoveryRefreshTick() {
+        guard pairingDiscoveryAttemptsRemaining > 0 else {
+            scheduledPairingDiscoveryRefresh = nil
+            return
+        }
+        if hasDiscoveredPairedTerminal() {
+            scheduledPairingDiscoveryRefresh = nil
+            pairingDiscoveryAttemptsRemaining = 0
+            return
+        }
+
+        pairingDiscoveryAttemptsRemaining -= 1
+        listSessions()
+
+        let work = DispatchWorkItem { [weak self] in
+            self?.runPairingDiscoveryRefreshTick()
+        }
+        scheduledPairingDiscoveryRefresh = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + UpdateTiming.pairingDiscoveryPollIntervalSeconds,
+            execute: work
+        )
+    }
+
+    /// hasDiscoveredPairedTerminal reports whether the terminal list currently
+    /// includes the most recently paired terminal identity (by id or host).
+    private func hasDiscoveredPairedTerminal() -> Bool {
+        guard let receipt = lastTerminalPairingReceipt else {
+            return !terminals.isEmpty
+        }
+
+        let receiptTerminalID = receipt.terminalID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !receiptTerminalID.isEmpty && terminals.contains(where: { $0.id == receiptTerminalID }) {
+            return true
+        }
+
+        let receiptHost = receipt.host?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if !receiptHost.isEmpty {
+            let hasMatchingHost = terminals.contains { terminal in
+                let host = terminal.metadata?.host?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+                return host == receiptHost
+            }
+            if hasMatchingHost {
+                return true
+            }
+        }
+
+        // Legacy QR links may not include host/terminal ID metadata.
+        if receiptTerminalID.isEmpty && receiptHost.isEmpty {
+            return !terminals.isEmpty
+        }
+        return false
+    }
+
     private func handlePermissionRequestUpdate(_ json: String) {
         guard let update = decodeUpdateEnvelope(json) else {
             return
@@ -3287,7 +3369,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     private func ensureKeys() {
-        if masterKey.isEmpty || publicKey.isEmpty || privateKey.isEmpty {
+        // The master key is the account identity anchor. Public/private key
+        // fields are legacy/diagnostic and may legitimately be empty in the
+        // current auth flow, so they must not trigger identity rotation.
+        if masterKey.isEmpty {
             generateKeys()
         }
     }
