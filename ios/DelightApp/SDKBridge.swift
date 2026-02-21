@@ -326,6 +326,12 @@ private enum AuthTiming {
     static let tokenExpirySkewSeconds: TimeInterval = 30
 }
 
+/// KeyFormat captures account-key encoding expectations.
+private enum KeyFormat {
+    /// masterKeyBytes is the required raw master key length.
+    static let masterKeyBytes: Int = 32
+}
+
 /// LogLimits defines the maximum log buffer size retained in memory.
 private enum LogLimits {
     static let maxLines = 100
@@ -377,6 +383,18 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
     @Published var privateKey: String = "" {
         didSet { persistKeys() }
+    }
+    /// accountPublicKeyDisplay is the best-effort public identity string.
+    ///
+    /// Current auth uses the master key directly; older builds stored an
+    /// explicit public key in keychain. Prefer that value when present and
+    /// otherwise derive it from the master key.
+    var accountPublicKeyDisplay: String {
+        let explicit = publicKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !explicit.isEmpty {
+            return explicit
+        }
+        return derivePublicKeyFromMasterKeyBase64(masterKey) ?? ""
     }
     @Published var sessions: [SessionSummary] = []
     @Published var messages: [MessageItem] = []
@@ -783,6 +801,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         privateKey = loadedPrivateKey
         configureLogDirectory()
         ensureKeys()
+        syncDerivedPublicKeyIfNeeded()
         sdkCallQueue.setSpecific(key: sdkCallQueueKey, value: ())
 
         // When the phone app is backgrounded (sleep), the websocket may not deliver
@@ -963,6 +982,63 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return Data(base64Encoded: s)
     }
 
+    /// normalizeMasterKeyBase64 sanitizes imported/exported key text and
+    /// returns a canonical base64 string when it represents a valid 32-byte key.
+    private func normalizeMasterKeyBase64(_ raw: String) -> String? {
+        var candidate = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if candidate.isEmpty {
+            return nil
+        }
+
+        // Allow delight://account?key=<base64> imports.
+        if let components = URLComponents(string: candidate),
+           components.scheme?.lowercased() == "delight",
+           components.host?.lowercased() == "account",
+           let keyedValue = components.queryItems?.first(where: { $0.name == "key" })?.value {
+            candidate = keyedValue
+        }
+
+        candidate = candidate.replacingOccurrences(
+            of: "\\s+",
+            with: "",
+            options: .regularExpression
+        )
+
+        guard let decoded = Data(base64Encoded: candidate),
+              decoded.count == KeyFormat.masterKeyBytes else {
+            return nil
+        }
+        return decoded.base64EncodedString()
+    }
+
+    /// derivePublicKeyFromMasterKeyBase64 deterministically derives the account
+    /// Ed25519 public key from a base64-encoded master key.
+    private func derivePublicKeyFromMasterKeyBase64(_ masterKeyB64: String) -> String? {
+        guard let normalized = normalizeMasterKeyBase64(masterKeyB64),
+              let master = Data(base64Encoded: normalized),
+              master.count == KeyFormat.masterKeyBytes else {
+            return nil
+        }
+        let seed = Data(SHA256.hash(data: master))
+        guard let signingKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed) else {
+            return nil
+        }
+        return signingKey.publicKey.rawRepresentation.base64EncodedString()
+    }
+
+    /// syncDerivedPublicKeyIfNeeded fills the legacy `publicKey` field from the
+    /// master key so account details are visible in current auth flows.
+    private func syncDerivedPublicKeyIfNeeded() {
+        let trimmedPublicKey = publicKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedPublicKey.isEmpty {
+            return
+        }
+        guard let derived = derivePublicKeyFromMasterKeyBase64(masterKey) else {
+            return
+        }
+        publicKey = derived
+    }
+
     /// prepareClientForAuthenticatedRequest configures the Go SDK client with
     /// server URL, master key, and a usable auth token.
     ///
@@ -1074,7 +1150,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             return
         }
         masterKey = master
-        publicKey = ""
+        publicKey = derivePublicKeyFromMasterKeyBase64(master) ?? ""
         privateKey = ""
         log("Generated master key")
     }
@@ -1125,7 +1201,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     self.lastAccountCreatedReceipt = AccountCreatedReceipt(
                         serverURL: self.serverURL,
                         masterKey: self.masterKey,
-                        publicKey: self.publicKey,
+                        publicKey: self.accountPublicKeyDisplay,
                         privateKey: self.privateKey,
                         token: tokenValue
                     )
@@ -1140,6 +1216,38 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 }
             }
         }
+    }
+
+    /// exportAccountMasterKey returns the canonical base64 master key for copy/share.
+    func exportAccountMasterKey() -> String? {
+        normalizeMasterKeyBase64(masterKey)
+    }
+
+    /// importAccountMasterKey replaces local credentials with the provided
+    /// master key and reconnects using that account identity.
+    ///
+    /// Returns `true` when the input key is valid and import was accepted.
+    @discardableResult
+    func importAccountMasterKey(_ raw: String) -> Bool {
+        guard let normalized = normalizeMasterKeyBase64(raw) else {
+            presentErrorAlert(message: "Invalid account key. Paste a valid base64 master key.")
+            return false
+        }
+
+        let derivedPublicKey = derivePublicKeyFromMasterKeyBase64(normalized) ?? ""
+        sdkCallAsync {
+            self.client.disconnect()
+            DispatchQueue.main.async {
+                self.masterKey = normalized
+                self.publicKey = derivedPublicKey
+                self.privateKey = ""
+                self.token = ""
+                self.status = "disconnected"
+                self.log("Imported account key")
+                self.connect()
+            }
+        }
+        return true
     }
 
     func logout() {

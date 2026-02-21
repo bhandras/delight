@@ -682,6 +682,8 @@ private struct AccountDetailView: View {
     @ObservedObject var model: HarnessViewModel
     @Environment(\.dismiss) private var dismiss
     @FocusState private var isServerFieldFocused: Bool
+    @State private var showImportAccountKeySheet: Bool = false
+    @State private var accountStatusMessage: String = ""
 
     var body: some View {
         let isLoggedIn = !model.token.isEmpty
@@ -745,9 +747,28 @@ private struct AccountDetailView: View {
                                     .foregroundColor(Theme.messageText)
                                     .padding(.vertical, 6)
                                 Divider()
-                                AccountDetailRow(title: "Public Key", value: model.publicKey)
+                                AccountDetailRow(title: "Public Key", value: model.accountPublicKeyDisplay)
                                 Divider()
                                 AccountDetailRow(title: "Token", value: model.token)
+                                Divider()
+                                ActionButton(
+                                    title: "Export Account Key",
+                                    systemImage: "square.and.arrow.up"
+                                ) {
+                                    guard let key = model.exportAccountMasterKey() else {
+                                        accountStatusMessage = "No account key available to export."
+                                        return
+                                    }
+                                    UIPasteboard.general.string = key
+                                    accountStatusMessage = "Account key copied to clipboard."
+                                }
+                                Divider()
+                                ActionButton(
+                                    title: "Import Account Key",
+                                    systemImage: "square.and.arrow.down"
+                                ) {
+                                    showImportAccountKeySheet = true
+                                }
                                 Divider()
                                 ActionButton(
                                     title: "Log Out",
@@ -755,7 +776,17 @@ private struct AccountDetailView: View {
                                 ) {
                                     model.showLogoutConfirm = true
                                 }
-                                .padding(.bottom, 8)
+                                .padding(
+                                    .bottom,
+                                    accountStatusMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 8 : 0
+                                )
+                                if !accountStatusMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Text(accountStatusMessage)
+                                        .font(Theme.caption)
+                                        .foregroundColor(Theme.mutedText)
+                                        .padding(.top, 4)
+                                        .padding(.bottom, 8)
+                                }
                             }
                         }
                     } else {
@@ -766,24 +797,42 @@ private struct AccountDetailView: View {
                                     .foregroundColor(Theme.messageText)
                                     .padding(.vertical, 6)
                                 Divider()
-                                AccountDetailRow(title: "Public Key", value: "")
+                                AccountDetailRow(title: "Public Key", value: model.accountPublicKeyDisplay)
                                 Divider()
                                 AccountDetailRow(title: "Token", value: "")
+                                Divider()
+                                ActionButton(
+                                    title: "Import Account Key",
+                                    systemImage: "square.and.arrow.down"
+                                ) {
+                                    showImportAccountKeySheet = true
+                                }
                                 Divider()
                                 Text("Not logged in. Set your server URL and connect to create an account.")
                                     .font(Theme.body)
                                     .foregroundColor(Theme.mutedText)
                                     .padding(.vertical, 6)
+                                if !accountStatusMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Text(accountStatusMessage)
+                                        .font(Theme.caption)
+                                        .foregroundColor(Theme.mutedText)
+                                        .padding(.top, 4)
+                                }
                             }
                         }
                     }
-	                }
-	                .padding()
-	            }
-	            .dismissKeyboardOnTap()
-	        }
-	        .navigationTitle("Account")
-	        .toolbar {
+                }
+                .padding()
+            }
+            .dismissKeyboardOnTap()
+        }
+        .navigationTitle("Account")
+        .sheet(isPresented: $showImportAccountKeySheet) {
+            AccountKeyImportSheet(model: model) { status in
+                accountStatusMessage = status
+            }
+        }
+        .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
                 Button("Done") {
@@ -794,6 +843,61 @@ private struct AccountDetailView: View {
         .onChange(of: model.token) { newValue in
             if newValue.isEmpty {
                 dismiss()
+            }
+        }
+    }
+}
+
+private struct AccountKeyImportSheet: View {
+    @ObservedObject var model: HarnessViewModel
+    var onImported: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var importText: String = ""
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Theme.background.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        FeatureListCard {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Paste your account master key to sign in as the same account on this device.")
+                                    .font(Theme.body)
+                                    .foregroundColor(Theme.mutedText)
+                                TextEditor(text: $importText)
+                                    .font(.system(.footnote, design: .monospaced))
+                                    .frame(minHeight: 120)
+                                    .padding(8)
+                                    .background(Color(uiColor: .secondarySystemBackground))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                HStack(spacing: 12) {
+                                    ActionButton(title: "Paste", systemImage: "doc.on.clipboard") {
+                                        importText = UIPasteboard.general.string ?? ""
+                                    }
+                                    ActionButton(title: "Import", systemImage: "square.and.arrow.down") {
+                                        if model.importAccountMasterKey(importText) {
+                                            onImported("Account key imported. Reconnected with the new account.")
+                                            dismiss()
+                                        }
+                                    }
+                                    .disabled(importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                }
+                            }
+                            .padding(.vertical, 8)
+                        }
+                    }
+                    .padding()
+                }
+            }
+            .navigationTitle("Import Account Key")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") {
+                        dismiss()
+                    }
+                }
             }
         }
     }
