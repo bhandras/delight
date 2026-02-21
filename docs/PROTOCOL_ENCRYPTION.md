@@ -17,13 +17,14 @@ Scope:
 - **E2E encryption**: data is encrypted on devices and only decrypted on
   devices. The server stores/relays ciphertext.
 - **Account master secret** (`masterSecret`): a 32-byte secret generated on iOS
-  and shared to the CLI during pairing. Whoever has it can decrypt that
-  account’s E2E data.
+  (or on the CLI when unpaired) and shared to the other device during pairing.
+  Whoever has it can decrypt that account’s E2E data.
 - **Wrapped key**: a key that is encrypted so the server can store it, but
   cannot use it. Clients unwrap it locally.
-- **Data encryption key** (`dataEncryptionKey`): a per-session/per-terminal/
-  per-artifact 32-byte key used to encrypt payloads (messages, RPC, metadata)
-  with AES-256-GCM.
+- **Data encryption key** (`dataEncryptionKey`): a per-session 32-byte key used
+  to encrypt session payloads (messages, RPC) with AES-256-GCM. The protocol
+  also supports terminal/artifact data keys, but current clients do not use
+  them yet.
 
 ## Actors and Trust Model
 
@@ -51,7 +52,7 @@ Non-goal (important):
 There are two different secrets that are easy to confuse:
 
 1. **Account `masterSecret` (E2E root secret)**:
-   - Generated on iOS.
+   - Generated on iOS (or on the CLI when unpaired).
    - Stored on iOS + CLI.
    - Used to unwrap wrapped keys and decrypt E2E data.
    - Must remain unknown to the server.
@@ -72,14 +73,15 @@ If someone steals:
 Delight uses a two-level key hierarchy:
 
 1. **Account master secret** (`masterSecret`): 32 bytes
-2. **Per-object data encryption keys** (`dataEncryptionKey`): 32 bytes per
-   session (and similarly for terminal/artifact objects)
+2. **Per-session data encryption key** (`dataEncryptionKey`): 32 bytes per
+   session (terminal/artifact keys are supported in storage, but unused today)
 
 ### 1) `masterSecret` (account root secret)
 
 - **Size**: 32 bytes
 - **Where it lives**:
-  - CLI: stored on disk in `~/.delight/master.key` (base64 encoded)
+  - CLI: stored on disk in `$DELIGHT_HOME/master.key` (default
+    `~/.delight/master.key`, base64 encoded)
   - iOS: stored in Keychain (base64 encoded)
 - **What it’s used for**:
   - Derive a deterministic X25519 “content keypair”
@@ -89,7 +91,7 @@ Important property:
 
 - The server never receives `masterSecret` in plaintext.
 
-### 2) `dataEncryptionKey` (per-session / per-terminal / per-artifact)
+### 2) `dataEncryptionKey` (per-session)
 
 - **Size**: 32 bytes (AES-256 key)
 - **What it’s used for**:
@@ -195,8 +197,8 @@ Anything that should be confidential from the server is encrypted in an
 AES-GCM envelope and sent/stored as ciphertext. This includes:
 
 - Session messages (user/agent transcript items)
-- Session-scoped RPC payloads
-- Terminal metadata / daemon state (where those are treated as private)
+- Session-scoped RPC payloads (encrypted with the session `dataEncryptionKey`)
+- Terminal metadata / daemon state (encrypted with the account `masterSecret`)
 
 The server stores these payloads as base64 strings / JSON blobs and relays them
 over HTTP and Socket.IO, but does not inspect plaintext.
@@ -243,6 +245,9 @@ What the server sees:
 - The QR public key (not secret).
 - The encrypted response blob (ciphertext).
 - It cannot decrypt the `masterSecret`.
+
+Note: the CLI accepts both the legacy 32-byte plaintext response and a
+versioned 33-byte response (`0x00` + 32 bytes) for forward compatibility.
 
 ### B) Authenticate to the server (JWT) without leaking secrets
 
@@ -305,6 +310,8 @@ What the server sees:
   - The wrapped key stored on the server does not correspond to the session’s
     encryption key (data corruption), or
   - The ciphertext is not an AES-GCM envelope (legacy/invalid data).
+- Some RPC calls may arrive as plaintext JSON from legacy/test clients; in
+  that case the CLI responds with plaintext instead of encrypted payloads.
 
 ## What “Data Is Safe” Means Here
 
