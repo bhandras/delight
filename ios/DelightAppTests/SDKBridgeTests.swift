@@ -908,7 +908,7 @@ final class SDKBridgeTests: XCTestCase {
         )
 
         XCTAssertTrue(state.isInputEnabled)
-        XCTAssertTrue(state.isHistoryEnabled)
+        XCTAssertTrue(state.canControlSession)
         XCTAssertFalse(state.isShowingStop)
     }
 
@@ -928,7 +928,7 @@ final class SDKBridgeTests: XCTestCase {
         )
 
         XCTAssertFalse(state.isInputEnabled)
-        XCTAssertTrue(state.isHistoryEnabled)
+        XCTAssertTrue(state.canControlSession)
         XCTAssertTrue(state.isShowingStop)
     }
 
@@ -948,7 +948,7 @@ final class SDKBridgeTests: XCTestCase {
         )
 
         XCTAssertFalse(state.isInputEnabled)
-        XCTAssertFalse(state.isHistoryEnabled)
+        XCTAssertFalse(state.canControlSession)
         XCTAssertFalse(state.isShowingStop)
     }
 }
