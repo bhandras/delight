@@ -67,6 +67,17 @@ type Config struct {
 	PushoverNotifyTurnComplete bool
 	// PushoverNotifyAttention enables notifications when attention is required.
 	PushoverNotifyAttention bool
+
+	// PushMode controls whether encrypted mobile push notifications are enabled.
+	//
+	// Supported values: "auto", "on", "off".
+	PushMode string
+	// PushCooldown is the minimum interval between push notifications per alert key.
+	PushCooldown time.Duration
+	// PushNotifyTurnComplete enables push notifications when a turn finishes.
+	PushNotifyTurnComplete bool
+	// PushNotifyAttention enables push notifications when attention is required.
+	PushNotifyAttention bool
 }
 
 const (
@@ -100,6 +111,16 @@ const (
 
 	// defaultPushoverPriority is the default priority for Pushover notifications.
 	defaultPushoverPriority = 0
+
+	// pushModeAuto enables pushes when not explicitly disabled.
+	pushModeAuto = "auto"
+	// pushModeOn forces pushes on.
+	pushModeOn = "on"
+	// pushModeOff disables pushes.
+	pushModeOff = "off"
+
+	// defaultPushCooldown is the fallback cooldown between push alerts.
+	defaultPushCooldown = 60 * time.Second
 )
 
 // Default returns the default CLI configuration without reading environment
@@ -115,25 +136,30 @@ func Default() (*Config, error) {
 	delightHome := filepath.Join(homeDir, ".delight")
 
 	cfg := &Config{
-		ServerURL:         defaultServerURL,
-		ACPURL:            "",
-		ACPAgent:          "",
-		ACPEnable:         false,
-		DelightHome:       delightHome,
-		AccessKey:         filepath.Join(delightHome, "access.key"),
-		Model:             "",
-		ResumeToken:       "",
-		Debug:             false,
-		SocketIOTransport: defaultSocketIOTransport,
-		Agent:             defaultAgent,
-		FakeAgent:         false,
-		ForceNewSession:   false,
-		StartingMode:      defaultStartingMode,
-		PushoverMode:      pushoverModeAuto,
-		PushoverPriority:  defaultPushoverPriority,
-		PushoverCooldown:  defaultPushoverCooldown,
+		ServerURL:              defaultServerURL,
+		ACPURL:                 "",
+		ACPAgent:               "",
+		ACPEnable:              false,
+		DelightHome:            delightHome,
+		AccessKey:              filepath.Join(delightHome, "access.key"),
+		Model:                  "",
+		ResumeToken:            "",
+		Debug:                  false,
+		SocketIOTransport:      defaultSocketIOTransport,
+		Agent:                  defaultAgent,
+		FakeAgent:              false,
+		ForceNewSession:        false,
+		StartingMode:           defaultStartingMode,
+		PushoverMode:           pushoverModeAuto,
+		PushoverPriority:       defaultPushoverPriority,
+		PushoverCooldown:       defaultPushoverCooldown,
+		PushMode:               pushModeAuto,
+		PushCooldown:           defaultPushCooldown,
+		PushNotifyTurnComplete: true,
+		PushNotifyAttention:    true,
 	}
 	applyPushoverEnv(cfg)
+	applyPushEnv(cfg)
 	return cfg, nil
 }
 
@@ -159,6 +185,21 @@ func (c *Config) PushoverEnabled() bool {
 		return strings.TrimSpace(c.PushoverToken) != "" &&
 			strings.TrimSpace(c.PushoverUserKey) != "" &&
 			(c.PushoverNotifyTurnComplete || c.PushoverNotifyAttention)
+	default:
+		return false
+	}
+}
+
+// PushEnabled reports whether encrypted mobile push notifications are active.
+func (c *Config) PushEnabled() bool {
+	mode := strings.TrimSpace(c.PushMode)
+	switch mode {
+	case pushModeOff:
+		return false
+	case pushModeOn:
+		return c.PushNotifyTurnComplete || c.PushNotifyAttention
+	case "", pushModeAuto:
+		return c.PushNotifyTurnComplete || c.PushNotifyAttention
 	default:
 		return false
 	}
@@ -207,6 +248,41 @@ func applyPushoverEvents(cfg *Config, events string) {
 			cfg.PushoverNotifyTurnComplete = true
 		case "attention":
 			cfg.PushoverNotifyAttention = true
+		}
+	}
+}
+
+// applyPushEnv applies encrypted push settings from environment variables.
+func applyPushEnv(cfg *Config) {
+	if mode := strings.TrimSpace(os.Getenv("DELIGHT_PUSH_MODE")); mode != "" {
+		switch mode {
+		case pushModeAuto, pushModeOn, pushModeOff:
+			cfg.PushMode = mode
+		}
+	}
+
+	if cooldown := strings.TrimSpace(os.Getenv("DELIGHT_PUSH_COOLDOWN_SEC")); cooldown != "" {
+		if parsed, err := strconv.Atoi(cooldown); err == nil && parsed > 0 {
+			cfg.PushCooldown = time.Duration(parsed) * time.Second
+		}
+	}
+
+	if events := strings.TrimSpace(os.Getenv("DELIGHT_PUSH_EVENTS")); events != "" {
+		applyPushEvents(cfg, events)
+	}
+}
+
+// applyPushEvents enables push alerts based on a comma-separated list.
+func applyPushEvents(cfg *Config, events string) {
+	cfg.PushNotifyTurnComplete = false
+	cfg.PushNotifyAttention = false
+
+	for _, raw := range strings.Split(events, ",") {
+		switch strings.TrimSpace(raw) {
+		case "turn-complete":
+			cfg.PushNotifyTurnComplete = true
+		case "attention":
+			cfg.PushNotifyAttention = true
 		}
 	}
 }

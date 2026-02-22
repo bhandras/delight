@@ -58,6 +58,7 @@ type Manager struct {
 	stopCh  chan struct{}
 
 	pushover *notify.PushoverNotifier
+	push     *notify.PushNotifier
 
 	// Pending permission requests (for remote mode)
 	// pendingPermissions was previously used to coordinate synchronous tool

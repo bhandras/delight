@@ -295,6 +295,7 @@ func (m *Manager) initSessionActor() {
 		WithEncryptFn(m.encrypt)
 
 	m.ensurePushoverNotifier()
+	m.ensurePushNotifier()
 
 	hooks := framework.Hooks[sessionactor.State]{
 		OnInput: func(input framework.Input) {

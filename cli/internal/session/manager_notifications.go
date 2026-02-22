@@ -18,6 +18,8 @@ const (
 	pushoverAlertAttention = "attention"
 	// pushoverNotifyTimeout bounds the total time spent on a notification send.
 	pushoverNotifyTimeout = 5 * time.Second
+	// pushNotifyTimeout bounds the total time spent on an encrypted push send.
+	pushNotifyTimeout = 5 * time.Second
 )
 
 // notificationContext captures common notification fields derived from session metadata.
@@ -51,20 +53,62 @@ func (m *Manager) ensurePushoverNotifier() {
 	m.pushover = notifier
 }
 
+// ensurePushNotifier initializes encrypted mobile push notifications if enabled.
+func (m *Manager) ensurePushNotifier() {
+	if m.push != nil || m.cfg == nil {
+		return
+	}
+	if !m.cfg.PushEnabled() {
+		return
+	}
+
+	notifier, err := notify.NewPushNotifier(notify.PushConfig{
+		ServerURL: m.cfg.ServerURL,
+		TokenProvider: func() string {
+			return m.token
+		},
+		MasterSecret: m.masterSecret,
+		Cooldown:     m.cfg.PushCooldown,
+	})
+	if err != nil {
+		if m.debug {
+			logger.Warnf("Push notifier disabled: %v", err)
+		}
+		return
+	}
+	m.push = notifier
+}
+
 // notifyTurnComplete emits a Pushover notification for a completed turn.
 func (m *Manager) notifyTurnComplete() {
-	if !m.isPushoverTurnCompleteEnabled() {
+	if !m.isPushoverTurnCompleteEnabled() && !m.isPushTurnCompleteEnabled() {
 		return
 	}
 	ctx := m.buildNotificationContext()
 	title := "Delight: Turn finished"
 	message := fmt.Sprintf("Agent %s on %s finished a turn in %s.", ctx.agent, ctx.host, ctx.path)
-	m.sendPushover(pushoverAlertTurnComplete, title, message)
+	if m.isPushoverTurnCompleteEnabled() {
+		m.sendPushover(pushoverAlertTurnComplete, title, message)
+	}
+	if m.isPushTurnCompleteEnabled() {
+		m.sendPush(notify.PushMessage{
+			AlertKey:   pushoverAlertTurnComplete,
+			Event:      pushoverAlertTurnComplete,
+			Agent:      ctx.agent,
+			Host:       ctx.host,
+			Path:       ctx.path,
+			Label:      "Turn complete",
+			SessionID:  m.sessionID,
+			SessionTag: m.sessionTag,
+			TerminalID: m.terminalID,
+			Timestamp:  time.Now().UnixMilli(),
+		})
+	}
 }
 
 // notifyAttention emits a Pushover notification for a permission request.
 func (m *Manager) notifyAttention(requestID string, req types.AgentPendingRequest) {
-	if !m.isPushoverAttentionEnabled() {
+	if !m.isPushoverAttentionEnabled() && !m.isPushAttentionEnabled() {
 		return
 	}
 	ctx := m.buildNotificationContext()
@@ -75,7 +119,24 @@ func (m *Manager) notifyAttention(requestID string, req types.AgentPendingReques
 		message = fmt.Sprintf("Agent %s on %s needs attention for %s in %s.", ctx.agent, ctx.host, toolName, ctx.path)
 	}
 	alertKey := fmt.Sprintf("%s:%s", pushoverAlertAttention, requestID)
-	m.sendPushover(alertKey, title, message)
+	if m.isPushoverAttentionEnabled() {
+		m.sendPushover(alertKey, title, message)
+	}
+	if m.isPushAttentionEnabled() {
+		m.sendPush(notify.PushMessage{
+			AlertKey:   alertKey,
+			Event:      pushoverAlertAttention,
+			Agent:      ctx.agent,
+			Host:       ctx.host,
+			Path:       ctx.path,
+			Label:      "Needs attention",
+			SessionID:  m.sessionID,
+			SessionTag: m.sessionTag,
+			TerminalID: m.terminalID,
+			ToolName:   toolName,
+			Timestamp:  time.Now().UnixMilli(),
+		})
+	}
 }
 
 // isPushoverTurnCompleteEnabled reports if turn-complete notifications are active.
@@ -86,6 +147,16 @@ func (m *Manager) isPushoverTurnCompleteEnabled() bool {
 // isPushoverAttentionEnabled reports if attention notifications are active.
 func (m *Manager) isPushoverAttentionEnabled() bool {
 	return m.pushover != nil && m.cfg != nil && m.cfg.PushoverNotifyAttention
+}
+
+// isPushTurnCompleteEnabled reports if turn-complete push notifications are active.
+func (m *Manager) isPushTurnCompleteEnabled() bool {
+	return m.push != nil && m.cfg != nil && m.cfg.PushNotifyTurnComplete
+}
+
+// isPushAttentionEnabled reports if attention push notifications are active.
+func (m *Manager) isPushAttentionEnabled() bool {
+	return m.push != nil && m.cfg != nil && m.cfg.PushNotifyAttention
 }
 
 // sendPushover sends a notification, honoring cooldown policies.
@@ -103,6 +174,19 @@ func (m *Manager) sendPushover(alertKey string, title string, message string) {
 	})
 	if err != nil && m.debug {
 		logger.Warnf("Pushover notification failed: %v", err)
+	}
+}
+
+// sendPush sends an encrypted push notification, honoring cooldown policies.
+func (m *Manager) sendPush(message notify.PushMessage) {
+	if m.push == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pushNotifyTimeout)
+	defer cancel()
+
+	if err := m.push.Notify(ctx, message); err != nil && m.debug {
+		logger.Warnf("Push notification failed: %v", err)
 	}
 }
 
