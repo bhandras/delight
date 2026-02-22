@@ -22,6 +22,7 @@ ASC_API_KEY_PATH ?=
 ASC_APPLE_ID ?=
 ASC_PUBLIC_ID ?=
 ASC_OUTPUT_FORMAT ?= normal
+SERVER_DOCKER_IMAGE ?= delight-server:local
 
 .PHONY: ios-sdk ios-build ios-sim-boot ios-install ios-run ios-release-archive ios-export-ipa ios-testflight-upload
 CLI_TEST_PKGS ?= ./...
@@ -200,6 +201,11 @@ lint:
 	(cd shared && GOCACHE="$(BUNDLED_GOCACHE)" GOMODCACHE="$(BUNDLED_GOMODCACHE)" GOLANGCI_LINT_CACHE="$(BUNDLED_GOLANGCI_CACHE)" golangci-lint run ./...)
 	(cd cli && GOCACHE="$(BUNDLED_GOCACHE)" GOMODCACHE="$(BUNDLED_GOMODCACHE)" GOLANGCI_LINT_CACHE="$(BUNDLED_GOLANGCI_CACHE)" golangci-lint run ./...)
 	(cd server && GOCACHE="$(BUNDLED_GOCACHE)" GOMODCACHE="$(BUNDLED_GOMODCACHE)" GOLANGCI_LINT_CACHE="$(BUNDLED_GOLANGCI_CACHE)" golangci-lint run ./...)
+
+.PHONY: docker-build
+
+docker-build:
+	docker build -f server/Dockerfile -t "$(SERVER_DOCKER_IMAGE)" .
 
 .PHONY: cli server webclient
 
