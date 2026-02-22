@@ -15,6 +15,7 @@ import (
 	"github.com/bhandras/delight/server/internal/database"
 	"github.com/bhandras/delight/server/internal/database/migrations"
 	"github.com/bhandras/delight/server/internal/debug"
+	"github.com/bhandras/delight/server/internal/push"
 	"github.com/bhandras/delight/server/internal/websocket"
 	"github.com/bhandras/delight/shared/logger"
 	"github.com/gin-contrib/cors"
@@ -213,6 +214,7 @@ func main() {
 	kvHandler := handlers.NewKVHandler(db.DB, socketIOServer)
 	artifactHandler := handlers.NewArtifactHandler(db.DB, socketIOServer)
 	feedHandler := handlers.NewFeedHandler(db.DB)
+	pushHandler := handlers.NewPushHandler(db.DB, newPushSender(cfg))
 
 	// Public routes (no auth required)
 	v1 := router.Group("/v1")
@@ -269,9 +271,8 @@ func main() {
 		protected.POST("/artifacts", artifactHandler.CreateArtifact)
 		protected.POST("/artifacts/:id", artifactHandler.UpdateArtifact)
 		protected.DELETE("/artifacts/:id", artifactHandler.DeleteArtifact)
-		protected.POST("/push-tokens", func(c *gin.Context) {
-			c.JSON(200, gin.H{"success": true})
-		})
+		protected.POST("/push-tokens", pushHandler.RegisterPushToken)
+		protected.POST("/push-notifications", pushHandler.SendPushNotification)
 
 		// KV store
 		protected.GET("/kv", kvHandler.ListKV)
@@ -303,5 +304,27 @@ func main() {
 	if err := runServer(router, cfg); err != nil {
 		logger.Errorf("Failed to start server: %v", err)
 		os.Exit(1)
+	}
+}
+
+// newPushSender constructs a push sender when configured, otherwise returns nil.
+func newPushSender(cfg *config.Config) push.Sender {
+	if cfg == nil || cfg.Push == nil {
+		return nil
+	}
+	switch cfg.Push.Backend {
+	case "gorush":
+		sender, err := push.NewGorushSender(push.GorushConfig{
+			URL:   cfg.Push.GorushURL,
+			Topic: cfg.Push.Topic,
+		})
+		if err != nil {
+			logger.Warnf("Push backend disabled: %v", err)
+			return nil
+		}
+		return sender
+	default:
+		logger.Warnf("Push backend disabled: unsupported backend %q", cfg.Push.Backend)
+		return nil
 	}
 }
