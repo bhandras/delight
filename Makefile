@@ -16,6 +16,9 @@ IOS_ARCHIVE_PATH ?= $(DERIVED_DATA)/archive/$(IOS_SCHEME).xcarchive
 IOS_EXPORT_PATH ?= $(DERIVED_DATA)/export
 IOS_EXPORT_OPTIONS_PLIST ?= $(DERIVED_DATA)/ExportOptions.plist
 IOS_EXPORT_METHOD ?= app-store-connect
+IOS_EXPORT_SIGNING_STYLE ?= automatic
+IOS_PROFILE_NAME ?=
+IOS_SIGNING_CERT ?= Apple Distribution
 ASC_API_KEY_ID ?=
 ASC_API_ISSUER_ID ?=
 ASC_API_KEY_PATH ?=
@@ -81,25 +84,72 @@ ios-release-archive: ios-sdk
 		archive
 
 ios-export-ipa: ios-release-archive
-	@mkdir -p "$(DERIVED_DATA)"
-	@printf '%s\n' \
-		'<?xml version="1.0" encoding="UTF-8"?>' \
-		'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-		'<plist version="1.0">' \
-		'<dict>' \
-		'    <key>destination</key>' \
-		'    <string>export</string>' \
-		'    <key>method</key>' \
-		'    <string>$(IOS_EXPORT_METHOD)</string>' \
-		'    <key>signingStyle</key>' \
-		'    <string>automatic</string>' \
-		'    <key>stripSwiftSymbols</key>' \
-		'    <true/>' \
-		'    <key>manageAppVersionAndBuildNumber</key>' \
-		'    <false/>' \
-		'</dict>' \
-		'</plist>' \
-		> "$(IOS_EXPORT_OPTIONS_PLIST)"
+	@set -euo pipefail; \
+	archive_info_plist="$(IOS_ARCHIVE_PATH)/Info.plist"; \
+	if [[ ! -f "$$archive_info_plist" ]]; then \
+		echo "error: archive metadata not found at $$archive_info_plist"; \
+		exit 1; \
+	fi; \
+	bundle_id="$$(/usr/libexec/PlistBuddy -c "Print :ApplicationProperties:CFBundleIdentifier" "$$archive_info_plist" 2>/dev/null || true)"; \
+	if [[ -z "$$bundle_id" ]]; then \
+		echo "error: failed to read archive bundle id from $$archive_info_plist"; \
+		exit 1; \
+	fi; \
+	mkdir -p "$(DERIVED_DATA)"; \
+	signing_style="$(IOS_EXPORT_SIGNING_STYLE)"; \
+	if [[ -n "$(IOS_PROFILE_NAME)" ]]; then \
+		signing_style="manual"; \
+	fi; \
+	if [[ "$$signing_style" == "manual" ]]; then \
+		if [[ -z "$(IOS_PROFILE_NAME)" ]]; then \
+			echo "error: IOS_PROFILE_NAME is required when IOS_EXPORT_SIGNING_STYLE=manual."; \
+			exit 1; \
+		fi; \
+		printf '%s\n' \
+			'<?xml version="1.0" encoding="UTF-8"?>' \
+			'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+			'<plist version="1.0">' \
+			'<dict>' \
+			'    <key>destination</key>' \
+			'    <string>export</string>' \
+			'    <key>method</key>' \
+			'    <string>$(IOS_EXPORT_METHOD)</string>' \
+			'    <key>signingStyle</key>' \
+			'    <string>manual</string>' \
+			'    <key>signingCertificate</key>' \
+			'    <string>$(IOS_SIGNING_CERT)</string>' \
+			'    <key>provisioningProfiles</key>' \
+			'    <dict>' \
+			"        <key>$$bundle_id</key>" \
+			'        <string>$(IOS_PROFILE_NAME)</string>' \
+			'    </dict>' \
+			'    <key>stripSwiftSymbols</key>' \
+			'    <true/>' \
+			'    <key>manageAppVersionAndBuildNumber</key>' \
+			'    <false/>' \
+			'</dict>' \
+			'</plist>' \
+			> "$(IOS_EXPORT_OPTIONS_PLIST)"; \
+	else \
+		printf '%s\n' \
+			'<?xml version="1.0" encoding="UTF-8"?>' \
+			'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+			'<plist version="1.0">' \
+			'<dict>' \
+			'    <key>destination</key>' \
+			'    <string>export</string>' \
+			'    <key>method</key>' \
+			'    <string>$(IOS_EXPORT_METHOD)</string>' \
+			'    <key>signingStyle</key>' \
+			'    <string>automatic</string>' \
+			'    <key>stripSwiftSymbols</key>' \
+			'    <true/>' \
+			'    <key>manageAppVersionAndBuildNumber</key>' \
+			'    <false/>' \
+			'</dict>' \
+			'</plist>' \
+			> "$(IOS_EXPORT_OPTIONS_PLIST)"; \
+	fi
 	rm -rf "$(IOS_EXPORT_PATH)"
 	xcodebuild \
 		-exportArchive \

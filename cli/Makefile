@@ -21,9 +21,9 @@ test:
 clean:
 	rm -f delight
 
-# Install to ~/go/bin
-install: build
-	cp delight ~/go/bin/
+# Install to GOBIN (or GOPATH/bin when GOBIN is unset)
+install:
+	go install $(LDFLAGS) ./cmd/delight
 
 # Format code
 fmt:
@@ -40,4 +40,4 @@ help:
 	@echo "  make run     - Build and run"
 	@echo "  make test    - Run tests"
 	@echo "  make clean   - Remove build artifacts"
-	@echo "  make install - Install to ~/go/bin"
+	@echo "  make install - Install to GOBIN or GOPATH/bin"
