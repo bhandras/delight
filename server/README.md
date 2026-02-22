@@ -77,6 +77,16 @@ ${EDITOR:-vi} ./deploy-data/.env
 ./deploy/delight-server.sh up
 ```
 
+If you already run Caddy on the host and want to disable the bundled Caddy
+container, use:
+
+```bash
+./deploy/delight-server.sh up --no-caddy
+```
+
+When Caddy is disabled, the compose override publishes `3005` so your host
+proxy can forward traffic to `http://localhost:3005`.
+
 Data on the host filesystem:
 
 - Server DB: `./deploy-data/server/delight.db`

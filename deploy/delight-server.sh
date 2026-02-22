@@ -7,7 +7,7 @@ Delight public server helper (Docker Compose + Caddy HTTPS)
 
 Usage:
   deploy/delight-server.sh init [--data-dir DIR]
-  deploy/delight-server.sh up   [--data-dir DIR]
+  deploy/delight-server.sh up   [--data-dir DIR] [--no-caddy]
   deploy/delight-server.sh down [--data-dir DIR]
   deploy/delight-server.sh logs [--data-dir DIR] [--service NAME]
   deploy/delight-server.sh ps   [--data-dir DIR]
@@ -24,6 +24,7 @@ Defaults:
 Examples:
   deploy/delight-server.sh init
   deploy/delight-server.sh up
+  deploy/delight-server.sh up --no-caddy
   deploy/delight-server.sh logs --service caddy
 EOF
 }
@@ -31,11 +32,16 @@ EOF
 cmd=""
 data_dir="./deploy-data"
 service=""
+use_caddy=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     init|up|down|logs|ps)
       cmd="$1"
+      shift
+      ;;
+    --no-caddy)
+      use_caddy=0
       shift
       ;;
     --data-dir)
@@ -68,6 +74,7 @@ repo_root="$(cd "${script_dir}/.." && pwd)"
 cd "$repo_root"
 
 compose_file="deploy/docker-compose.yml"
+compose_overrides=()
 
 if [[ "$data_dir" != /* ]]; then
   data_dir="${repo_root}/${data_dir}"
@@ -138,19 +145,31 @@ export DELIGHT_DATA_DIR="$data_dir"
 
 case "$cmd" in
   up)
-    docker compose --env-file "$env_file" -f "$compose_file" up -d --build
+    if [[ "$use_caddy" -eq 0 ]]; then
+      compose_overrides+=("-f" "deploy/docker-compose.nocaddy.yml")
+    fi
+    docker compose --env-file "$env_file" -f "$compose_file" "${compose_overrides[@]}" up -d --build
     ;;
   down)
-    docker compose --env-file "$env_file" -f "$compose_file" down
+    if [[ "$use_caddy" -eq 0 ]]; then
+      compose_overrides+=("-f" "deploy/docker-compose.nocaddy.yml")
+    fi
+    docker compose --env-file "$env_file" -f "$compose_file" "${compose_overrides[@]}" down
     ;;
   ps)
-    docker compose --env-file "$env_file" -f "$compose_file" ps
+    if [[ "$use_caddy" -eq 0 ]]; then
+      compose_overrides+=("-f" "deploy/docker-compose.nocaddy.yml")
+    fi
+    docker compose --env-file "$env_file" -f "$compose_file" "${compose_overrides[@]}" ps
     ;;
   logs)
+    if [[ "$use_caddy" -eq 0 ]]; then
+      compose_overrides+=("-f" "deploy/docker-compose.nocaddy.yml")
+    fi
     if [[ -n "$service" ]]; then
-      docker compose --env-file "$env_file" -f "$compose_file" logs -f "$service"
+      docker compose --env-file "$env_file" -f "$compose_file" "${compose_overrides[@]}" logs -f "$service"
     else
-      docker compose --env-file "$env_file" -f "$compose_file" logs -f
+      docker compose --env-file "$env_file" -f "$compose_file" "${compose_overrides[@]}" logs -f
     fi
     ;;
   *)

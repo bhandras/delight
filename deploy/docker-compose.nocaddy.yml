@@ -1,0 +1,8 @@
+services:
+  server:
+    ports:
+      - "3005:3005"
+
+  gorush:
+    ports:
+      - "8088:8088"
