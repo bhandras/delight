@@ -104,6 +104,23 @@ You can also control notifications with a CLI flag:
 ./delight run --pushover=off    # disable
 ```
 
+## Encrypted Mobile Push (APNs via gorush)
+
+Delight also supports encrypted push notifications delivered to the iOS app:
+
+- The **CLI** encrypts notification metadata (label/agent/host/path/event).
+- The **server** stores device tokens and forwards ciphertext to a local
+  `gorush` sidecar.
+- The **iOS app** decrypts payloads locally with the master key.
+
+This keeps push content unreadable to both the server and the push gateway.
+
+Configure the server deployment with:
+
+- `DELIGHT_PUSH_BACKEND=gorush`
+- `DELIGHT_GORUSH_URL=http://gorush:8088/api/push`
+- `DELIGHT_PUSH_TOPIC=<your ios bundle id>`
+
 ## Public Hosting (HTTPS)
 
 For public hosting, use the included Caddy + Docker Compose deployment. Caddy

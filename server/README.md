@@ -12,7 +12,7 @@ The original Delight server is abandoned and closed-source hosted. This is a
 clean-room implementation in Go that:
 
 - ✅ **100% Privacy** - You control the server, all data is end-to-end encrypted
-- ✅ **Single Binary** - No Node.js, no external dependencies, just Go + SQLite
+- ✅ **Single Binary Core** - Go + SQLite server, optional gorush sidecar
 - ✅ **Minimal & Auditable** - Core features only, easy to verify security
 - ✅ **iOS App Compatible** - Works with the existing Delight iOS app
 
@@ -22,6 +22,7 @@ clean-room implementation in Go that:
 - 🔑 **QR Code Auth** - Secure CLI → Mobile pairing via X25519 encryption
 - 💬 **Real-time Sync** - WebSocket-based session and message synchronization
 - 🔒 **End-to-End Encryption** - Box handshake + AES-256-GCM session payloads
+- 🔔 **Encrypted Push Relay** - Forwards ciphertext to gorush/APNs
 - 📱 **Multi-device** - Seamless sync between CLI, mobile, and daemon
 - 🚀 **Self-hosted** - Single binary + SQLite database
 
@@ -82,6 +83,7 @@ Data on the host filesystem:
 - Server logs: `./deploy-data/server/server.log`
 - Caddy access log: `./deploy-data/caddy/data/access.log`
 - Caddy TLS state/certs: `./deploy-data/caddy/`
+- gorush config/key: `./deploy-data/gorush/`
 
 ## HTTPS (Optional)
 
@@ -105,6 +107,9 @@ Environment variables:
 - `PORT` - HTTP server port (default: 3005)
 - `DELIGHT_MASTER_SECRET` - Master secret for token signing (required)
 - `DATABASE_PATH` - SQLite database path (default: ./delight.db)
+- `DELIGHT_PUSH_BACKEND` - Push backend (optional, `gorush` supported)
+- `DELIGHT_GORUSH_URL` - gorush endpoint (default: `http://gorush:8088/api/push`)
+- `DELIGHT_PUSH_TOPIC` - APNs topic / iOS bundle id (required when push enabled)
 
 Command-line flags (override env defaults):
 
@@ -143,6 +148,7 @@ internal/
 - Authentication uses Ed25519 signatures (no passwords)
 - Session keys never leave your devices unencrypted
 - Master secret is used only for JWT signing
+- Push payloads are encrypted by the CLI and decrypted on device
 
 ## Development
 

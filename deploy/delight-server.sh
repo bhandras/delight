@@ -16,6 +16,7 @@ Environment (.env file under the data dir):
   DELIGHT_HOSTNAME       Public hostname (required), e.g. api.example.com
   DELIGHT_MASTER_SECRET  Server master secret (required)
   DELIGHT_EMAIL          Optional email for ACME registration
+  DELIGHT_PUSH_TOPIC     iOS app bundle id for APNs (required for push)
 
 Defaults:
   --data-dir defaults to ./deploy-data (relative to repo root)
@@ -74,7 +75,7 @@ fi
 
 env_file="${data_dir}/.env"
 
-mkdir -p "${data_dir}/server" "${data_dir}/caddy/data" "${data_dir}/caddy/config"
+mkdir -p "${data_dir}/server" "${data_dir}/caddy/data" "${data_dir}/caddy/config" "${data_dir}/gorush"
 
 if [[ "$cmd" == "init" ]]; then
   if [[ -f "$env_file" ]]; then
@@ -91,9 +92,38 @@ DELIGHT_MASTER_SECRET=change-me
 
 # Optional email for ACME account registration.
 DELIGHT_EMAIL=
+
+# Push backend settings.
+DELIGHT_PUSH_BACKEND=gorush
+DELIGHT_GORUSH_URL=http://gorush:8088/api/push
+DELIGHT_PUSH_TOPIC=com.example.delight
 EOF
 
+  gorush_config="${data_dir}/gorush/config.yml"
+  if [[ ! -f "$gorush_config" ]]; then
+    cat >"$gorush_config" <<'EOF'
+core:
+  enabled: true
+  port: "8088"
+  mode: "release"
+  sync: true
+
+api:
+  push_uri: "/api/push"
+
+ios:
+  enabled: true
+  key_path: "/data/apns.p8"
+  key_type: "p8"
+  key_id: "CHANGE_ME"
+  team_id: "CHANGE_ME"
+  production: false
+EOF
+  fi
+
   echo "Wrote ${env_file}"
+  echo "Wrote ${gorush_config}"
+  echo "Place your APNs key at: ${data_dir}/gorush/apns.p8"
   echo "Edit it, then run: ./deploy/delight-server.sh up"
   exit 0
 fi
@@ -129,4 +159,3 @@ case "$cmd" in
     exit 2
     ;;
 esac
-
