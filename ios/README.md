@@ -46,6 +46,8 @@ Select a simulator or device, then Run.
 Notes:
 - The SDK expects base64 master key (32 bytes).
 - The QR URL should look like `delight://terminal?<base64url-public-key>`.
+- APNs push notifications require a real iOS device and valid push signing.
+- The app registers APNs tokens to `POST /v1/push-tokens` when authenticated.
 
 ## Related Docs
 
