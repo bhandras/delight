@@ -376,16 +376,36 @@ struct SessionSummary: Identifiable {
 
     /// updatingActivity returns a copy updated with activity flags.
     func updatingActivity(active: Bool?, working: Bool?, activeAt: Int64?) -> SessionSummary {
+        let nextOnline = active ?? self.active
+        let nextWorking = (nextOnline ? (working ?? self.uiState?.working ?? false) : false)
         let nextUIState: SessionUIState? = {
-            guard let uiState else { return nil }
-            guard let working else { return uiState }
+            if let uiState {
+                let nextMode = nextOnline ? uiState.mode : ""
+                if active == nil && working == nil {
+                    return uiState
+                }
+                return SessionUIState(
+                    connected: uiState.connected,
+                    online: nextOnline,
+                    working: nextWorking,
+                    mode: nextMode,
+                    switching: uiState.switching,
+                    transition: uiState.transition
+                )
+            }
+
+            // Fallback for older payloads that do not include SDK-derived `ui`.
+            // This keeps busy/online dots responsive from activity updates.
+            guard active != nil || working != nil else { return nil }
+            let controlledByUser = agentState?.controlledByUser ?? true
+            let mode = nextOnline ? (controlledByUser ? "local" : "remote") : ""
             return SessionUIState(
-                connected: uiState.connected,
-                online: uiState.online,
-                working: working,
-                mode: uiState.mode,
-                switching: uiState.switching,
-                transition: uiState.transition
+                connected: true,
+                online: nextOnline,
+                working: nextWorking,
+                mode: mode,
+                switching: false,
+                transition: ""
             )
         }()
 
@@ -393,7 +413,7 @@ struct SessionSummary: Identifiable {
             id: id,
             terminalID: terminalID,
             updatedAt: updatedAt,
-            active: active ?? self.active,
+            active: nextOnline,
             activeAt: activeAt ?? self.activeAt,
             title: title,
             subtitle: subtitle,

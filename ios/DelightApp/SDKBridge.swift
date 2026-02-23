@@ -4069,12 +4069,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
 	    func parseSessions(_ json: String) {
-	        struct SessionsResponse: Decodable {
+        struct SessionsResponse: Decodable {
             struct Session: Decodable {
                 let id: String
                 let updatedAt: FlexibleInt64
                 let active: Bool
                 let activeAt: FlexibleInt64?
+                let working: Bool?
                 let lastMessageAt: FlexibleInt64?
                 let lastTurnCompletedAt: FlexibleInt64?
                 let metadata: String?
@@ -4119,6 +4120,11 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 let metadata = SessionMetadata.fromJSON(session.metadata)
                 let agentState = SessionAgentState.fromJSON(session.agentState)
                 let uiState = uiByID[session.id]
+                    ?? fallbackSessionUIState(
+                        active: session.active,
+                        working: session.working ?? false,
+                        agentState: agentState
+                    )
                 let terminalID = session.terminalId ?? metadata?.terminalId
                 let title = metadata?.agent
                     ?? metadata?.summaryText
@@ -4197,6 +4203,26 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 self.selectedMetadata = current.metadata
             }
         }
+    }
+
+    /// fallbackSessionUIState synthesizes a minimal UI state from server fields
+    /// when SDK-derived `ui` is missing (for example during mixed-version rollouts).
+    private func fallbackSessionUIState(active: Bool, working: Bool, agentState: SessionAgentState?) -> SessionUIState {
+        let online = active
+        let mode: String
+        if online {
+            mode = (agentState?.controlledByUser ?? true) ? "local" : "remote"
+        } else {
+            mode = ""
+        }
+        return SessionUIState(
+            connected: true,
+            online: online,
+            working: online ? working : false,
+            mode: mode,
+            switching: false,
+            transition: ""
+        )
     }
 
     func parseTerminals(_ json: String) {
