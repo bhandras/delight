@@ -5,10 +5,18 @@
 [![iOS Tests](https://github.com/bhandras/delight/actions/workflows/ios-tests.yml/badge.svg?branch=main)](https://github.com/bhandras/delight/actions/workflows/ios-tests.yml)
 [![License](https://img.shields.io/github/license/bhandras/delight?style=flat)](LICENSE)
 
-Delight is a small stack for running agent sessions on your computer and
-viewing/controlling them from an iOS app.
+Delight is an end-to-end solution for running agents on remote machines and
+viewing/controlling those sessions from an iOS app.
+
+It is designed from the ground up to be private: session content and sensitive
+session metadata are end-to-end encrypted on devices, and the server only
+stores/relays ciphertext (it cannot read your session data).
 
 Delight is experimental and intended primarily for personal use.
+
+<p align="center">
+  <img src="screenshot.png" alt="Delight iOS app screenshot" />
+</p>
 
 At a high level:
 
