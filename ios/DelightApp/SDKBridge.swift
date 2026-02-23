@@ -500,6 +500,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var isLoadingHistory: Bool = false
     @Published var scrollRequest: ScrollRequest?
     @Published var usageBySessionID: [String: UsageSnapshot] = [:]
+    @Published var lastMessageAtBySessionID: [String: Int64] = [:]
+    @Published var lastTurnCompletedAtBySessionID: [String: Int64] = [:]
     @Published var terminals: [TerminalInfo] = []
     @Published var logServerURL: String = ""
     @Published var logServerRunning: Bool = false
@@ -1220,6 +1222,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         selectedMetadata = nil
         messages = []
         sessions = []
+        lastMessageAtBySessionID = [:]
+        lastTurnCompletedAtBySessionID = [:]
         terminals = []
         scheduledPairingDiscoveryRefresh?.cancel()
         scheduledPairingDiscoveryRefresh = nil
@@ -2876,6 +2880,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let serverItem = MessageItem(id: id, seq: seq, localID: localID, uuid: uuid, role: role, blocks: blocks, createdAt: createdAt)
 
         DispatchQueue.main.async {
+            self.recordSessionMessageActivity(sessionID: sessionID, createdAt: createdAt)
+
             // Deduplicate if we already have this message.
             if self.messages.contains(where: { $0.id == serverItem.id }) {
                 return
@@ -3967,15 +3973,17 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
 	    func parseSessions(_ json: String) {
 	        struct SessionsResponse: Decodable {
-	            struct Session: Decodable {
-	                let id: String
-	                let updatedAt: FlexibleInt64
-	                let active: Bool
-	                let activeAt: FlexibleInt64?
-	                let metadata: String?
-	                let agentState: String?
-	                let terminalId: String?
-	            }
+            struct Session: Decodable {
+                let id: String
+                let updatedAt: FlexibleInt64
+                let active: Bool
+                let activeAt: FlexibleInt64?
+                let lastMessageAt: FlexibleInt64?
+                let lastTurnCompletedAt: FlexibleInt64?
+                let metadata: String?
+                let agentState: String?
+                let terminalId: String?
+            }
 	            let sessions: [Session]
 	        }
         struct SessionsUIResponse: Decodable {
@@ -4003,29 +4011,52 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }()
 
         DispatchQueue.main.async { [self] in
-	            let parsedSessions: [SessionSummary] = decoded.sessions.map { session in
-	                let metadata = SessionMetadata.fromJSON(session.metadata)
-	                let agentState = SessionAgentState.fromJSON(session.agentState)
-	                let uiState = uiByID[session.id]
-	                let terminalID = session.terminalId ?? metadata?.terminalId
-	                let title = metadata?.agent
-	                    ?? metadata?.summaryText
-	                    ?? terminalID
-	                return SessionSummary(
-	                    id: session.id,
-	                    terminalID: terminalID,
-	                    updatedAt: session.updatedAt.value,
-	                    active: session.active,
-	                    activeAt: session.activeAt?.value,
-	                    title: title,
-	                    subtitle: metadata?.host
-	                        ?? terminalID,
-	                    metadata: metadata,
-	                    agentState: agentState,
-	                    uiState: uiState
-	                )
-	            }
-	            self.sessions = parsedSessions
+            var parsedSessions: [SessionSummary] = []
+            parsedSessions.reserveCapacity(decoded.sessions.count)
+            let previousMessageAtByID = self.lastMessageAtBySessionID
+            var messageAtByID: [String: Int64] = [:]
+            messageAtByID.reserveCapacity(decoded.sessions.count)
+            var completedAtByID: [String: Int64] = [:]
+            completedAtByID.reserveCapacity(decoded.sessions.count)
+            for session in decoded.sessions {
+                let metadata = SessionMetadata.fromJSON(session.metadata)
+                let agentState = SessionAgentState.fromJSON(session.agentState)
+                let uiState = uiByID[session.id]
+                let terminalID = session.terminalId ?? metadata?.terminalId
+                let title = metadata?.agent
+                    ?? metadata?.summaryText
+                    ?? terminalID
+                parsedSessions.append(
+                    SessionSummary(
+                        id: session.id,
+                        terminalID: terminalID,
+                        updatedAt: session.updatedAt.value,
+                        active: session.active,
+                        activeAt: session.activeAt?.value,
+                        title: title,
+                        subtitle: metadata?.host
+                            ?? terminalID,
+                        metadata: metadata,
+                        agentState: agentState,
+                        uiState: uiState
+                    )
+                )
+                if let messageAtMs = session.lastMessageAt?.value, messageAtMs > 0 {
+                    messageAtByID[session.id] = messageAtMs
+                }
+                if let previousMessageAtMs = previousMessageAtByID[session.id], previousMessageAtMs > 0 {
+                    let currentMessageAtMs = messageAtByID[session.id] ?? 0
+                    if previousMessageAtMs > currentMessageAtMs {
+                        messageAtByID[session.id] = previousMessageAtMs
+                    }
+                }
+                if let completedAtMs = session.lastTurnCompletedAt?.value, completedAtMs > 0 {
+                    completedAtByID[session.id] = completedAtMs
+                }
+            }
+            self.sessions = parsedSessions
+            self.lastMessageAtBySessionID = messageAtByID
+            self.lastTurnCompletedAtBySessionID = completedAtByID
 
 	            // Hydrate pending permission prompts from durable agent state.
 	            let now = Int64(Date().timeIntervalSince1970 * 1000)
@@ -4150,6 +4181,21 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         applyMessagesResponse(json, reset: true, scrollToBottom: false)
     }
 
+    /// recordSessionMessageActivity stores the most recent persisted message time.
+    ///
+    /// The terminal list uses this map for "Last active" so keepalive polling
+    /// cannot overwrite message-derived activity.
+    private func recordSessionMessageActivity(sessionID: String, createdAt: Int64?) {
+        let normalizedSessionID = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedSessionID.isEmpty, let createdAt, createdAt > 0 else {
+            return
+        }
+        let previous = lastMessageAtBySessionID[normalizedSessionID] ?? 0
+        if createdAt > previous {
+            lastMessageAtBySessionID[normalizedSessionID] = createdAt
+        }
+    }
+
     private struct MessagesPage {
         let messages: [MessageItem]
         let hasMore: Bool
@@ -4196,6 +4242,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 self.messages = page.messages
             } else {
                 self.messages = self.mergeMessages(existing: self.messages, incoming: page.messages)
+            }
+            if !self.sessionID.isEmpty {
+                let newestMessageAt = self.messages.compactMap(\.createdAt).max()
+                self.recordSessionMessageActivity(sessionID: self.sessionID, createdAt: newestMessageAt)
             }
 
             self.oldestLoadedSeq = self.messages.compactMap(\.seq).min()

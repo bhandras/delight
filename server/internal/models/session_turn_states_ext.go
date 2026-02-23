@@ -133,3 +133,57 @@ func (q *Queries) SessionWorkingByIDs(ctx context.Context, sessionIDs []string) 
 	}
 	return out, nil
 }
+
+// SessionLastTurnCompletedAtByIDs returns completed turn timestamps by session id.
+//
+// Only sessions with a recorded completed_at_ms value are included in the
+// output map. Sessions without a completed boundary are omitted.
+func (q *Queries) SessionLastTurnCompletedAtByIDs(ctx context.Context, sessionIDs []string) (map[string]int64, error) {
+	out := make(map[string]int64, len(sessionIDs))
+	if q == nil || len(sessionIDs) == 0 {
+		return out, nil
+	}
+
+	ids := make([]string, 0, len(sessionIDs))
+	for _, id := range sessionIDs {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+
+	query := fmt.Sprintf(
+		`SELECT session_id, completed_at_ms FROM session_turn_states WHERE session_id IN (%s) AND completed_at_ms IS NOT NULL`,
+		placeholders,
+	)
+	rows, err := q.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var sessionID string
+		var completedAtMs sql.NullInt64
+		if err := rows.Scan(&sessionID, &completedAtMs); err != nil {
+			return nil, err
+		}
+		if completedAtMs.Valid && completedAtMs.Int64 > 0 {
+			out[sessionID] = completedAtMs.Int64
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return out, nil
+}

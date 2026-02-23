@@ -11,6 +11,8 @@ struct TerminalsView: View {
     var body: some View {
         let isLoggedIn = !model.token.isEmpty
         let terminalsByID = Dictionary(uniqueKeysWithValues: model.terminals.map { ($0.id, $0) })
+        let lastMessageAtBySessionID = model.lastMessageAtBySessionID
+        let lastTurnCompletedAtBySessionID = model.lastTurnCompletedAtBySessionID
         NavigationStack {
             ZStack {
                 Theme.background.ignoresSafeArea()
@@ -48,7 +50,9 @@ struct TerminalsView: View {
                                             } label: {
                                                 TerminalRow(
                                                     session: session,
-                                                    gitStatus: gitStatus(for: session, terminalsByID: terminalsByID)
+                                                    gitStatus: gitStatus(for: session, terminalsByID: terminalsByID),
+                                                    lastMessageAtMs: lastMessageAtBySessionID[session.id],
+                                                    lastTurnCompletedAtMs: lastTurnCompletedAtBySessionID[session.id]
                                                 )
                                             }
                                             .buttonStyle(.plain)
@@ -152,10 +156,17 @@ private struct PairTerminalSheet: View {
 private struct TerminalRow: View {
     let session: SessionSummary
     let gitStatus: TerminalGitStatus?
+    let lastMessageAtMs: Int64?
+    let lastTurnCompletedAtMs: Int64?
 
     var body: some View {
         let status = statusInfo(for: session)
         let agentLabel = terminalAgentLabel(for: session)
+        let lastActive = sessionLastActivityText(
+            for: session,
+            lastMessageAtMs: lastMessageAtMs,
+            lastTurnCompletedAtMs: lastTurnCompletedAtMs
+        )
         HStack(spacing: 12) {
             Circle()
                 .fill(status.dotColor)
@@ -170,6 +181,11 @@ private struct TerminalRow: View {
                     .foregroundColor(Theme.mutedText)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                Text(lastActive)
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 if let gitStatus {
                     TerminalGitStatusLine(status: gitStatus)
                 }
@@ -193,6 +209,7 @@ private struct TerminalNoActiveSessionsRow: View {
     var body: some View {
         let host = terminal.metadata?.host?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let title = host.isEmpty ? "Paired terminal" : host
+        let lastActive = lastActiveText(for: terminal)
 
         HStack(spacing: 12) {
             Circle()
@@ -205,6 +222,11 @@ private struct TerminalNoActiveSessionsRow: View {
                     .truncationMode(.tail)
                 Text("No active terminals")
                     .font(.system(size: 13))
+                    .foregroundColor(Theme.mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(lastActive)
+                    .font(.system(size: 12))
                     .foregroundColor(Theme.mutedText)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -1767,6 +1789,78 @@ private func terminalsListSortKey(for session: SessionSummary) -> (String, Strin
 private func terminalWithoutSessionsSortKey(for terminal: TerminalInfo) -> (String, String) {
     let host = terminal.metadata?.host?.lowercased() ?? ""
     return (host, terminal.id)
+}
+
+/// LastActiveFormat centralizes constants used for relative activity display.
+private enum LastActiveFormat {
+    /// millisecondsPerSecond converts Unix seconds to milliseconds.
+    static let millisecondsPerSecond: Int64 = 1_000
+    /// unixSecondsUpperBound is the highest reasonable Unix-seconds timestamp.
+    static let unixSecondsUpperBound: Int64 = 9_999_999_999
+    /// nowThresholdSeconds controls when we collapse relative strings to "now".
+    static let nowThresholdSeconds: TimeInterval = 5
+}
+
+/// terminalRelativeTimeFormatter localizes relative activity timestamps.
+private let terminalRelativeTimeFormatter: RelativeDateTimeFormatter = {
+    let formatter = RelativeDateTimeFormatter()
+    formatter.unitsStyle = .full
+    return formatter
+}()
+
+/// lastActiveText builds a user-facing activity label for a session row.
+private func sessionLastActivityText(
+    for session: SessionSummary,
+    lastMessageAtMs: Int64?,
+    lastTurnCompletedAtMs: Int64?,
+    now: Date = Date()
+) -> String {
+    // Intentionally avoid `session.updatedAt` / `session.activeAt` here because
+    // keepalive polling can bump those timestamps without a real transcript
+    // event. Only message/turn boundaries should drive "Last active".
+    let messageAt = (lastMessageAtMs ?? 0) > 0 ? lastMessageAtMs : nil
+    let turnAt = (lastTurnCompletedAtMs ?? 0) > 0 ? lastTurnCompletedAtMs : nil
+
+    switch (messageAt, turnAt) {
+    case let (.some(messageAtMs), .some(turnAtMs)):
+        return relativeActivityText(prefix: "Last active", timestamp: max(messageAtMs, turnAtMs), now: now)
+    case let (.some(messageAtMs), .none):
+        return relativeActivityText(prefix: "Last active", timestamp: messageAtMs, now: now)
+    case let (.none, .some(turnAtMs)):
+        return relativeActivityText(prefix: "Last active", timestamp: turnAtMs, now: now)
+    case (.none, .none):
+        return "Last active unknown"
+    }
+}
+
+/// lastActiveText builds a user-facing activity label for a paired-terminal row.
+private func lastActiveText(for terminal: TerminalInfo, now: Date = Date()) -> String {
+    return relativeActivityText(prefix: "Last active", timestamp: terminal.activeAt, now: now)
+}
+
+/// relativeActivityText resolves relative activity copy from a timestamp.
+private func relativeActivityText(prefix: String, timestamp: Int64?, now: Date) -> String {
+    guard let timestamp, let activeDate = dateFromFlexibleUnixTimestamp(timestamp) else {
+        return "\(prefix) unknown"
+    }
+    let deltaSeconds = abs(now.timeIntervalSince(activeDate))
+    if deltaSeconds <= LastActiveFormat.nowThresholdSeconds {
+        return "\(prefix) now"
+    }
+    let relative = terminalRelativeTimeFormatter.localizedString(for: activeDate, relativeTo: now)
+    return "\(prefix) \(relative)"
+}
+
+/// dateFromFlexibleUnixTimestamp supports both seconds and milliseconds inputs.
+private func dateFromFlexibleUnixTimestamp(_ raw: Int64) -> Date? {
+    if raw <= 0 {
+        return nil
+    }
+    if raw <= LastActiveFormat.unixSecondsUpperBound {
+        return Date(timeIntervalSince1970: TimeInterval(raw))
+    }
+    let seconds = Double(raw) / Double(LastActiveFormat.millisecondsPerSecond)
+    return Date(timeIntervalSince1970: seconds)
 }
 
 private func terminalGroupItemSortKey(_ item: TerminalGroupItem) -> (Int, String, String, String) {

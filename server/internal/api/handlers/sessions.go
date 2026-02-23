@@ -41,20 +41,22 @@ func NewSessionHandler(db *sql.DB, updates *websocket.SocketIOServer) *SessionHa
 
 // SessionResponse represents a session in API responses
 type SessionResponse struct {
-	ID                string  `json:"id"`
-	Seq               int64   `json:"seq"`
-	CreatedAt         int64   `json:"createdAt"`
-	UpdatedAt         int64   `json:"updatedAt"`
-	Active            bool    `json:"active"`
-	ActiveAt          int64   `json:"activeAt"`
-	Working           bool    `json:"working"`
-	TerminalID        string  `json:"terminalId"`
-	Metadata          string  `json:"metadata"`
-	MetadataVersion   int64   `json:"metadataVersion"`
-	AgentState        *string `json:"agentState"`
-	AgentStateVersion int64   `json:"agentStateVersion"`
-	DataEncryptionKey *string `json:"dataEncryptionKey"`
-	LastMessage       *string `json:"lastMessage"`
+	ID                  string  `json:"id"`
+	Seq                 int64   `json:"seq"`
+	CreatedAt           int64   `json:"createdAt"`
+	UpdatedAt           int64   `json:"updatedAt"`
+	Active              bool    `json:"active"`
+	ActiveAt            int64   `json:"activeAt"`
+	LastMessageAt       *int64  `json:"lastMessageAt,omitempty"`
+	LastTurnCompletedAt *int64  `json:"lastTurnCompletedAt,omitempty"`
+	Working             bool    `json:"working"`
+	TerminalID          string  `json:"terminalId"`
+	Metadata            string  `json:"metadata"`
+	MetadataVersion     int64   `json:"metadataVersion"`
+	AgentState          *string `json:"agentState"`
+	AgentStateVersion   int64   `json:"agentStateVersion"`
+	DataEncryptionKey   *string `json:"dataEncryptionKey"`
+	LastMessage         *string `json:"lastMessage"`
 }
 
 // CreateSessionRequest represents the request to create a session
@@ -118,6 +120,16 @@ func (h *SessionHandler) ListSessions(c *gin.Context) {
 		logger.Warnf("Failed to load session turn state: %v", err)
 		workingByID = nil
 	}
+	completedAtByID, err := h.queries.SessionLastTurnCompletedAtByIDs(c.Request.Context(), sessionIDs)
+	if err != nil {
+		logger.Warnf("Failed to load session turn completion timestamps: %v", err)
+		completedAtByID = nil
+	}
+	lastMessageAtByID, err := h.queries.SessionLastMessageAtByIDs(c.Request.Context(), sessionIDs)
+	if err != nil {
+		logger.Warnf("Failed to load session last message timestamps: %v", err)
+		lastMessageAtByID = nil
+	}
 	for i, session := range sessions {
 		resp := h.toSessionResponse(session)
 		working := false
@@ -125,6 +137,18 @@ func (h *SessionHandler) ListSessions(c *gin.Context) {
 			working = workingByID[session.ID]
 		}
 		resp.Working = working
+		if lastMessageAtByID != nil {
+			if lastMessageAtMs, ok := lastMessageAtByID[session.ID]; ok {
+				lastMessageAtValue := lastMessageAtMs
+				resp.LastMessageAt = &lastMessageAtValue
+			}
+		}
+		if completedAtByID != nil {
+			if completedAtMs, ok := completedAtByID[session.ID]; ok {
+				completedAtValue := completedAtMs
+				resp.LastTurnCompletedAt = &completedAtValue
+			}
+		}
 		response[i] = resp
 	}
 

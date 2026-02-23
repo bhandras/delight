@@ -708,6 +708,8 @@ func (c *Client) listSessions() (resp string, err error) {
 					"createdAt",
 					"updatedAt",
 					"activeAt",
+					"lastMessageAt",
+					"lastTurnCompletedAt",
 					"metadataVersion",
 					"agentStateVersion",
 				)
