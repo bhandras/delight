@@ -19,6 +19,10 @@ const (
 	pushPayloadVersion = 1
 	// gorushPlatformIOS identifies iOS notifications for gorush.
 	gorushPlatformIOS = 1
+	// fallbackPushTitle is a non-sensitive alert title for visible delivery.
+	fallbackPushTitle = "Delight update"
+	// fallbackPushMessage is a generic alert body for visible delivery.
+	fallbackPushMessage = "Open Delight for details."
 )
 
 // GorushConfig configures the gorush push backend.
@@ -77,6 +81,8 @@ func (s *GorushSender) SendEncrypted(ctx context.Context, deviceTokens []string,
 				Tokens:           tokens,
 				Platform:         gorushPlatformIOS,
 				Topic:            s.topic,
+				Title:            fallbackPushTitle,
+				Message:          fallbackPushMessage,
 				ContentAvailable: true,
 				Priority:         "high",
 				Data: map[string]any{
@@ -153,6 +159,8 @@ type gorushNotification struct {
 	Tokens           []string       `json:"tokens"`
 	Platform         int            `json:"platform"`
 	Topic            string         `json:"topic,omitempty"`
+	Title            string         `json:"title,omitempty"`
+	Message          string         `json:"message,omitempty"`
 	ContentAvailable bool           `json:"content_available"`
 	Priority         string         `json:"priority"`
 	Data             map[string]any `json:"data"`

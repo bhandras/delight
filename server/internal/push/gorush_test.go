@@ -38,6 +38,8 @@ func TestGorushSenderSendEncrypted(t *testing.T) {
 	require.Equal(t, []string{"token-a", "token-b"}, n.Tokens)
 	require.Equal(t, gorushPlatformIOS, n.Platform)
 	require.Equal(t, "com.example.app", n.Topic)
+	require.Equal(t, fallbackPushTitle, n.Title)
+	require.Equal(t, fallbackPushMessage, n.Message)
 	require.True(t, n.ContentAvailable)
 	require.Equal(t, "high", n.Priority)
 	delightRaw, ok := n.Data["delight"]
