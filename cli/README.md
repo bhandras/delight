@@ -72,3 +72,4 @@ make clean    # Clean build artifacts
 - `README.md` - Repo overview
 - `server/README.md` - Server configuration and hosting
 - `ios/README.md` - iOS app build and simulator workflow
+- `docs/PUSH_NOTIFICATIONS.md` - Push architecture and CLI push env controls

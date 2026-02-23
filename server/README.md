@@ -121,6 +121,8 @@ Environment variables:
 - `DELIGHT_GORUSH_URL` - gorush endpoint (default: `http://gorush:8088/api/push`)
 - `DELIGHT_PUSH_TOPIC` - APNs topic / iOS bundle id (required when push enabled)
 
+See `docs/PUSH_NOTIFICATIONS.md` for full APNs/gorush setup and troubleshooting.
+
 Command-line flags (override env defaults):
 
 - `--addr` - Listen address (default `:3005` or `$PORT`)

@@ -36,6 +36,9 @@ This repo contains all three pieces, plus shared protocol/logger libraries.
 - `cli/README.md` - CLI usage, commands, development
 - `server/README.md` - Server configuration, local run, public hosting
 - `ios/README.md` - iOS app build + simulator workflow
+- `docs/PUSH_NOTIFICATIONS.md` - Encrypted APNs/gorush architecture + setup
+- `docs/BUILD_AND_RELEASE.md` - Build targets, signing, TestFlight upload
+- `docs/PROTOCOL_ENCRYPTION.md` - Protocol-level E2E encryption details
 
 ## Quick Start (Local Dev)
 
@@ -120,6 +123,17 @@ Configure the server deployment with:
 - `DELIGHT_PUSH_BACKEND=gorush`
 - `DELIGHT_GORUSH_URL=http://gorush:8088/api/push`
 - `DELIGHT_PUSH_TOPIC=<your ios bundle id>`
+
+For complete setup and troubleshooting, see `docs/PUSH_NOTIFICATIONS.md`.
+
+## Build And Release
+
+The root `Makefile` includes local build/test targets and a full iOS release
+pipeline (`ios-signing-resolve` → `ios-release-archive` → `ios-export-ipa` →
+`ios-testflight-upload`).
+
+For required env vars and TestFlight upload examples, see
+`docs/BUILD_AND_RELEASE.md`.
 
 ## Public Hosting (HTTPS)
 

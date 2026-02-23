@@ -59,6 +59,7 @@ Notes:
   avoid duplicate `CFBundleVersion` upload failures.
 - Override build number explicitly with `IOS_BUILD_NUMBER=<number>`.
 - Disable auto-bump with `IOS_AUTO_BUMP_BUILD=0`.
+- For full release/upload variable docs, see `docs/BUILD_AND_RELEASE.md`.
 
 ## App Flow
 
@@ -71,9 +72,12 @@ Notes:
 - The QR URL should look like `delight://terminal?<base64url-public-key>`.
 - APNs push notifications require a real iOS device and valid push signing.
 - The app registers APNs tokens to `POST /v1/push-tokens` when authenticated.
+- Full push setup docs: `docs/PUSH_NOTIFICATIONS.md`.
 
 ## Related Docs
 
 - `README.md` - Repo overview
 - `cli/README.md` - CLI usage and development
 - `server/README.md` - Server configuration and hosting
+- `docs/BUILD_AND_RELEASE.md` - Build and TestFlight pipeline details
+- `docs/PUSH_NOTIFICATIONS.md` - Encrypted APNs/gorush setup and flow
