@@ -8,10 +8,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/bhandras/delight/shared/logger"
+)
+
+const (
+	// bridgeScriptFileName is the Claude remote bridge script filename.
+	bridgeScriptFileName = "claude_remote_bridge.cjs"
+	// bridgeScriptEnvVar allows callers to force a specific bridge script path.
+	bridgeScriptEnvVar = "DELIGHT_CLAUDE_BRIDGE_SCRIPT"
+	// bridgeSearchMaxParentDirs bounds parent-directory probing for repo layouts.
+	bridgeSearchMaxParentDirs = 8
 )
 
 // RemoteMessage represents a message to/from the bridge script
@@ -148,29 +159,112 @@ func NewRemoteBridge(workDir string, resumeSessionID string, debug bool) (*Remot
 
 // findBridge locates the claude_remote_bridge.cjs script
 func findBridge() (string, error) {
+	if override := strings.TrimSpace(os.Getenv(bridgeScriptEnvVar)); override != "" {
+		if resolved, ok := resolveExistingPath(override); ok {
+			return resolved, nil
+		}
+		return "", fmt.Errorf("%s points to missing file: %s", bridgeScriptEnvVar, override)
+	}
+
 	execPath, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
 	execDir := filepath.Dir(execPath)
 
-	candidates := []string{
-		filepath.Join(execDir, "scripts", "claude_remote_bridge.cjs"),
-		filepath.Join(execDir, "..", "scripts", "claude_remote_bridge.cjs"),
-		filepath.Join("scripts", "claude_remote_bridge.cjs"),
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = ""
 	}
 
-	for _, path := range candidates {
-		if _, err := os.Stat(path); err == nil {
-			absPath, err := filepath.Abs(path)
-			if err != nil {
-				return path, nil
+	sourceDir := ""
+	if _, sourceFile, _, ok := runtime.Caller(0); ok {
+		sourceDir = filepath.Dir(sourceFile)
+	}
+
+	candidates := bridgeScriptCandidates(execDir, cwd, sourceDir)
+	return findFirstExistingBridge(candidates)
+}
+
+// bridgeScriptCandidates builds a de-duplicated, ordered list of bridge script
+// paths for common local dev and installed-binary layouts.
+func bridgeScriptCandidates(execDir string, cwd string, sourceDir string) []string {
+	candidates := make([]string, 0, 32)
+	seen := make(map[string]struct{}, 32)
+
+	addCandidate := func(path string) {
+		trimmed := strings.TrimSpace(path)
+		if trimmed == "" {
+			return
+		}
+		if _, ok := seen[trimmed]; ok {
+			return
+		}
+		seen[trimmed] = struct{}{}
+		candidates = append(candidates, trimmed)
+	}
+	addJoined := func(base string, elems ...string) {
+		if strings.TrimSpace(base) == "" {
+			return
+		}
+		parts := append([]string{base}, elems...)
+		addCandidate(filepath.Join(parts...))
+	}
+	addAncestorCandidates := func(start string) {
+		if strings.TrimSpace(start) == "" {
+			return
+		}
+		dir := start
+		for i := 0; i < bridgeSearchMaxParentDirs; i++ {
+			addJoined(dir, "scripts", bridgeScriptFileName)
+			addJoined(dir, "cli", "scripts", bridgeScriptFileName)
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
 			}
-			return absPath, nil
+			dir = parent
 		}
 	}
 
-	return "", fmt.Errorf("claude_remote_bridge.cjs not found in any of: %v", candidates)
+	// Installed/local binary layouts.
+	addJoined(execDir, "scripts", bridgeScriptFileName)
+	addJoined(execDir, "..", "scripts", bridgeScriptFileName)
+	addJoined(execDir, "..", "cli", "scripts", bridgeScriptFileName)
+
+	// Current working directory layouts.
+	addJoined(cwd, "scripts", bridgeScriptFileName)
+	addJoined(cwd, "cli", "scripts", bridgeScriptFileName)
+
+	// Source-tree fallback (useful for `go install` binaries built from this repo).
+	addJoined(sourceDir, "..", "..", "scripts", bridgeScriptFileName)
+
+	addAncestorCandidates(cwd)
+	addAncestorCandidates(execDir)
+
+	return candidates
+}
+
+// findFirstExistingBridge returns the first existing bridge script path from
+// candidates and normalizes it to an absolute path when possible.
+func findFirstExistingBridge(candidates []string) (string, error) {
+	for _, path := range candidates {
+		if resolved, ok := resolveExistingPath(path); ok {
+			return resolved, nil
+		}
+	}
+	return "", fmt.Errorf("%s not found in any of: %v", bridgeScriptFileName, candidates)
+}
+
+// resolveExistingPath returns an absolute path when `path` exists on disk.
+func resolveExistingPath(path string) (string, bool) {
+	if _, err := os.Stat(path); err != nil {
+		return "", false
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return path, true
+	}
+	return absPath, true
 }
 
 // SetPermissionHandler sets the handler for permission requests
