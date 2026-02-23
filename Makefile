@@ -173,39 +173,46 @@ ios-export-ipa: ios-release-archive
 		exit 1; \
 	fi; \
 	mkdir -p "$(DERIVED_DATA)"; \
-	signing_style="$$IOS_RESOLVED_SIGNING_STYLE"; \
-	if [[ "$$signing_style" == "manual" ]]; then \
-		if [[ -z "$$IOS_RESOLVED_PROFILE_UUID" ]]; then \
-			echo "error: manual signing selected but no resolved profile UUID is available."; \
-			exit 1; \
-		fi; \
-		printf '%s\n' \
-			'<?xml version="1.0" encoding="UTF-8"?>' \
-			'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-			'<plist version="1.0">' \
-			'<dict>' \
-			'    <key>destination</key>' \
-			'    <string>export</string>' \
-			'    <key>method</key>' \
-			'    <string>$(IOS_EXPORT_METHOD)</string>' \
-			'    <key>signingStyle</key>' \
-			'    <string>manual</string>' \
-			'    <key>provisioningProfiles</key>' \
-			'    <dict>' \
-			"        <key>$$bundle_id</key>" \
-			"        <string>$$IOS_RESOLVED_PROFILE_UUID</string>" \
-			'    </dict>' \
-			'    <key>stripSwiftSymbols</key>' \
-			'    <true/>' \
-			'    <key>manageAppVersionAndBuildNumber</key>' \
-			'    <false/>' \
-			'</dict>' \
-			'</plist>' \
-			> "$(IOS_EXPORT_OPTIONS_PLIST)"; \
-	else \
-		printf '%s\n' \
-			'<?xml version="1.0" encoding="UTF-8"?>' \
-			'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+		signing_style="$$IOS_RESOLVED_SIGNING_STYLE"; \
+		if [[ "$$signing_style" == "manual" ]]; then \
+			if [[ -z "$$IOS_RESOLVED_PROFILE_UUID" ]]; then \
+				echo "error: manual signing selected but no resolved profile UUID is available."; \
+				exit 1; \
+			fi; \
+			{ \
+				printf '%s\n' \
+					'<?xml version="1.0" encoding="UTF-8"?>' \
+					'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+					'<plist version="1.0">' \
+					'<dict>' \
+					'    <key>destination</key>' \
+					'    <string>export</string>' \
+					'    <key>method</key>' \
+					'    <string>$(IOS_EXPORT_METHOD)</string>' \
+					'    <key>signingStyle</key>' \
+					'    <string>manual</string>'; \
+				if [[ -n "$$IOS_RESOLVED_SIGNING_CERT" ]]; then \
+					printf '%s\n' \
+						'    <key>signingCertificate</key>' \
+						"    <string>$$IOS_RESOLVED_SIGNING_CERT</string>"; \
+				fi; \
+				printf '%s\n' \
+					'    <key>provisioningProfiles</key>' \
+					'    <dict>' \
+					"        <key>$$bundle_id</key>" \
+					"        <string>$$IOS_RESOLVED_PROFILE_UUID</string>" \
+					'    </dict>' \
+					'    <key>stripSwiftSymbols</key>' \
+					'    <true/>' \
+					'    <key>manageAppVersionAndBuildNumber</key>' \
+					'    <false/>' \
+					'</dict>' \
+					'</plist>'; \
+			} > "$(IOS_EXPORT_OPTIONS_PLIST)"; \
+		else \
+			printf '%s\n' \
+				'<?xml version="1.0" encoding="UTF-8"?>' \
+				'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
 			'<plist version="1.0">' \
 			'<dict>' \
 			'    <key>destination</key>' \
