@@ -37,6 +37,29 @@ open ios/DelightApp.xcodeproj
 
 Select a simulator or device, then Run.
 
+## TestFlight Upload
+
+From the repo root:
+
+```bash
+export IOS_EXPORT_SIGNING_STYLE=manual
+export IOS_PROFILE_NAME=delight  # profile name, UUID, filename, or full path
+export ASC_API_KEY_ID=...
+export ASC_API_ISSUER_ID=...
+export ASC_API_KEY_PATH=...
+export ASC_APPLE_ID=...
+
+make ios-testflight-upload
+```
+
+Notes:
+- `make ios-testflight-upload` now resolves the provisioning profile metadata
+  automatically and pins archive signing to the profile UUID/certificate.
+- By default, archive build number auto-bumps to the current unix timestamp to
+  avoid duplicate `CFBundleVersion` upload failures.
+- Override build number explicitly with `IOS_BUILD_NUMBER=<number>`.
+- Disable auto-bump with `IOS_AUTO_BUMP_BUILD=0`.
+
 ## App Flow
 
 1. Set `Server URL` (default `http://localhost:3005`).

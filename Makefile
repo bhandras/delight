@@ -15,10 +15,14 @@ IOS_RELEASE_CONFIGURATION ?= Release
 IOS_ARCHIVE_PATH ?= $(DERIVED_DATA)/archive/$(IOS_SCHEME).xcarchive
 IOS_EXPORT_PATH ?= $(DERIVED_DATA)/export
 IOS_EXPORT_OPTIONS_PLIST ?= $(DERIVED_DATA)/ExportOptions.plist
+IOS_SIGNING_ENV ?= $(DERIVED_DATA)/ios-signing.env
+IOS_PROFILE_RESOLVER ?= ios/scripts/resolve_profile.py
 IOS_EXPORT_METHOD ?= app-store-connect
 IOS_EXPORT_SIGNING_STYLE ?= automatic
 IOS_PROFILE_NAME ?=
-IOS_SIGNING_CERT ?= Apple Distribution
+IOS_SIGNING_CERT ?=
+IOS_AUTO_BUMP_BUILD ?= 1
+IOS_BUILD_NUMBER ?=
 ASC_API_KEY_ID ?=
 ASC_API_ISSUER_ID ?=
 ASC_API_KEY_PATH ?=
@@ -27,7 +31,7 @@ ASC_PUBLIC_ID ?=
 ASC_OUTPUT_FORMAT ?= normal
 SERVER_DOCKER_IMAGE ?= delight-server:local
 
-.PHONY: ios-sdk ios-build ios-sim-boot ios-install ios-run ios-release-archive ios-export-ipa ios-testflight-upload
+.PHONY: ios-sdk ios-build ios-sim-boot ios-install ios-run ios-signing-resolve ios-release-archive ios-export-ipa ios-testflight-upload
 CLI_TEST_PKGS ?= ./...
 SERVER_TEST_PKGS ?= ./...
 WEBCLIENT_TEST_PKGS ?= ./...
@@ -72,19 +76,92 @@ ios-run: ios-install
 	echo "Launching $$bundle_id on simulator $$UDID..."; \
 	xcrun simctl launch "$$UDID" "$$bundle_id"
 
-ios-release-archive: ios-sdk
-	rm -rf "$(IOS_ARCHIVE_PATH)"
-	xcodebuild \
-		-project "$(IOS_PROJECT)" \
-		-scheme "$(IOS_SCHEME)" \
-		-configuration "$(IOS_RELEASE_CONFIGURATION)" \
-		-destination "generic/platform=iOS" \
-		-archivePath "$(IOS_ARCHIVE_PATH)" \
-		-allowProvisioningUpdates \
-		archive
+ios-signing-resolve:
+	@set -euo pipefail; \
+	mkdir -p "$(DERIVED_DATA)"; \
+	signing_style="$(IOS_EXPORT_SIGNING_STYLE)"; \
+	profile_ref="$(IOS_PROFILE_NAME)"; \
+	resolved_profile_name=""; \
+	resolved_profile_uuid=""; \
+	resolved_profile_path=""; \
+	resolved_profile_cert_sha1=""; \
+	resolved_profile_get_task_allow=""; \
+	resolved_signing_cert="$(IOS_SIGNING_CERT)"; \
+	if [[ -n "$$profile_ref" ]]; then \
+		signing_style="manual"; \
+	fi; \
+	if [[ "$$signing_style" == "manual" ]]; then \
+		if [[ -z "$$profile_ref" ]]; then \
+			echo "error: IOS_PROFILE_NAME is required when IOS_EXPORT_SIGNING_STYLE=manual."; \
+			exit 1; \
+		fi; \
+		IFS=$$'\t' read -r resolved_profile_name resolved_profile_uuid resolved_profile_path resolved_profile_cert_sha1 resolved_profile_get_task_allow <<< "$$(python3 "$(IOS_PROFILE_RESOLVER)" "$$profile_ref")"; \
+		if [[ "$$resolved_profile_get_task_allow" == "true" ]]; then \
+			echo "warning: selected profile looks like a Development profile (get-task-allow=true)."; \
+		fi; \
+		if [[ -z "$$resolved_signing_cert" ]]; then \
+			resolved_signing_cert="$$resolved_profile_cert_sha1"; \
+		fi; \
+		if [[ -z "$$resolved_profile_uuid" ]]; then \
+			echo "error: selected profile did not include a UUID."; \
+			exit 1; \
+		fi; \
+	fi; \
+	{ \
+		printf 'IOS_RESOLVED_SIGNING_STYLE=%q\n' "$$signing_style"; \
+		printf 'IOS_RESOLVED_PROFILE_NAME=%q\n' "$$resolved_profile_name"; \
+		printf 'IOS_RESOLVED_PROFILE_UUID=%q\n' "$$resolved_profile_uuid"; \
+		printf 'IOS_RESOLVED_PROFILE_PATH=%q\n' "$$resolved_profile_path"; \
+		printf 'IOS_RESOLVED_PROFILE_CERT_SHA1=%q\n' "$$resolved_profile_cert_sha1"; \
+		printf 'IOS_RESOLVED_SIGNING_CERT=%q\n' "$$resolved_signing_cert"; \
+	} >"$(IOS_SIGNING_ENV)"; \
+	echo "Resolved iOS signing style: $$signing_style"; \
+	if [[ "$$signing_style" == "manual" ]]; then \
+		echo "Resolved profile: $$resolved_profile_name ($$resolved_profile_uuid)"; \
+		echo "Resolved profile path: $$resolved_profile_path"; \
+		echo "Resolved signing cert SHA1: $$resolved_signing_cert"; \
+	fi
+
+ios-release-archive: ios-sdk ios-signing-resolve
+	@set -euo pipefail; \
+	source "$(IOS_SIGNING_ENV)"; \
+	rm -rf "$(IOS_ARCHIVE_PATH)"; \
+	signing_style="$$IOS_RESOLVED_SIGNING_STYLE"; \
+	build_number="$(IOS_BUILD_NUMBER)"; \
+	if [[ -z "$$build_number" && "$(IOS_AUTO_BUMP_BUILD)" == "1" ]]; then \
+		build_number="$$(date +%s)"; \
+	fi; \
+	if [[ -n "$$build_number" ]]; then \
+		echo "Using iOS build number: $$build_number"; \
+	else \
+		echo "Using project CURRENT_PROJECT_VERSION from Xcode settings."; \
+	fi; \
+	archive_cmd=( \
+		xcodebuild \
+			-project "$(IOS_PROJECT)" \
+			-scheme "$(IOS_SCHEME)" \
+			-configuration "$(IOS_RELEASE_CONFIGURATION)" \
+			-destination "generic/platform=iOS" \
+			-archivePath "$(IOS_ARCHIVE_PATH)" \
+			-allowProvisioningUpdates \
+	); \
+	if [[ -n "$$build_number" ]]; then \
+		archive_cmd+=(CURRENT_PROJECT_VERSION="$$build_number"); \
+	fi; \
+	if [[ "$$signing_style" == "manual" ]]; then \
+		archive_cmd+=( \
+			CODE_SIGN_STYLE=Manual \
+			PROVISIONING_PROFILE_SPECIFIER="$$IOS_RESOLVED_PROFILE_UUID" \
+		); \
+		if [[ -n "$$IOS_RESOLVED_SIGNING_CERT" ]]; then \
+			archive_cmd+=(CODE_SIGN_IDENTITY="$$IOS_RESOLVED_SIGNING_CERT"); \
+		fi; \
+	fi; \
+	"$${archive_cmd[@]}" archive
 
 ios-export-ipa: ios-release-archive
 	@set -euo pipefail; \
+	source "$(IOS_SIGNING_ENV)"; \
 	archive_info_plist="$(IOS_ARCHIVE_PATH)/Info.plist"; \
 	if [[ ! -f "$$archive_info_plist" ]]; then \
 		echo "error: archive metadata not found at $$archive_info_plist"; \
@@ -96,13 +173,10 @@ ios-export-ipa: ios-release-archive
 		exit 1; \
 	fi; \
 	mkdir -p "$(DERIVED_DATA)"; \
-	signing_style="$(IOS_EXPORT_SIGNING_STYLE)"; \
-	if [[ -n "$(IOS_PROFILE_NAME)" ]]; then \
-		signing_style="manual"; \
-	fi; \
+	signing_style="$$IOS_RESOLVED_SIGNING_STYLE"; \
 	if [[ "$$signing_style" == "manual" ]]; then \
-		if [[ -z "$(IOS_PROFILE_NAME)" ]]; then \
-			echo "error: IOS_PROFILE_NAME is required when IOS_EXPORT_SIGNING_STYLE=manual."; \
+		if [[ -z "$$IOS_RESOLVED_PROFILE_UUID" ]]; then \
+			echo "error: manual signing selected but no resolved profile UUID is available."; \
 			exit 1; \
 		fi; \
 		printf '%s\n' \
@@ -116,12 +190,10 @@ ios-export-ipa: ios-release-archive
 			'    <string>$(IOS_EXPORT_METHOD)</string>' \
 			'    <key>signingStyle</key>' \
 			'    <string>manual</string>' \
-			'    <key>signingCertificate</key>' \
-			'    <string>$(IOS_SIGNING_CERT)</string>' \
 			'    <key>provisioningProfiles</key>' \
 			'    <dict>' \
 			"        <key>$$bundle_id</key>" \
-			'        <string>$(IOS_PROFILE_NAME)</string>' \
+			"        <string>$$IOS_RESOLVED_PROFILE_UUID</string>" \
 			'    </dict>' \
 			'    <key>stripSwiftSymbols</key>' \
 			'    <true/>' \

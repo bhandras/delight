@@ -76,6 +76,7 @@
 		C1D2E3F4A5B60718293C4D62 /* SDKBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SDKBridgeTests.swift; sourceTree = "<group>"; };
 		C1D2E3F4A5B60718293C4D6A /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
 		D1E2F3A4B5C60718293D4E70 /* TerminalTranscriptCollectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTranscriptCollectionView.swift; sourceTree = "<group>"; };
+		E597B4E22F4AEC3A002C1AC0 /* DelightApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DelightApp.entitlements; sourceTree = "<group>"; };
 		F1A2B3C4D5E60718293A4B95 /* TerminalTranscriptLazyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalTranscriptLazyView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -123,6 +124,7 @@
 		A1B2C3D4E5F60718293A4B70 /* DelightApp */ = {
 			isa = PBXGroup;
 			children = (
+				E597B4E22F4AEC3A002C1AC0 /* DelightApp.entitlements */,
 				A1B2C3D4E5F60718293A4B6B /* DelightApp.swift */,
 				A1B2C3D4E5F60718293A4B6C /* ContentView.swift */,
 				A1B2C3D4E5F60718293A4B93 /* TerminalMessagesView.swift */,
@@ -414,8 +416,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = DelightApp/DelightApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-					CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 9824293P56;
 				INFOPLIST_FILE = DelightApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Delight Client";
@@ -424,7 +427,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-					MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 0.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.bhandras.delight;
 				PRODUCT_MODULE_NAME = DelightApp;
 				PRODUCT_NAME = Delight;
@@ -438,8 +441,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = DelightApp/DelightApp.Release.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-					CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 9824293P56;
 				INFOPLIST_FILE = DelightApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Delight Client";
@@ -448,7 +452,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-					MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 0.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.bhandras.delight;
 				PRODUCT_MODULE_NAME = DelightApp;
 				PRODUCT_NAME = Delight;
