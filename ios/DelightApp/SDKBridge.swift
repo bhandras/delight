@@ -388,6 +388,10 @@ private enum UpdateTiming {
     static let sessionRefreshDelaySeconds: TimeInterval = 0.35
     static let foregroundRefreshMinIntervalSeconds: TimeInterval = 0.5
     static let sessionRefreshMinIntervalSeconds: TimeInterval = 1.0
+    static let sessionActivityBackfillDelaySeconds: TimeInterval = 0.2
+    static let sessionActivityBackfillMinIntervalSeconds: TimeInterval = 5.0
+    static let sessionActivityBackfillMaxSessionsPerPass: Int = 20
+    static let sessionActivityBackfillPageLimit: Int64 = 20
     static let pairingDiscoveryPollIntervalSeconds: TimeInterval = 2.0
     static let pairingDiscoveryMaxAttempts: Int = 30
 }
@@ -583,10 +587,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     /// fight "jump to bottom" actions.
     private var messagesFetchGeneration: Int = 0
     private var scheduledSessionRefresh: DispatchWorkItem?
+    private var scheduledSessionActivityBackfill: DispatchWorkItem?
     private var scheduledPairingDiscoveryRefresh: DispatchWorkItem?
     private var pairingDiscoveryAttemptsRemaining: Int = 0
     private var lastSessionRefreshAt: Date = .distantPast
+    private var lastSessionActivityBackfillAt: Date = .distantPast
     private var lastForegroundRefreshAt: Date = .distantPast
+    private var sessionActivityBackfillInFlight: Bool = false
 
     private struct TranscriptCache {
         let messages: [MessageItem]
@@ -1233,6 +1240,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         lastMessageAtBySessionID = [:]
         lastTurnCompletedAtBySessionID = [:]
         terminals = []
+        scheduledSessionActivityBackfill?.cancel()
+        scheduledSessionActivityBackfill = nil
+        sessionActivityBackfillInFlight = false
+        lastSessionActivityBackfillAt = .distantPast
         scheduledPairingDiscoveryRefresh?.cancel()
         scheduledPairingDiscoveryRefresh = nil
         pairingDiscoveryAttemptsRemaining = 0
@@ -1889,6 +1900,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         isLoadingHistory = false
         fetchLatestMessages(reset: true)
         requestSessionsRefresh(reason: "session selected")
+        // Refresh list activity while in terminal detail so returning to the
+        // list view does not require opening each session to update recency.
+        scheduleSessionActivityBackfill(for: sessions.map(\.id), force: true)
     }
 
     func fetchMessages() {
@@ -4098,6 +4112,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
             self.sessions = parsedSessions
             self.lastMessageAtBySessionID = messageAtByID
             self.lastTurnCompletedAtBySessionID = completedAtByID
+            scheduleSessionActivityBackfill(for: parsedSessions.map(\.id))
 
 	            // Hydrate pending permission prompts from durable agent state.
 	            let now = Int64(Date().timeIntervalSince1970 * 1000)
@@ -4234,6 +4249,89 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let previous = lastMessageAtBySessionID[normalizedSessionID] ?? 0
         if createdAt > previous {
             lastMessageAtBySessionID[normalizedSessionID] = createdAt
+        }
+    }
+
+    /// latestMessageActivityTimestamp extracts the latest conversational
+    /// message timestamp from a session messages payload.
+    private func latestMessageActivityTimestamp(fromMessagesJSON json: String) -> Int64? {
+        let page = decodeMessagesPage(json)
+        return page.messages
+            .filter { isMessageActivityRole($0.role) }
+            .compactMap(\.createdAt)
+            .max()
+    }
+
+    /// scheduleSessionActivityBackfill refreshes list recency from latest
+    /// synced session messages without requiring opening each session.
+    private func scheduleSessionActivityBackfill(for sessionIDs: [String], force: Bool = false) {
+        DispatchQueue.main.async {
+            let trimmedIDs = sessionIDs
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            guard !trimmedIDs.isEmpty else { return }
+
+            let now = Date()
+            if !force,
+               now.timeIntervalSince(self.lastSessionActivityBackfillAt) < UpdateTiming.sessionActivityBackfillMinIntervalSeconds {
+                return
+            }
+
+            self.scheduledSessionActivityBackfill?.cancel()
+
+            let targetSessionIDs = Array(trimmedIDs.prefix(UpdateTiming.sessionActivityBackfillMaxSessionsPerPass))
+            let serverURLSnapshot = self.serverURL
+            let tokenSnapshot = self.token
+            let masterKeySnapshot = self.masterKey
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                guard !self.sessionActivityBackfillInFlight else { return }
+                self.sessionActivityBackfillInFlight = true
+                self.lastSessionActivityBackfillAt = Date()
+
+                self.sdkCallAsync {
+                    defer {
+                        DispatchQueue.main.async {
+                            self.sessionActivityBackfillInFlight = false
+                        }
+                    }
+
+                    do {
+                        try self.prepareClientForAuthenticatedRequest(
+                            serverURL: serverURLSnapshot,
+                            tokenSnapshot: tokenSnapshot,
+                            masterKeySnapshot: masterKeySnapshot
+                        )
+                    } catch {
+                        self.log("Session activity refresh setup error: \(error)")
+                        return
+                    }
+
+                    for sessionID in targetSessionIDs {
+                        do {
+                            let responseBuf = try self.client.getSessionMessagesPageBuffer(
+                                sessionID,
+                                limit: UpdateTiming.sessionActivityBackfillPageLimit,
+                                beforeSeq: 0
+                            )
+                            guard let json = self.stringFromBuffer(responseBuf) else {
+                                continue
+                            }
+                            guard let latestAt = self.latestMessageActivityTimestamp(fromMessagesJSON: json) else {
+                                continue
+                            }
+                            DispatchQueue.main.async {
+                                self.recordSessionMessageActivity(sessionID: sessionID, createdAt: latestAt)
+                            }
+                        } catch {
+                            // Best-effort activity backfill; keep other sessions flowing.
+                            continue
+                        }
+                    }
+                }
+            }
+            self.scheduledSessionActivityBackfill = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + UpdateTiming.sessionActivityBackfillDelaySeconds, execute: work)
         }
     }
 
