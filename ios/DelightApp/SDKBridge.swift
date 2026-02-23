@@ -443,11 +443,23 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     /// verbosity, appearance, etc).
     private let settingsDefaults: UserDefaults
     @Published var serverURL: String = "http://localhost:3005" {
-        didSet { persistSettings() }
+        didSet {
+            persistSettings()
+            if serverURL != oldValue {
+                // Token uploads are account-scoped; refresh registration when
+                // the target server changes.
+                DelightPushManager.shared.registerStoredTokenIfPossible()
+            }
+        }
     }
     @Published var token: String = "" {
         didSet {
             persistSettings()
+            if token != oldValue && !token.isEmpty {
+                // Re-auth can switch account ids. Re-register the APNs token so
+                // push sends resolve device tokens for the current account.
+                DelightPushManager.shared.registerStoredTokenIfPossible()
+            }
             if !oldValue.isEmpty && token.isEmpty {
                 clearSessionState(reason: "token cleared")
             }
