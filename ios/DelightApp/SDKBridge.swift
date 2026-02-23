@@ -391,7 +391,7 @@ private enum UpdateTiming {
     static let sessionActivityBackfillDelaySeconds: TimeInterval = 0.2
     static let sessionActivityBackfillMinIntervalSeconds: TimeInterval = 5.0
     static let sessionActivityBackfillMaxSessionsPerPass: Int = 20
-    static let sessionActivityBackfillPageLimit: Int64 = 20
+    static let sessionActivityBackfillPageLimit: Int = 20
     static let pairingDiscoveryPollIntervalSeconds: TimeInterval = 2.0
     static let pairingDiscoveryMaxAttempts: Int = 30
 }
