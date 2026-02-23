@@ -391,7 +391,8 @@ private enum UpdateTiming {
     static let sessionActivityBackfillDelaySeconds: TimeInterval = 0.2
     static let sessionActivityBackfillMinIntervalSeconds: TimeInterval = 5.0
     static let sessionActivityBackfillMaxSessionsPerPass: Int = 20
-    static let sessionActivityBackfillPageLimit: Int = 20
+    static let sessionActivityBackfillPageLimit: Int = 50
+    static let sessionActivityBackfillMaxPagesPerSession: Int = 4
     static let pairingDiscoveryPollIntervalSeconds: TimeInterval = 2.0
     static let pairingDiscoveryMaxAttempts: Int = 30
 }
@@ -2732,6 +2733,14 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         // crash the Go runtime.
         if let updateJSON {
             logSwiftOnly("Update: \(updateJSON)")
+            if let activity = extractMessageActivityFromUpdate(updateJSON) {
+                DispatchQueue.main.async {
+                    self.recordSessionMessageActivity(
+                        sessionID: activity.sessionID,
+                        createdAt: activity.createdAt
+                    )
+                }
+            }
             if handleSessionUIUpdate(updateJSON) {
                 return
             }
@@ -2770,6 +2779,38 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 self.fetchMessages()
             }
         }
+    }
+
+    /// extractMessageActivityFromUpdate returns real-message activity signals
+    /// from a websocket update payload.
+    ///
+    /// We intentionally ignore tool/event/system updates so terminal-list
+    /// recency reflects conversational traffic only.
+    private func extractMessageActivityFromUpdate(_ updateJSON: String) -> (sessionID: String, createdAt: Int64)? {
+        guard let update = decodeUpdateEnvelope(updateJSON),
+              let body = update.body,
+              body.t == UpdateKind.newMessage.rawValue,
+              let sessionID = body.sid,
+              !sessionID.isEmpty,
+              let messageValue = body.message,
+              let message = messageValue.object else {
+            return nil
+        }
+
+        let content = normalizeContent(firstNonNull(message[UpdateFields.content], message[UpdateFields.data]))
+        if isNullMessage(content) || isFileHistorySnapshot(content) || isToolResultMessage(content) {
+            return nil
+        }
+
+        let role = extractRole(from: message, content: content)
+        guard isMessageActivityRole(role) else {
+            return nil
+        }
+
+        guard let createdAt = jsonInt64(message, UpdateFields.createdAt), createdAt > 0 else {
+            return nil
+        }
+        return (sessionID: sessionID, createdAt: createdAt)
     }
 
     /// handleUsageUpdate applies best-effort usage report ephemerals.
@@ -4253,9 +4294,8 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     }
 
     /// latestMessageActivityTimestamp extracts the latest conversational
-    /// message timestamp from a session messages payload.
-    private func latestMessageActivityTimestamp(fromMessagesJSON json: String) -> Int64? {
-        let page = decodeMessagesPage(json)
+    /// message timestamp from a decoded messages page.
+    private func latestMessageActivityTimestamp(from page: MessagesPage) -> Int64? {
         return page.messages
             .filter { isMessageActivityRole($0.role) }
             .compactMap(\.createdAt)
@@ -4308,24 +4348,42 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                     }
 
                     for sessionID in targetSessionIDs {
-                        do {
-                            let responseBuf = try self.client.getSessionMessagesPageBuffer(
-                                sessionID,
-                                limit: UpdateTiming.sessionActivityBackfillPageLimit,
-                                beforeSeq: 0
-                            )
-                            guard let json = self.stringFromBuffer(responseBuf) else {
-                                continue
+                        var beforeSeq: Int64 = 0
+                        var pagesRemaining = UpdateTiming.sessionActivityBackfillMaxPagesPerSession
+                        var foundMessageAt: Int64?
+
+                        while pagesRemaining > 0 {
+                            pagesRemaining -= 1
+                            do {
+                                let responseBuf = try self.client.getSessionMessagesPageBuffer(
+                                    sessionID,
+                                    limit: UpdateTiming.sessionActivityBackfillPageLimit,
+                                    beforeSeq: beforeSeq
+                                )
+                                guard let json = self.stringFromBuffer(responseBuf) else {
+                                    break
+                                }
+                                let page = self.decodeMessagesPage(json)
+                                if let latestAt = self.latestMessageActivityTimestamp(from: page) {
+                                    foundMessageAt = latestAt
+                                    break
+                                }
+                                guard page.hasMore,
+                                      let nextBeforeSeq = page.nextBeforeSeq,
+                                      nextBeforeSeq > 0 else {
+                                    break
+                                }
+                                beforeSeq = nextBeforeSeq
+                            } catch {
+                                // Best-effort activity backfill; keep other sessions flowing.
+                                break
                             }
-                            guard let latestAt = self.latestMessageActivityTimestamp(fromMessagesJSON: json) else {
-                                continue
-                            }
+                        }
+
+                        if let foundMessageAt {
                             DispatchQueue.main.async {
-                                self.recordSessionMessageActivity(sessionID: sessionID, createdAt: latestAt)
+                                self.recordSessionMessageActivity(sessionID: sessionID, createdAt: foundMessageAt)
                             }
-                        } catch {
-                            // Best-effort activity backfill; keep other sessions flowing.
-                            continue
                         }
                     }
                 }
