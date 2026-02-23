@@ -500,7 +500,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
     @Published var isLoadingHistory: Bool = false
     @Published var scrollRequest: ScrollRequest?
     @Published var usageBySessionID: [String: UsageSnapshot] = [:]
-    @Published var lastMessageAtBySessionID: [String: Int64] = [:]
+    @Published var lastMessageAtBySessionID: [String: Int64] = [:] {
+        didSet { persistLastMessageActivity() }
+    }
     @Published var lastTurnCompletedAtBySessionID: [String: Int64] = [:]
     @Published var terminals: [TerminalInfo] = []
     @Published var logServerURL: String = ""
@@ -617,6 +619,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
 
     private enum TerminalTranscriptDefaults {
         static let preferencesKeyPrefix = HarnessViewModel.settingsKeyPrefix + "terminalTranscript."
+    }
+
+    private enum SessionActivityDefaults {
+        static let lastMessageAtBySessionIDKey = HarnessViewModel.settingsKeyPrefix + "lastMessageAtBySessionID"
     }
 
     private struct TranscriptDiskCache {
@@ -879,6 +885,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let loadedTerminalFontSize = TerminalAppearance.clampFontSize(
             loadedTerminalFontSizeRaw ?? TerminalAppearance.defaultFontSize
         )
+        let loadedLastMessageAtBySessionID = Self.loadLastMessageActivity(defaults: defaults)
         let loadedMasterKey = KeychainStore.string(for: "masterKey") ?? ""
         let loadedPublicKey = KeychainStore.string(for: "publicKey") ?? ""
         let loadedPrivateKey = KeychainStore.string(for: "privateKey") ?? ""
@@ -895,6 +902,7 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         showToolOutputInTranscript = loadedShowToolOutput
         showReasoningSummariesInTranscript = loadedShowReasoning
         terminalFontSize = loadedTerminalFontSize
+        lastMessageAtBySessionID = loadedLastMessageAtBySessionID
         masterKey = loadedMasterKey
         publicKey = loadedPublicKey
         privateKey = loadedPrivateKey
@@ -2880,7 +2888,9 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         let serverItem = MessageItem(id: id, seq: seq, localID: localID, uuid: uuid, role: role, blocks: blocks, createdAt: createdAt)
 
         DispatchQueue.main.async {
-            self.recordSessionMessageActivity(sessionID: sessionID, createdAt: createdAt)
+            if self.isMessageActivityRole(serverItem.role) {
+                self.recordSessionMessageActivity(sessionID: sessionID, createdAt: createdAt)
+            }
 
             // Deduplicate if we already have this message.
             if self.messages.contains(where: { $0.id == serverItem.id }) {
@@ -3896,6 +3906,38 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return "Crash log empty."
     }
 
+    /// loadLastMessageActivity restores persisted message-derived activity
+    /// timestamps for terminal rows.
+    private static func loadLastMessageActivity(defaults: UserDefaults) -> [String: Int64] {
+        guard let data = defaults.data(forKey: SessionActivityDefaults.lastMessageAtBySessionIDKey) else {
+            return [:]
+        }
+        guard let decoded = try? JSONDecoder().decode([String: Int64].self, from: data) else {
+            return [:]
+        }
+        var out: [String: Int64] = [:]
+        out.reserveCapacity(decoded.count)
+        for (sessionID, timestampMs) in decoded {
+            let trimmedSessionID = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedSessionID.isEmpty, timestampMs > 0 {
+                out[trimmedSessionID] = timestampMs
+            }
+        }
+        return out
+    }
+
+    /// persistLastMessageActivity stores message-derived activity timestamps so
+    /// app restarts do not fall back to poll-driven recency.
+    private func persistLastMessageActivity() {
+        if lastMessageAtBySessionID.isEmpty {
+            settingsDefaults.removeObject(forKey: SessionActivityDefaults.lastMessageAtBySessionIDKey)
+            return
+        }
+        if let data = try? JSONEncoder().encode(lastMessageAtBySessionID) {
+            settingsDefaults.set(data, forKey: SessionActivityDefaults.lastMessageAtBySessionIDKey)
+        }
+    }
+
     private func persistSettings() {
         let defaults = settingsDefaults
         defaults.set(serverURL, forKey: Self.settingsKeyPrefix + "serverURL")
@@ -4041,14 +4083,13 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                         uiState: uiState
                     )
                 )
-                if let messageAtMs = session.lastMessageAt?.value, messageAtMs > 0 {
-                    messageAtByID[session.id] = messageAtMs
-                }
                 if let previousMessageAtMs = previousMessageAtByID[session.id], previousMessageAtMs > 0 {
-                    let currentMessageAtMs = messageAtByID[session.id] ?? 0
-                    if previousMessageAtMs > currentMessageAtMs {
-                        messageAtByID[session.id] = previousMessageAtMs
-                    }
+                    // Prefer local message-derived activity when we have it.
+                    // Session list timestamps may reflect non-conversational
+                    // persisted events (e.g. progress updates).
+                    messageAtByID[session.id] = previousMessageAtMs
+                } else if let messageAtMs = session.lastMessageAt?.value, messageAtMs > 0 {
+                    messageAtByID[session.id] = messageAtMs
                 }
                 if let completedAtMs = session.lastTurnCompletedAt?.value, completedAtMs > 0 {
                     completedAtByID[session.id] = completedAtMs
@@ -4196,6 +4237,20 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
     }
 
+    /// isMessageActivityRole reports whether a message role should affect the
+    /// terminal list's "Last active" recency.
+    ///
+    /// UI event/tool progress rows are excluded so background sync chatter does
+    /// not move activity timestamps.
+    private func isMessageActivityRole(_ role: MessageRole) -> Bool {
+        switch role {
+        case .user, .assistant:
+            return true
+        default:
+            return false
+        }
+    }
+
     private struct MessagesPage {
         let messages: [MessageItem]
         let hasMore: Bool
@@ -4244,7 +4299,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
                 self.messages = self.mergeMessages(existing: self.messages, incoming: page.messages)
             }
             if !self.sessionID.isEmpty {
-                let newestMessageAt = self.messages.compactMap(\.createdAt).max()
+                let newestMessageAt = self.messages
+                    .filter { self.isMessageActivityRole($0.role) }
+                    .compactMap(\.createdAt)
+                    .max()
                 self.recordSessionMessageActivity(sessionID: self.sessionID, createdAt: newestMessageAt)
             }
 
