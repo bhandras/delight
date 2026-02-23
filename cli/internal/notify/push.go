@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -23,6 +24,8 @@ const (
 	pushPayloadVersion = 1
 	// pushRequestTimeout bounds the total time spent sending a push request.
 	pushRequestTimeout = 5 * time.Second
+	// pushResponseBodyLimit keeps response parsing bounded.
+	pushResponseBodyLimit = 8 * 1024
 )
 
 // PushConfig configures the encrypted push notifier.
@@ -155,8 +158,26 @@ func (n *PushNotifier) Notify(ctx context.Context, msg PushMessage) error {
 	}
 	defer resp.Body.Close()
 
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, pushResponseBodyLimit))
+	if err != nil {
+		return fmt.Errorf("read push response: %w", err)
+	}
+
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("push request failed: %s", resp.Status)
+		return fmt.Errorf("push request failed: %s", formatPushError(resp.Status, respBody))
+	}
+
+	var result pushResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("decode push response: %w", err)
+	}
+	if !result.Success || result.Sent <= 0 || result.Failed > 0 {
+		return fmt.Errorf(
+			"push delivery failed: success=%t sent=%d failed=%d",
+			result.Success,
+			result.Sent,
+			result.Failed,
+		)
 	}
 
 	n.markSent(msg.AlertKey)
@@ -181,6 +202,18 @@ type pushPayload struct {
 // pushRequest is the API request body for sending an encrypted push payload.
 type pushRequest struct {
 	Ciphertext string `json:"ciphertext"`
+}
+
+// pushResponse captures the server's push delivery summary.
+type pushResponse struct {
+	Success bool `json:"success"`
+	Sent    int  `json:"sent"`
+	Failed  int  `json:"failed"`
+}
+
+// pushErrorResponse captures JSON API errors returned by the server.
+type pushErrorResponse struct {
+	Error string `json:"error"`
 }
 
 // encryptPayload encrypts the push payload and returns base64 ciphertext.
@@ -218,4 +251,19 @@ func (n *PushNotifier) markSent(alertKey string) {
 	defer n.mu.Unlock()
 
 	n.lastSent[alertKey] = time.Now()
+}
+
+// formatPushError extracts a useful error string from a non-2xx push response.
+func formatPushError(status string, body []byte) string {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return status
+	}
+
+	var parsed pushErrorResponse
+	if err := json.Unmarshal(body, &parsed); err == nil && strings.TrimSpace(parsed.Error) != "" {
+		return fmt.Sprintf("%s (%s)", status, strings.TrimSpace(parsed.Error))
+	}
+
+	return fmt.Sprintf("%s (%s)", status, trimmed)
 }

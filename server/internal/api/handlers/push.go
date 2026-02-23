@@ -23,6 +23,8 @@ const (
 	pushNotifyTimeout = 10 * time.Second
 	// maxPushCiphertextLength caps encrypted payload size to fit APNs limits.
 	maxPushCiphertextLength = 3200
+	// pushNoTokensError is returned when the account has no registered devices.
+	pushNoTokensError = "no registered push tokens for account"
 )
 
 // PushHandler manages push token registration and encrypted push delivery.
@@ -134,8 +136,10 @@ func (h *PushHandler) SendPushNotification(c *gin.Context) {
 	for _, tokenValue := range tokens {
 		deviceTokens = append(deviceTokens, tokenValue.Token)
 	}
+	logger.Infof("Push request account=%s tokens=%d", userID, len(deviceTokens))
 	if len(deviceTokens) == 0 {
-		c.JSON(http.StatusOK, SendPushNotificationResponse{Success: true, Sent: 0, Failed: 0})
+		logger.Warnf("Push request skipped for account=%s: no registered tokens", userID)
+		c.JSON(http.StatusConflict, types.ErrorResponse{Error: pushNoTokensError})
 		return
 	}
 
@@ -144,11 +148,32 @@ func (h *PushHandler) SendPushNotification(c *gin.Context) {
 
 	result, err := h.sender.SendEncrypted(ctx, deviceTokens, ciphertext)
 	if err != nil {
-		logger.Warnf("push send error: %v", err)
+		logger.Warnf("Push send failed account=%s tokens=%d: %v", userID, len(deviceTokens), err)
+		c.JSON(http.StatusBadGateway, types.ErrorResponse{Error: "failed to deliver push notification"})
+		return
+	}
+
+	success := result.Sent > 0 && result.Failed == 0
+	if success {
+		logger.Infof(
+			"Push send success account=%s tokens=%d sent=%d failed=%d",
+			userID,
+			len(deviceTokens),
+			result.Sent,
+			result.Failed,
+		)
+	} else {
+		logger.Warnf(
+			"Push send partial account=%s tokens=%d sent=%d failed=%d",
+			userID,
+			len(deviceTokens),
+			result.Sent,
+			result.Failed,
+		)
 	}
 
 	c.JSON(http.StatusOK, SendPushNotificationResponse{
-		Success: true,
+		Success: success,
 		Sent:    result.Sent,
 		Failed:  result.Failed,
 	})

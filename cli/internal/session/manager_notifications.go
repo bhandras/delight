@@ -185,7 +185,7 @@ func (m *Manager) sendPush(message notify.PushMessage) {
 	ctx, cancel := context.WithTimeout(context.Background(), pushNotifyTimeout)
 	defer cancel()
 
-	if err := m.push.Notify(ctx, message); err != nil && m.debug {
+	if err := m.push.Notify(ctx, message); err != nil {
 		logger.Warnf("Push notification failed: %v", err)
 	}
 }
