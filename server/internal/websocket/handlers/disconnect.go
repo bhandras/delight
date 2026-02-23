@@ -15,6 +15,15 @@ func DisconnectEffects(ctx context.Context, deps Deps, auth AuthContext, session
 	now := deps.Now()
 
 	if auth.ClientType() == "session-scoped" && sessionID != "" {
+		ok, err := sessionExistsForUser(ctx, deps, sessionID, auth.UserID())
+		if err != nil {
+			logger.Warnf("Failed to validate session on disconnect sid=%s: %v", sessionID, err)
+			return NewEventResultWithEphemerals(nil, nil, ephemerals)
+		}
+		if !ok {
+			return NewEventResultWithEphemerals(nil, nil, ephemerals)
+		}
+
 		if err := deps.Sessions().UpdateSessionActivity(ctx, models.UpdateSessionActivityParams{
 			Active:       0,
 			LastActiveAt: now,

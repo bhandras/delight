@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -39,4 +40,30 @@ func TestDisconnectEffects_SessionScoped(t *testing.T) {
 	require.True(t, ok)
 	require.False(t, payload.Active)
 	require.Equal(t, "s1", payload.ID)
+}
+
+func TestDisconnectEffects_MissingSessionSkipsTurnClose(t *testing.T) {
+	var updated bool
+	sessions := fakeSessionQueries{
+		getByID: func(ctx context.Context, id string) (models.Session, error) {
+			return models.Session{}, sql.ErrNoRows
+		},
+		updateAgentState: func(ctx context.Context, arg models.UpdateSessionAgentStateParams) (int64, error) {
+			return 0, nil
+		},
+		updateActivity: func(ctx context.Context, arg models.UpdateSessionActivityParams) error {
+			updated = true
+			return nil
+		},
+		updateMetadata: func(ctx context.Context, arg models.UpdateSessionMetadataParams) (int64, error) {
+			return 0, nil
+		},
+	}
+	now := time.UnixMilli(5000000)
+	deps := NewDeps(nil, sessions, nil, nil, func() time.Time { return now }, func() string { return "id" })
+
+	res := DisconnectEffects(context.Background(), deps, NewAuthContext("u1", "session-scoped", "sock1"), "missing", "")
+
+	require.False(t, updated)
+	require.Empty(t, res.Ephemerals())
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/bhandras/delight/server/internal/models"
@@ -19,6 +20,9 @@ type SQLStore struct {
 func (s *SQLStore) ValidateSessionOwner(ctx context.Context, sessionID, userID string) (bool, error) {
 	session, err := s.Queries.GetSessionByID(ctx, sessionID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
 		return false, err
 	}
 	return session.AccountID == userID, nil

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -90,9 +91,9 @@ func TestSessionAlive_EmitsEphemeral(t *testing.T) {
 	deps := NewDeps(nil, sessions, nil, nil, func() time.Time { return now }, func() string { return "id" })
 
 	res := SessionAlive(context.Background(), deps, NewAuthContext("u1", "session-scoped", "sock1"), protocolwire.SessionAlivePayload{
-		SID:      "s1",
-		Time:     now.UnixMilli(),
-		Working:  true,
+		SID:     "s1",
+		Time:    now.UnixMilli(),
+		Working: true,
 	})
 
 	require.Equal(t, int64(1), got.Active)
@@ -107,4 +108,40 @@ func TestSessionAlive_EmitsEphemeral(t *testing.T) {
 	require.True(t, payload.Active)
 	require.True(t, payload.Working)
 	require.True(t, opened)
+}
+
+func TestSessionAlive_MissingSessionSkipsPersistence(t *testing.T) {
+	updated := false
+	opened := false
+	closed := false
+	sessions := sessionAliveQueries{
+		getByID: func(ctx context.Context, id string) (models.Session, error) {
+			return models.Session{}, sql.ErrNoRows
+		},
+		updateActivity: func(ctx context.Context, arg models.UpdateSessionActivityParams) error {
+			updated = true
+			return nil
+		},
+		ensureOpen: func(ctx context.Context, sessionID string, atMs int64) error {
+			opened = true
+			return nil
+		},
+		ensureClosed: func(ctx context.Context, sessionID string, atMs int64) error {
+			closed = true
+			return nil
+		},
+	}
+	now := time.UnixMilli(2000000)
+	deps := NewDeps(nil, sessions, nil, nil, func() time.Time { return now }, func() string { return "id" })
+
+	res := SessionAlive(context.Background(), deps, NewAuthContext("u1", "session-scoped", "sock1"), protocolwire.SessionAlivePayload{
+		SID:     "missing",
+		Time:    now.UnixMilli(),
+		Working: true,
+	})
+
+	require.False(t, updated)
+	require.False(t, opened)
+	require.False(t, closed)
+	require.Empty(t, res.Ephemerals())
 }

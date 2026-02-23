@@ -15,6 +15,15 @@ func SessionAlive(ctx context.Context, deps Deps, auth AuthContext, req protocol
 		return NewEventResult(nil, nil)
 	}
 
+	ok, err := sessionExistsForUser(ctx, deps, req.SID, auth.UserID())
+	if err != nil {
+		logger.Warnf("Failed to validate session for keep-alive sid=%s: %v", req.SID, err)
+		return NewEventResult(nil, nil)
+	}
+	if !ok {
+		return NewEventResult(nil, nil)
+	}
+
 	t := req.Time
 	if t == 0 {
 		t = deps.Now().UnixMilli()
