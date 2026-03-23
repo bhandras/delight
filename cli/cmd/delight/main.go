@@ -393,7 +393,7 @@ Examples:
   delight claude resume <id>
 
   # Start a session with custom server and model
-  delight run --server-url=http://localhost:3005 --model=gpt-5.2-codex`)
+  delight run --server-url=http://localhost:3005 --model=gpt-5.4`)
 }
 
 // wantsHelp reports whether args request usage output.

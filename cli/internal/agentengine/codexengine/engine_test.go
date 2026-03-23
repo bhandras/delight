@@ -56,13 +56,13 @@ func TestApplyConfigDoesNotClearRemoteResumeToken(t *testing.T) {
 
 func TestBuildLocalCodexCommandIncludesSelectedConfig(t *testing.T) {
 	cmd := buildLocalCodexCommand("resume-1", agentengine.AgentConfig{
-		Model:           "gpt-5.2-codex",
+		Model:           codexModel52,
 		ReasoningEffort: "high",
 		PermissionMode:  "read-only",
 	})
 
 	args := strings.Join(cmd.Args, " ")
-	if !strings.Contains(args, " -m gpt-5.2-codex ") {
+	if !strings.Contains(args, " -m "+codexModel52+" ") {
 		t.Fatalf("expected -m model in args, got: %s", args)
 	}
 	if !strings.Contains(args, `model_reasoning_effort="high"`) {
@@ -76,6 +76,21 @@ func TestBuildLocalCodexCommandIncludesSelectedConfig(t *testing.T) {
 	}
 	if !strings.Contains(args, " resume resume-1") {
 		t.Fatalf("expected resume subcommand in args, got: %s", args)
+	}
+}
+
+func TestBuildLocalCodexCommandSupportsGPT54Model(t *testing.T) {
+	cmd := buildLocalCodexCommand("", agentengine.AgentConfig{
+		Model:           gpt54Model,
+		ReasoningEffort: "high",
+	})
+
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, " -m "+gpt54Model+" ") {
+		t.Fatalf("expected gpt-5.4 model in args, got: %s", args)
+	}
+	if !strings.Contains(args, `model_reasoning_effort="high"`) {
+		t.Fatalf("expected effort override in args, got: %s", args)
 	}
 }
 
@@ -117,6 +132,9 @@ func TestCapabilitiesIncludesCodex53Model(t *testing.T) {
 
 	if !containsString(caps.Models, codexModel53) {
 		t.Fatalf("expected capabilities to include %q, got %#v", codexModel53, caps.Models)
+	}
+	if !containsString(caps.Models, gpt54Model) {
+		t.Fatalf("expected capabilities to include %q, got %#v", gpt54Model, caps.Models)
 	}
 }
 

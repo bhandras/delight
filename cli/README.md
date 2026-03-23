@@ -28,7 +28,7 @@ make build
 # Run a session with an explicit model + log level
 ./delight run \
   --server-url=http://localhost:3005 \
-  --model=gpt-5.2-codex \
+  --model=gpt-5.4 \
   --log-level=debug
 ```
 

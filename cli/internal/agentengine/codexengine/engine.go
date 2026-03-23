@@ -31,12 +31,24 @@ const (
 )
 
 const (
+	// gpt54Model is the GPT-5.4 model identifier.
+	gpt54Model = "gpt-5.4"
+
 	// codexModel53 is the Codex 5.3 model identifier.
 	codexModel53 = "gpt-5.3-codex"
 
+	// codexModel52 is the Codex 5.2 model identifier.
+	codexModel52 = "gpt-5.2-codex"
+
+	// codexMaxModel51 is the GPT-5.1 Codex Max model identifier.
+	codexMaxModel51 = "gpt-5.1-codex-max"
+
+	// gpt52Model is the GPT-5.2 general-purpose model identifier.
+	gpt52Model = "gpt-5.2"
+
 	// defaultRemoteModel is the Codex model we select when no explicit model is
 	// configured. This keeps behavior stable across Codex config changes.
-	defaultRemoteModel = "gpt-5.2-codex"
+	defaultRemoteModel = codexModel52
 )
 
 const (
@@ -245,12 +257,12 @@ func (a *remoteTextAccumulator) String() string {
 // New returns a Codex engine.
 func New(workDir string, requester agentengine.PermissionRequester, debug bool) *Engine {
 	return &Engine{
-		workDir:   workDir,
-		debug:     debug,
-		requester: requester,
-		events:    make(chan agentengine.Event, engineEventBufferSize),
+		workDir:             workDir,
+		debug:               debug,
+		requester:           requester,
+		events:              make(chan agentengine.Event, engineEventBufferSize),
 		remoteTurnStartedCh: make(chan struct{}),
-		waitCh:    make(chan struct{}),
+		waitCh:              make(chan struct{}),
 	}
 }
 
@@ -384,11 +396,12 @@ func (e *Engine) Capabilities() agentengine.AgentCapabilities {
 
 	return agentengine.AgentCapabilities{
 		Models: []string{
+			gpt54Model,
 			codexModel53,
-			"gpt-5.2-codex",
-			"gpt-5.1-codex-max",
-			"gpt-5.1-codex-mini",
-			"gpt-5.2",
+			codexModel52,
+			codexMaxModel51,
+			codexMiniModel,
+			gpt52Model,
 		},
 		PermissionModes: []string{
 			"default",
@@ -751,9 +764,9 @@ func (e *Engine) stopRemoteAndWait(ctx context.Context) error {
 
 	if wasWorking {
 		e.tryEmit(agentengine.EvWorking{
-			Mode:     agentengine.ModeRemote,
-			Working:  false,
-			AtMs:     time.Now().UnixMilli(),
+			Mode:    agentengine.ModeRemote,
+			Working: false,
+			AtMs:    time.Now().UnixMilli(),
 		})
 	}
 
@@ -827,9 +840,9 @@ func (e *Engine) handleRolloutEvent(ev rollout.Event) {
 		e.tryEmit(agentengine.EvSessionIdentified{Mode: agentengine.ModeLocal, ResumeToken: v.SessionID})
 	case rollout.EvUserMessage:
 		e.tryEmit(agentengine.EvWorking{
-			Mode:     agentengine.ModeLocal,
-			Working:  true,
-			AtMs:     v.AtMs,
+			Mode:    agentengine.ModeLocal,
+			Working: true,
+			AtMs:    v.AtMs,
 		})
 		raw, err := marshalUserTextRecord(v.Text, nil)
 		if err != nil {
@@ -844,9 +857,9 @@ func (e *Engine) handleRolloutEvent(ev rollout.Event) {
 		})
 	case rollout.EvAssistantMessage:
 		e.tryEmit(agentengine.EvWorking{
-			Mode:     agentengine.ModeLocal,
-			Working:  false,
-			AtMs:     v.AtMs,
+			Mode:    agentengine.ModeLocal,
+			Working: false,
+			AtMs:    v.AtMs,
 		})
 		raw, err := marshalAssistantTextRecord(v.Text, "unknown")
 		if err != nil {
@@ -1172,9 +1185,9 @@ func (e *Engine) setRemoteWorking(working bool, atMs int64) {
 	}
 
 	e.tryEmit(agentengine.EvWorking{
-		Mode:     agentengine.ModeRemote,
-		Working:  working,
-		AtMs:     atMs,
+		Mode:    agentengine.ModeRemote,
+		Working: working,
+		AtMs:    atMs,
 	})
 
 	e.mu.Lock()
