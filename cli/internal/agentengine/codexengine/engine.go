@@ -48,14 +48,14 @@ const (
 
 	// defaultRemoteModel is the Codex model we select when no explicit model is
 	// configured. This keeps behavior stable across Codex config changes.
-	defaultRemoteModel = codexModel52
+	defaultRemoteModel = gpt54Model
 )
 
 const (
 	// defaultRemoteReasoningEffort is the Codex reasoning effort we select when
 	// no explicit effort is configured. This keeps behavior stable across Codex
 	// config changes.
-	defaultRemoteReasoningEffort = "medium"
+	defaultRemoteReasoningEffort = "high"
 )
 
 // DefaultModel returns the Codex model we select when no explicit model is

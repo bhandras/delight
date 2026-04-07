@@ -109,7 +109,7 @@ func TestBuildLocalCodexCommandSupportsCodex53Model(t *testing.T) {
 	}
 }
 
-func TestBuildLocalCodexCommandDefaultsToMediumEffort(t *testing.T) {
+func TestBuildLocalCodexCommandDefaultsToHighEffort(t *testing.T) {
 	cmd := buildLocalCodexCommand("", agentengine.AgentConfig{})
 	args := strings.Join(cmd.Args, " ")
 	if !strings.Contains(args, " -m "+defaultRemoteModel+" ") {
@@ -123,6 +123,18 @@ func TestBuildLocalCodexCommandDefaultsToMediumEffort(t *testing.T) {
 	}
 	if !strings.Contains(args, " -a on-request ") {
 		t.Fatalf("expected default approval policy in args, got: %s", args)
+	}
+}
+
+func TestDefaultModelIsGPT54(t *testing.T) {
+	if DefaultModel() != gpt54Model {
+		t.Fatalf("expected default model %q, got %q", gpt54Model, DefaultModel())
+	}
+}
+
+func TestDefaultReasoningEffortIsHigh(t *testing.T) {
+	if DefaultReasoningEffort() != "high" {
+		t.Fatalf("expected default reasoning effort %q, got %q", "high", DefaultReasoningEffort())
 	}
 }
 
