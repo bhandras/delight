@@ -94,6 +94,21 @@ func TestBuildLocalCodexCommandSupportsGPT54Model(t *testing.T) {
 	}
 }
 
+func TestBuildLocalCodexCommandSupportsGPT55Model(t *testing.T) {
+	cmd := buildLocalCodexCommand("", agentengine.AgentConfig{
+		Model:           gpt55Model,
+		ReasoningEffort: "high",
+	})
+
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, " -m "+gpt55Model+" ") {
+		t.Fatalf("expected gpt-5.5 model in args, got: %s", args)
+	}
+	if !strings.Contains(args, `model_reasoning_effort="high"`) {
+		t.Fatalf("expected effort override in args, got: %s", args)
+	}
+}
+
 func TestBuildLocalCodexCommandSupportsCodex53Model(t *testing.T) {
 	cmd := buildLocalCodexCommand("", agentengine.AgentConfig{
 		Model:           codexModel53,
@@ -126,9 +141,9 @@ func TestBuildLocalCodexCommandDefaultsToHighEffort(t *testing.T) {
 	}
 }
 
-func TestDefaultModelIsGPT54(t *testing.T) {
-	if DefaultModel() != gpt54Model {
-		t.Fatalf("expected default model %q, got %q", gpt54Model, DefaultModel())
+func TestDefaultModelIsGPT55(t *testing.T) {
+	if DefaultModel() != gpt55Model {
+		t.Fatalf("expected default model %q, got %q", gpt55Model, DefaultModel())
 	}
 }
 
@@ -144,6 +159,9 @@ func TestCapabilitiesIncludesCodex53Model(t *testing.T) {
 
 	if !containsString(caps.Models, codexModel53) {
 		t.Fatalf("expected capabilities to include %q, got %#v", codexModel53, caps.Models)
+	}
+	if !containsString(caps.Models, gpt55Model) {
+		t.Fatalf("expected capabilities to include %q, got %#v", gpt55Model, caps.Models)
 	}
 	if !containsString(caps.Models, gpt54Model) {
 		t.Fatalf("expected capabilities to include %q, got %#v", gpt54Model, caps.Models)

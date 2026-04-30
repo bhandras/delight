@@ -31,6 +31,9 @@ const (
 )
 
 const (
+	// gpt55Model is the GPT-5.5 model identifier.
+	gpt55Model = "gpt-5.5"
+
 	// gpt54Model is the GPT-5.4 model identifier.
 	gpt54Model = "gpt-5.4"
 
@@ -48,7 +51,7 @@ const (
 
 	// defaultRemoteModel is the Codex model we select when no explicit model is
 	// configured. This keeps behavior stable across Codex config changes.
-	defaultRemoteModel = gpt54Model
+	defaultRemoteModel = gpt55Model
 )
 
 const (
@@ -396,6 +399,7 @@ func (e *Engine) Capabilities() agentengine.AgentCapabilities {
 
 	return agentengine.AgentCapabilities{
 		Models: []string{
+			gpt55Model,
 			gpt54Model,
 			codexModel53,
 			codexModel52,
