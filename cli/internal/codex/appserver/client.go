@@ -39,6 +39,10 @@ const (
 // client has been closed.
 var ErrClosed = errors.New("codex app-server client closed")
 
+// ErrOversizedMessage is returned when a JSON-RPC response exceeded the maximum
+// accepted JSONL record size and was discarded.
+var ErrOversizedMessage = errors.New("codex app-server message exceeded max size")
+
 // NotificationHandler receives server-initiated JSON-RPC notifications.
 type NotificationHandler func(method string, params json.RawMessage)
 
@@ -339,6 +343,7 @@ func (c *Client) readStdout() {
 		}
 		if tooLong {
 			logger.Warnf("app-server: dropped oversized JSONL message (> %d bytes)", stdoutMaxLineBytes)
+			c.dispatchOversizedMessage(line)
 			continue
 		}
 		if len(bytes.TrimSpace(line)) == 0 {
@@ -460,6 +465,15 @@ func (c *Client) dispatchRequest(id json.RawMessage, method string, params json.
 
 // dispatchResponse resolves a pending request.
 func (c *Client) dispatchResponse(id json.RawMessage, result json.RawMessage, rpcErr *RPCError) {
+	if rpcErr != nil {
+		c.dispatchResponseError(id, errors.New(rpcErr.Message))
+		return
+	}
+	c.dispatchResponseResult(id, result)
+}
+
+// dispatchResponseResult resolves a pending request with a successful result.
+func (c *Client) dispatchResponseResult(id json.RawMessage, result json.RawMessage) {
 	idNum, ok := parseNumericID(id)
 	if !ok {
 		return
@@ -473,11 +487,35 @@ func (c *Client) dispatchResponse(id json.RawMessage, result json.RawMessage, rp
 		return
 	}
 
-	if rpcErr != nil {
-		ch <- rpcResponse{err: errors.New(rpcErr.Message)}
+	ch <- rpcResponse{result: result, err: nil}
+}
+
+// dispatchResponseError resolves a pending request with err.
+func (c *Client) dispatchResponseError(id json.RawMessage, err error) {
+	idNum, ok := parseNumericID(id)
+	if !ok {
 		return
 	}
-	ch <- rpcResponse{result: result, err: nil}
+
+	c.mu.Lock()
+	ch := c.pending[idNum]
+	delete(c.pending, idNum)
+	c.mu.Unlock()
+	if ch == nil {
+		return
+	}
+
+	ch <- rpcResponse{err: err}
+}
+
+// dispatchOversizedMessage unblocks a pending JSON-RPC call when the oversized
+// record prefix still contains a top-level id.
+func (c *Client) dispatchOversizedMessage(prefix []byte) {
+	id, ok := parseJSONRPCResponseIDFromPrefix(prefix)
+	if !ok {
+		return
+	}
+	c.dispatchResponseError(id, ErrOversizedMessage)
 }
 
 // send writes a single JSON-RPC message to stdin.
@@ -538,7 +576,7 @@ func isExpectedStreamCloseError(err error) bool {
 }
 
 // readJSONLLine reads a single newline-delimited record from r. If the line
-// exceeds maxBytes, the bytes are discarded and tooLong is returned as true.
+// exceeds maxBytes, the retained prefix is returned with tooLong set to true.
 func readJSONLLine(r *bufio.Reader, maxBytes int) (line []byte, tooLong bool, err error) {
 	if r == nil {
 		return nil, false, io.EOF
@@ -551,10 +589,14 @@ func readJSONLLine(r *bufio.Reader, maxBytes int) (line []byte, tooLong bool, er
 	var b bytes.Buffer
 	for {
 		chunk, readErr := r.ReadSlice('\n')
-		if len(chunk) > 0 && !tooLong {
-			if b.Len()+len(chunk) <= maxBytes {
+		if len(chunk) > 0 {
+			remaining := maxBytes - b.Len()
+			if remaining <= 0 {
+				tooLong = true
+			} else if len(chunk) <= remaining {
 				_, _ = b.Write(chunk)
 			} else {
+				_, _ = b.Write(chunk[:remaining])
 				tooLong = true
 			}
 		}
@@ -575,10 +617,51 @@ func readJSONLLine(r *bufio.Reader, maxBytes int) (line []byte, tooLong bool, er
 	}
 
 	if tooLong {
-		return nil, true, nil
+		return b.Bytes(), true, nil
 	}
 
 	raw := b.Bytes()
 	raw = bytes.TrimRight(raw, "\n")
 	return raw, false, nil
+}
+
+// parseJSONRPCResponseIDFromPrefix extracts a top-level JSON-RPC response id
+// from a partial JSON object prefix when that id appears before truncation.
+func parseJSONRPCResponseIDFromPrefix(prefix []byte) (json.RawMessage, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(prefix))
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, false
+	}
+	delim, ok := token.(json.Delim)
+	if !ok || delim != '{' {
+		return nil, false
+	}
+
+	var id json.RawMessage
+	hasMethod := false
+	for decoder.More() {
+		token, err = decoder.Token()
+		if err != nil {
+			return id, len(id) > 0 && !hasMethod
+		}
+		key, ok := token.(string)
+		if !ok {
+			return id, len(id) > 0 && !hasMethod
+		}
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return id, len(id) > 0 && !hasMethod
+		}
+		switch key {
+		case "id":
+			if len(bytes.TrimSpace(raw)) > 0 {
+				id = raw
+			}
+		case "method":
+			hasMethod = true
+		}
+	}
+
+	return id, len(id) > 0 && !hasMethod
 }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -86,6 +87,9 @@ func TestReadJSONLLineDropsOversizedLine(t *testing.T) {
 	if !tooLong {
 		t.Fatalf("expected tooLong=true for oversized line, got line len=%d", len(line))
 	}
+	if len(line) != 128 {
+		t.Fatalf("expected retained prefix len 128, got %d", len(line))
+	}
 
 	line, tooLong, err = readJSONLLine(r, 128)
 	if err != nil {
@@ -96,5 +100,45 @@ func TestReadJSONLLineDropsOversizedLine(t *testing.T) {
 	}
 	if got := string(line); got != `{"method":"ok","params":{"y":1}}` {
 		t.Fatalf("unexpected second line: %q", got)
+	}
+}
+
+// TestParseJSONRPCResponseIDFromPrefix extracts an id that appears before a
+// truncated result payload.
+func TestParseJSONRPCResponseIDFromPrefix(t *testing.T) {
+	id, ok := parseJSONRPCResponseIDFromPrefix([]byte(`{"jsonrpc":"2.0","id":42,"result":{"huge":"`))
+	if !ok {
+		t.Fatalf("expected id to be parsed from prefix")
+	}
+	if got := string(id); got != "42" {
+		t.Fatalf("expected id 42, got %q", got)
+	}
+}
+
+// TestParseJSONRPCResponseIDFromPrefixIgnoresRequests avoids completing a
+// caller when the oversized record is a server-initiated request.
+func TestParseJSONRPCResponseIDFromPrefixIgnoresRequests(t *testing.T) {
+	_, ok := parseJSONRPCResponseIDFromPrefix([]byte(`{"id":42,"method":"tool/call","params":{"huge":"`))
+	if ok {
+		t.Fatalf("expected oversized request prefix to be ignored")
+	}
+}
+
+// TestDispatchOversizedMessageUnblocksPendingCall ensures a dropped oversized
+// response does not leave the matching caller waiting for a timeout.
+func TestDispatchOversizedMessageUnblocksPendingCall(t *testing.T) {
+	client := NewClient(false)
+	ch := make(chan rpcResponse, 1)
+	client.pending[7] = ch
+
+	client.dispatchOversizedMessage([]byte(`{"id":7,"result":{"huge":"`))
+
+	select {
+	case resp := <-ch:
+		if !errors.Is(resp.err, ErrOversizedMessage) {
+			t.Fatalf("expected ErrOversizedMessage, got %v", resp.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for oversized response dispatch")
 	}
 }

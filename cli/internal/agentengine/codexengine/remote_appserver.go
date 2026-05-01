@@ -3,6 +3,7 @@ package codexengine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -22,6 +23,14 @@ const (
 	// codex-cli (notably, gpt-5.2-codex rejects "concise" and only supports
 	// "detailed").
 	appServerSummaryDetailed = "detailed"
+
+	// remoteThreadIDFallbackTimeout bounds how long startup waits for a
+	// thread/started notification after an oversized thread/start response.
+	remoteThreadIDFallbackTimeout = 2 * time.Second
+
+	// remoteThreadIDFallbackPollInterval bounds polling while waiting for the
+	// notification-only fallback thread id.
+	remoteThreadIDFallbackPollInterval = 20 * time.Millisecond
 )
 
 // startRemoteAppServer starts Codex remote mode using `codex app-server`.
@@ -126,6 +135,10 @@ func (e *Engine) openAppServerThread(
 			"threadId": resumeToken,
 		})
 		if err != nil {
+			if errors.Is(err, appserver.ErrOversizedMessage) {
+				logger.Warnf("codex: thread/resume response too large; continuing with resume token")
+				return resumeToken, nil
+			}
 			return "", err
 		}
 		threadID := parseThreadIDFromResult(raw)
@@ -153,6 +166,12 @@ func (e *Engine) openAppServerThread(
 		})
 	}
 	if err != nil {
+		if errors.Is(err, appserver.ErrOversizedMessage) {
+			if threadID, ok := e.waitForRemoteThreadID(ctx, remoteThreadIDFallbackTimeout); ok {
+				logger.Warnf("codex: thread/start response too large; continuing with thread/started id")
+				return threadID, nil
+			}
+		}
 		return "", err
 	}
 	threadID := parseThreadIDFromResult(raw)
@@ -160,6 +179,39 @@ func (e *Engine) openAppServerThread(
 		return "", fmt.Errorf("thread/start returned empty thread id")
 	}
 	return threadID, nil
+}
+
+// waitForRemoteThreadID waits briefly for thread/started to provide a thread id
+// when the matching thread/start response was too large to decode.
+func (e *Engine) waitForRemoteThreadID(ctx context.Context, timeout time.Duration) (string, bool) {
+	if e == nil {
+		return "", false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(remoteThreadIDFallbackPollInterval)
+	defer ticker.Stop()
+
+	for {
+		e.mu.Lock()
+		threadID := strings.TrimSpace(e.remoteThreadID)
+		e.mu.Unlock()
+		if threadID != "" {
+			return threadID, true
+		}
+
+		select {
+		case <-ctx.Done():
+			return "", false
+		case <-timer.C:
+			return "", false
+		case <-ticker.C:
+		}
+	}
 }
 
 // startRemoteTurnViaAppServer starts a new turn via turn/start and returns immediately.
