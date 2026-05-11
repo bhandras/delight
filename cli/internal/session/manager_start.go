@@ -279,6 +279,7 @@ func (m *Manager) initSessionActor() {
 			}
 			if m.cfg != nil {
 				m.sessionActorRuntime.WithDelightHome(m.cfg.DelightHome)
+				m.sessionActorRuntime.WithAgentExtraArgs(m.cfg.ExtraArgsForAgent(m.agent))
 			}
 			m.sessionActorRuntime.WithEncryptFn(m.encrypt)
 		}
@@ -292,6 +293,7 @@ func (m *Manager) initSessionActor() {
 		WithAgent(m.agent).
 		WithACPConfig(m.cfg.ACPURL, m.acpAgent, m.acpSessionID).
 		WithDelightHome(m.cfg.DelightHome).
+		WithAgentExtraArgs(m.cfg.ExtraArgsForAgent(m.agent)).
 		WithEncryptFn(m.encrypt)
 
 	m.ensurePushoverNotifier()
@@ -401,6 +403,12 @@ func (m *Manager) seedAgentStateFromServer() types.AgentState {
 	if m.cfg != nil {
 		if model := strings.TrimSpace(m.cfg.Model); model != "" {
 			agentState.Model = model
+		}
+		if mode := strings.TrimSpace(m.cfg.PermissionMode); mode != "" {
+			agentState.PermissionMode = mode
+		}
+		if effort := strings.TrimSpace(m.cfg.ReasoningEffort); effort != "" {
+			agentState.ReasoningEffort = effort
 		}
 		if resume := strings.TrimSpace(m.cfg.ResumeToken); resume != "" {
 			agentState.ResumeToken = resume

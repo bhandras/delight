@@ -1,0 +1,99 @@
+# Delight CLI sample configuration.
+#
+# Copy this file to ~/.delight/config.toml and edit the values you want to
+# persist. These values match the current built-in defaults unless noted.
+
+# Delight server API base URL.
+server_url = "http://localhost:3005"
+
+# Local state directory. "~" is expanded by the CLI.
+home_dir = "~/.delight"
+
+# Agent backend used by `delight run`.
+agent = "codex"
+
+# Initial control mode. Supported values: "local", "remote".
+mode = "remote"
+
+# Socket.IO transport. Supported values: "websocket", "polling".
+socketio_transport = "websocket"
+
+# Logger verbosity. Supported values: "trace", "debug", "info", "warn", "error".
+log_level = "info"
+
+# ACP is disabled by default. Set both values to enable ACP-backed sessions.
+acp_url = ""
+acp_agent = ""
+
+# Generic agent defaults. Empty means "let the selected agent use its default".
+model = ""
+permission_mode = ""
+reasoning_effort = ""
+
+[push]
+# Encrypted mobile push notifications. Supported values: "auto", "on", "off".
+mode = "auto"
+
+# Events that trigger encrypted mobile push.
+events = ["turn-complete", "attention"]
+
+# Minimum interval between push notifications for the same alert key.
+cooldown_sec = 60
+
+[pushover]
+# Pushover is effectively disabled by default because credentials are empty.
+# Supported mode values: "auto", "on", "off".
+mode = "auto"
+
+# Direct credentials. Prefer *_env below if you do not want secrets in TOML.
+token = ""
+user_key = ""
+
+# Optional environment variable indirection for credentials. Empty by default.
+token_env = ""
+user_key_env = ""
+
+# Events that trigger Pushover notifications when credentials are present.
+events = ["turn-complete", "attention"]
+
+# Minimum interval between Pushover notifications for the same alert key.
+cooldown_sec = 60
+
+# Pushover priority.
+priority = 0
+
+[codex]
+# Codex-specific defaults. Empty values fall back to Delight/Codex defaults.
+model = ""
+permission_mode = ""
+reasoning_effort = ""
+
+# Extra args appended to local `codex` invocations after Delight's own args.
+extra_args = []
+
+[claude]
+# Claude-specific defaults. Empty values fall back to Claude defaults.
+model = ""
+permission_mode = ""
+
+# Extra args appended to local Claude invocations after Delight's own args.
+extra_args = []
+
+# Example profiles. Profiles overlay the top-level values when selected with
+# `--profile <name>`.
+#
+# [profiles.remote]
+# server_url = "https://your.server:3443"
+# agent = "codex"
+# mode = "remote"
+#
+# [profiles.remote.push]
+# mode = "auto"
+# events = ["turn-complete", "attention"]
+# cooldown_sec = 60
+#
+# [profiles.remote.codex]
+# model = "gpt-5.5"
+# reasoning_effort = "high"
+# permission_mode = "default"
+# extra_args = []

@@ -71,6 +71,8 @@ type ProcessOptions struct {
 	// PermissionMode is an optional permission preset passed via
 	// `--permission-mode`.
 	PermissionMode string
+	// ExtraArgs are appended after Delight's first-class Claude arguments.
+	ExtraArgs []string
 	// Debug enables verbose logging.
 	Debug bool
 }
@@ -126,6 +128,7 @@ func NewProcess(opts ProcessOptions) (*Process, error) {
 	if permissionMode := strings.TrimSpace(opts.PermissionMode); permissionMode != "" {
 		args = append(args, "--permission-mode", permissionMode)
 	}
+	args = append(args, opts.ExtraArgs...)
 	cmd := exec.Command("node", args...)
 	cmd.Dir = workDir
 

@@ -24,6 +24,7 @@ type Runtime struct {
 	debug       bool
 	agent       agentengine.AgentType
 	delightHome string
+	agentArgs   []string
 
 	emitFn func(framework.Input)
 
@@ -81,6 +82,14 @@ func (r *Runtime) WithAgent(agent string) *Runtime {
 		return r
 	}
 	r.agent = agentengine.AgentType(agent)
+	return r
+}
+
+// WithAgentExtraArgs configures raw args appended to local backend commands.
+func (r *Runtime) WithAgentExtraArgs(args []string) *Runtime {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.agentArgs = append([]string(nil), args...)
 	return r
 }
 

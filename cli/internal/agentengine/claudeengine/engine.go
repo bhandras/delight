@@ -91,6 +91,7 @@ func normalizeClaudeConfig(cfg agentengine.AgentConfig) agentengine.AgentConfig 
 	out := agentengine.AgentConfig{
 		Model:          canonicalClaudeModel(cfg.Model),
 		PermissionMode: permissionMode,
+		ExtraArgs:      append([]string(nil), cfg.ExtraArgs...),
 	}
 	// "default" means "no explicit override" (do not pass --model to upstream).
 	if strings.EqualFold(out.Model, "default") {
@@ -169,14 +170,14 @@ type Engine struct {
 	localExited  chan struct{}
 	localExitErr *error
 
-	remoteBridge    *claude.RemoteBridge
-	remoteCtx       context.Context
-	remoteCancel    context.CancelFunc
-	remoteExited    chan struct{}
-	remoteExitErr   *error
-	remoteSessionID string
-	remoteTurnID    string
-	remoteWorking   bool
+	remoteBridge     *claude.RemoteBridge
+	remoteCtx        context.Context
+	remoteCancel     context.CancelFunc
+	remoteExited     chan struct{}
+	remoteExitErr    *error
+	remoteSessionID  string
+	remoteTurnID     string
+	remoteWorking    bool
 	remoteToolNames  map[string]string
 	remoteToolInputs map[string]any
 
@@ -188,17 +189,17 @@ type Engine struct {
 // New returns a new Claude engine instance.
 func New(workDir string, requester agentengine.PermissionRequester, debug bool) *Engine {
 	return &Engine{
-		workDir:         workDir,
-		debug:           debug,
-		requester:       requester,
-		config:          agentengine.AgentConfig{},
-		events:          make(chan agentengine.Event, 128),
-		closed:          make(chan struct{}),
-		waitCh:          make(chan struct{}),
-		localCtx:        context.Background(),
-		remoteCtx:       context.Background(),
-		localCancel:     func() {},
-		remoteCancel:    func() {},
+		workDir:          workDir,
+		debug:            debug,
+		requester:        requester,
+		config:           agentengine.AgentConfig{},
+		events:           make(chan agentengine.Event, 128),
+		closed:           make(chan struct{}),
+		waitCh:           make(chan struct{}),
+		localCtx:         context.Background(),
+		remoteCtx:        context.Background(),
+		localCancel:      func() {},
+		remoteCancel:     func() {},
 		remoteToolNames:  make(map[string]string),
 		remoteToolInputs: make(map[string]any),
 	}
@@ -421,6 +422,7 @@ func (e *Engine) startLocal(ctx context.Context, spec agentengine.EngineStartSpe
 		ResumeToken:    resumeToken,
 		Model:          cfg.Model,
 		PermissionMode: cfg.PermissionMode,
+		ExtraArgs:      cfg.ExtraArgs,
 		Debug:          e.debug,
 	})
 	if err != nil {

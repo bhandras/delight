@@ -64,6 +64,9 @@ type AgentConfig struct {
 	//
 	// Canonical Codex values are: minimal|low|medium|high|xhigh.
 	ReasoningEffort string
+	// ExtraArgs are appended to local backend invocations after Delight's
+	// first-class arguments.
+	ExtraArgs []string
 }
 
 // AgentCapabilities describes which settings are supported by an engine.

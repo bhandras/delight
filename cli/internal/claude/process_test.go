@@ -20,6 +20,7 @@ func TestNewProcessIncludesModelAndPermissionModeArgs(t *testing.T) {
 		ResumeToken:    "sess-1",
 		Model:          "sonnet",
 		PermissionMode: "plan",
+		ExtraArgs:      []string{"--verbose"},
 		Debug:          false,
 	})
 	if err != nil {
@@ -35,5 +36,8 @@ func TestNewProcessIncludesModelAndPermissionModeArgs(t *testing.T) {
 	}
 	if !strings.Contains(args, "--permission-mode plan") {
 		t.Fatalf("expected --permission-mode in args, got: %s", args)
+	}
+	if !strings.Contains(args, " --verbose") {
+		t.Fatalf("expected extra arg in args, got: %s", args)
 	}
 }

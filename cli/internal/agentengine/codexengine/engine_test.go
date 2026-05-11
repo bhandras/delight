@@ -59,6 +59,7 @@ func TestBuildLocalCodexCommandIncludesSelectedConfig(t *testing.T) {
 		Model:           codexModel52,
 		ReasoningEffort: "high",
 		PermissionMode:  "read-only",
+		ExtraArgs:       []string{"-c", "experimental=true"},
 	})
 
 	args := strings.Join(cmd.Args, " ")
@@ -73,6 +74,9 @@ func TestBuildLocalCodexCommandIncludesSelectedConfig(t *testing.T) {
 	}
 	if !strings.Contains(args, " -a on-request ") {
 		t.Fatalf("expected approval policy in args, got: %s", args)
+	}
+	if !strings.Contains(args, " -c experimental=true ") {
+		t.Fatalf("expected extra args before resume, got: %s", args)
 	}
 	if !strings.Contains(args, " resume resume-1") {
 		t.Fatalf("expected resume subcommand in args, got: %s", args)

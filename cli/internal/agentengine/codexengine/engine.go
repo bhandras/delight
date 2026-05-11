@@ -651,6 +651,7 @@ func buildLocalCodexCommand(resumeToken string, cfg agentengine.AgentConfig) *ex
 		"-m", model,
 		"-c", fmt.Sprintf("model_reasoning_effort=%q", reasoningEffort),
 	}
+	args = append(args, cfg.ExtraArgs...)
 	if token := strings.TrimSpace(resumeToken); token != "" {
 		args = append(args, codexResumeSubcommand, token)
 	}

@@ -7,6 +7,7 @@ toolchain go1.24.5
 require (
 	github.com/creack/pty v1.1.21
 	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/pelletier/go-toml/v2 v2.3.1
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/stretchr/testify v1.11.1
 	github.com/zishang520/socket.io/clients/socket/v3 v3.0.0-rc.9
@@ -43,7 +44,7 @@ require (
 	github.com/zishang520/socket.io/servers/socket/v3 v3.0.0-rc.9 // indirect
 	github.com/zishang520/webtransport-go v0.9.1 // indirect
 	golang.org/x/net v0.48.0 // indirect
-	golang.org/x/sys v0.39.0 // indirect
+	golang.org/x/sys v0.39.0
 	golang.org/x/text v0.32.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	resty.dev/v3 v3.0.0-beta.4 // indirect

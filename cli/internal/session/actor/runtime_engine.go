@@ -231,6 +231,7 @@ func (r *Runtime) startEngineLocal(ctx context.Context, eff effStartLocalRunner,
 	r.engineLocalGen = eff.Gen
 	r.engineLocalActive = true
 	r.engineLocalInteractive = false
+	cfg := r.configWithExtraArgs(eff.Config)
 	r.mu.Unlock()
 
 	// Best-effort: ensure remote is stopped before starting local.
@@ -249,7 +250,7 @@ func (r *Runtime) startEngineLocal(ctx context.Context, eff effStartLocalRunner,
 		Mode:        agentengine.ModeLocal,
 		ResumeToken: strings.TrimSpace(eff.Resume),
 		RolloutPath: strings.TrimSpace(eff.RolloutPath),
-		Config:      eff.Config,
+		Config:      cfg,
 	}); err != nil {
 		emit(evRunnerExited{Gen: eff.Gen, Mode: ModeLocal, Err: err})
 		return
@@ -292,6 +293,7 @@ func (r *Runtime) startEngineRemote(ctx context.Context, eff effStartRemoteRunne
 	r.mu.Lock()
 	r.engineRemoteGen = eff.Gen
 	r.engineRemoteActive = true
+	cfg := r.configWithExtraArgs(eff.Config)
 	r.mu.Unlock()
 
 	// Best-effort: ensure local is stopped before starting remote.
@@ -321,7 +323,7 @@ func (r *Runtime) startEngineRemote(ctx context.Context, eff effStartRemoteRunne
 		WorkDir:     workDir,
 		Mode:        agentengine.ModeRemote,
 		ResumeToken: strings.TrimSpace(eff.Resume),
-		Config:      eff.Config,
+		Config:      cfg,
 	}); err != nil {
 		emit(evRunnerExited{Gen: eff.Gen, Mode: ModeRemote, Err: err})
 		return
@@ -470,6 +472,17 @@ func (r *Runtime) applyEngineConfig(ctx context.Context, eff effApplyEngineConfi
 	if err := engine.ApplyConfig(ctx, eff.Config); err != nil && r.debug {
 		logger.Debugf("runtime: apply config failed: %v", err)
 	}
+}
+
+// configWithExtraArgs appends runtime-level backend args to cfg.
+func (r *Runtime) configWithExtraArgs(cfg agentengine.AgentConfig) agentengine.AgentConfig {
+	if len(r.agentArgs) == 0 {
+		return cfg
+	}
+	combined := append([]string(nil), cfg.ExtraArgs...)
+	combined = append(combined, r.agentArgs...)
+	cfg.ExtraArgs = combined
+	return cfg
 }
 
 func (r *Runtime) queryAgentEngineSettings(ctx context.Context, eff effQueryAgentEngineSettings, emit func(framework.Input)) {

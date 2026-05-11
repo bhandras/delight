@@ -28,6 +28,10 @@ type Config struct {
 	//
 	// This value is engine-specific; an empty string means "use engine default".
 	Model string
+	// PermissionMode selects the upstream permission/sandbox preset.
+	PermissionMode string
+	// ReasoningEffort selects the Codex reasoning effort preset.
+	ReasoningEffort string
 
 	// ResumeToken is an engine-specific resume identifier used to resume an
 	// existing upstream conversation when starting a session.
@@ -38,6 +42,8 @@ type Config struct {
 
 	// Debug enables verbose logging.
 	Debug bool
+	// LogLevel controls the shared logger verbosity.
+	LogLevel string
 	// SocketIOTransport selects the Socket.IO transport mode ("websocket" or "polling").
 	SocketIOTransport string
 	// Agent selects the local agent backend (acp|claude|codex).
@@ -78,6 +84,24 @@ type Config struct {
 	PushNotifyTurnComplete bool
 	// PushNotifyAttention enables push notifications when attention is required.
 	PushNotifyAttention bool
+
+	// CodexExtraArgs are appended to local Codex invocations after Delight's
+	// first-class arguments.
+	CodexExtraArgs []string
+	// ClaudeExtraArgs are appended to local Claude invocations after Delight's
+	// first-class arguments.
+	ClaudeExtraArgs []string
+
+	// CodexModel stores the Codex-specific model loaded from TOML.
+	CodexModel string
+	// CodexPermissionMode stores the Codex-specific permission mode from TOML.
+	CodexPermissionMode string
+	// CodexReasoningEffort stores the Codex-specific reasoning effort from TOML.
+	CodexReasoningEffort string
+	// ClaudeModel stores the Claude-specific model loaded from TOML.
+	ClaudeModel string
+	// ClaudePermissionMode stores the Claude-specific permission mode from TOML.
+	ClaudePermissionMode string
 }
 
 const (
@@ -92,6 +116,9 @@ const (
 	// defaultAgent is the default agent backend used by `delight run` when not
 	// overridden explicitly.
 	defaultAgent = "codex"
+
+	// defaultLogLevel is the shared logger level used unless overridden.
+	defaultLogLevel = "info"
 
 	// defaultStartingMode is the default control mode when starting a session.
 	//
@@ -123,8 +150,8 @@ const (
 	defaultPushCooldown = 60 * time.Second
 )
 
-// Default returns the default CLI configuration without reading environment
-// variables.
+// Default returns the default CLI configuration without reading configuration
+// files or environment variables.
 //
 // Callers that need the on-disk home directory to exist must call EnsureHome.
 func Default() (*Config, error) {
@@ -143,8 +170,11 @@ func Default() (*Config, error) {
 		DelightHome:            delightHome,
 		AccessKey:              filepath.Join(delightHome, "access.key"),
 		Model:                  "",
+		PermissionMode:         "",
+		ReasoningEffort:        "",
 		ResumeToken:            "",
 		Debug:                  false,
+		LogLevel:               defaultLogLevel,
 		SocketIOTransport:      defaultSocketIOTransport,
 		Agent:                  defaultAgent,
 		FakeAgent:              false,
@@ -158,9 +188,16 @@ func Default() (*Config, error) {
 		PushNotifyTurnComplete: true,
 		PushNotifyAttention:    true,
 	}
+	return cfg, nil
+}
+
+// ApplyEnv applies supported environment variable overrides to cfg.
+func ApplyEnv(cfg *Config) {
+	if cfg == nil {
+		return
+	}
 	applyPushoverEnv(cfg)
 	applyPushEnv(cfg)
-	return cfg, nil
 }
 
 // EnsureHome creates the on-disk Delight home directory if needed.
@@ -169,6 +206,23 @@ func (c *Config) EnsureHome() error {
 		return fmt.Errorf("delight home is empty")
 	}
 	return os.MkdirAll(c.DelightHome, 0o700)
+}
+
+// SetHomeDir updates DelightHome and paths derived from it.
+func (c *Config) SetHomeDir(homeDir string) error {
+	if c == nil {
+		return fmt.Errorf("config is nil")
+	}
+	expanded, err := expandPath(homeDir)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(expanded) == "" {
+		return fmt.Errorf("delight home is empty")
+	}
+	c.DelightHome = expanded
+	c.AccessKey = filepath.Join(c.DelightHome, "access.key")
+	return nil
 }
 
 // PushoverEnabled reports whether Pushover notifications are configured.
@@ -203,6 +257,68 @@ func (c *Config) PushEnabled() bool {
 	default:
 		return false
 	}
+}
+
+// ExtraArgsForAgent returns a copy of configured passthrough args for agent.
+func (c *Config) ExtraArgsForAgent(agent string) []string {
+	if c == nil {
+		return nil
+	}
+	switch strings.TrimSpace(agent) {
+	case "codex":
+		return append([]string(nil), c.CodexExtraArgs...)
+	case "claude":
+		return append([]string(nil), c.ClaudeExtraArgs...)
+	default:
+		return nil
+	}
+}
+
+// AppendExtraArgsForAgent appends passthrough args to the selected agent.
+func (c *Config) AppendExtraArgsForAgent(agent string, args []string) {
+	if c == nil || len(args) == 0 {
+		return
+	}
+	switch strings.TrimSpace(agent) {
+	case "codex":
+		c.CodexExtraArgs = append(c.CodexExtraArgs, args...)
+	case "claude":
+		c.ClaudeExtraArgs = append(c.ClaudeExtraArgs, args...)
+	}
+}
+
+// ApplyAgentDefaults overlays TOML agent-section defaults for the active agent.
+func (c *Config) ApplyAgentDefaults() {
+	if c == nil {
+		return
+	}
+	switch strings.TrimSpace(c.Agent) {
+	case "codex":
+		if c.CodexModel != "" {
+			c.Model = c.CodexModel
+		}
+		if c.CodexPermissionMode != "" {
+			c.PermissionMode = c.CodexPermissionMode
+		}
+		if c.CodexReasoningEffort != "" {
+			c.ReasoningEffort = c.CodexReasoningEffort
+		}
+	case "claude":
+		if c.ClaudeModel != "" {
+			c.Model = c.ClaudeModel
+		}
+		if c.ClaudePermissionMode != "" {
+			c.PermissionMode = c.ClaudePermissionMode
+		}
+	}
+}
+
+// SetPushEvents enables encrypted push alerts from a comma-separated list.
+func (c *Config) SetPushEvents(events string) {
+	if c == nil {
+		return
+	}
+	applyPushEvents(c, events)
 }
 
 // applyPushoverEnv applies Pushover settings from environment variables.

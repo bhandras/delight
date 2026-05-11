@@ -32,6 +32,40 @@ make build
   --log-level=debug
 ```
 
+## Configuration
+
+The CLI loads `~/.delight/config.toml` when it exists. You can select another
+file with `--config` and a profile with `--profile`. See
+`sample-config.toml` for every supported key with default values.
+
+```toml
+server_url = "https://your.server:3443"
+agent = "codex"
+mode = "remote"
+log_level = "info"
+
+[push]
+mode = "auto"
+events = ["turn-complete", "attention"]
+cooldown_sec = 60
+
+[codex]
+model = "gpt-5.5"
+reasoning_effort = "high"
+permission_mode = "default"
+extra_args = ["-c", "experimental=true"]
+
+[profiles.local]
+server_url = "http://localhost:3005"
+```
+
+Precedence is built-in defaults, TOML config, environment variables, then CLI
+flags. Raw backend flags can also be passed after `--`:
+
+```bash
+./delight codex run --profile local -- -c experimental=true
+```
+
 ## How It Works
 
 ```
