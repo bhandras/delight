@@ -73,7 +73,6 @@ func run() error {
 	if err := config.LoadFile(cfg, fileOpts); err != nil {
 		return err
 	}
-	config.ApplyEnv(cfg)
 
 	leadingFlags := delightArgs[:cmdIndex]
 	trailingArgs := delightArgs[cmdIndex+1:]

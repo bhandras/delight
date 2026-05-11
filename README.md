@@ -87,27 +87,19 @@ needs attention (e.g. permission prompts). Notifications are emitted by the
 local context (agent, machine, directory) and the server remains blind to
 end-to-end encrypted payloads.
 
-Enable Pushover by setting these environment variables:
+Enable Pushover in `~/.delight/config.toml`:
 
-```bash
-export DELIGHT_PUSHOVER_TOKEN=your_app_token
-export DELIGHT_PUSHOVER_USER_KEY=your_user_key
+```toml
+[pushover]
+mode = "auto"
+token = "your_app_token"
+user_key = "your_user_key"
+events = ["turn-complete", "attention"]
+cooldown_sec = 60
+priority = 0
 ```
 
-Optional settings:
-
-```bash
-# Comma-separated list: turn-complete, attention
-export DELIGHT_PUSHOVER_EVENTS=turn-complete,attention
-
-# Cooldown in seconds (per alert type)
-export DELIGHT_PUSHOVER_COOLDOWN_SEC=60
-
-# Pushover priority (-2..2)
-export DELIGHT_PUSHOVER_PRIORITY=0
-```
-
-You can also control notifications with a CLI flag:
+You can override the mode for a single run with a CLI flag:
 
 ```bash
 ./delight run --pushover=auto   # default: only when creds are set

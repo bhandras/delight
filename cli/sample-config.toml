@@ -45,13 +45,9 @@ cooldown_sec = 60
 # Supported mode values: "auto", "on", "off".
 mode = "auto"
 
-# Direct credentials. Prefer *_env below if you do not want secrets in TOML.
+# Pushover credentials. Leave empty to keep Pushover disabled.
 token = ""
 user_key = ""
-
-# Optional environment variable indirection for credentials. Empty by default.
-token_env = ""
-user_key_env = ""
 
 # Events that trigger Pushover notifications when credentials are present.
 events = ["turn-complete", "attention"]

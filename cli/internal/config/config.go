@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -191,15 +190,6 @@ func Default() (*Config, error) {
 	return cfg, nil
 }
 
-// ApplyEnv applies supported environment variable overrides to cfg.
-func ApplyEnv(cfg *Config) {
-	if cfg == nil {
-		return
-	}
-	applyPushoverEnv(cfg)
-	applyPushEnv(cfg)
-}
-
 // EnsureHome creates the on-disk Delight home directory if needed.
 func (c *Config) EnsureHome() error {
 	if strings.TrimSpace(c.DelightHome) == "" {
@@ -321,38 +311,6 @@ func (c *Config) SetPushEvents(events string) {
 	applyPushEvents(c, events)
 }
 
-// applyPushoverEnv applies Pushover settings from environment variables.
-func applyPushoverEnv(cfg *Config) {
-	token := strings.TrimSpace(os.Getenv("DELIGHT_PUSHOVER_TOKEN"))
-	userKey := strings.TrimSpace(os.Getenv("DELIGHT_PUSHOVER_USER_KEY"))
-	if token == "" || userKey == "" {
-		return
-	}
-
-	cfg.PushoverToken = token
-	cfg.PushoverUserKey = userKey
-
-	if priority := strings.TrimSpace(os.Getenv("DELIGHT_PUSHOVER_PRIORITY")); priority != "" {
-		if parsed, err := strconv.Atoi(priority); err == nil {
-			cfg.PushoverPriority = parsed
-		}
-	}
-
-	if cooldown := strings.TrimSpace(os.Getenv("DELIGHT_PUSHOVER_COOLDOWN_SEC")); cooldown != "" {
-		if parsed, err := strconv.Atoi(cooldown); err == nil && parsed > 0 {
-			cfg.PushoverCooldown = time.Duration(parsed) * time.Second
-		}
-	}
-
-	if events := strings.TrimSpace(os.Getenv("DELIGHT_PUSHOVER_EVENTS")); events != "" {
-		applyPushoverEvents(cfg, events)
-		return
-	}
-
-	cfg.PushoverNotifyTurnComplete = true
-	cfg.PushoverNotifyAttention = true
-}
-
 // applyPushoverEvents enables Pushover alerts based on a comma-separated list.
 func applyPushoverEvents(cfg *Config, events string) {
 	cfg.PushoverNotifyTurnComplete = false
@@ -365,26 +323,6 @@ func applyPushoverEvents(cfg *Config, events string) {
 		case "attention":
 			cfg.PushoverNotifyAttention = true
 		}
-	}
-}
-
-// applyPushEnv applies encrypted push settings from environment variables.
-func applyPushEnv(cfg *Config) {
-	if mode := strings.TrimSpace(os.Getenv("DELIGHT_PUSH_MODE")); mode != "" {
-		switch mode {
-		case pushModeAuto, pushModeOn, pushModeOff:
-			cfg.PushMode = mode
-		}
-	}
-
-	if cooldown := strings.TrimSpace(os.Getenv("DELIGHT_PUSH_COOLDOWN_SEC")); cooldown != "" {
-		if parsed, err := strconv.Atoi(cooldown); err == nil && parsed > 0 {
-			cfg.PushCooldown = time.Duration(parsed) * time.Second
-		}
-	}
-
-	if events := strings.TrimSpace(os.Getenv("DELIGHT_PUSH_EVENTS")); events != "" {
-		applyPushEvents(cfg, events)
 	}
 }
 

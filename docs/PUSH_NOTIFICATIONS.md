@@ -66,7 +66,8 @@ only the generic one.
 ### 4. CLI setup
 
 - Use a CLI build that has an authenticated account and master key.
-- Push is enabled by default (`DELIGHT_PUSH_MODE=auto`) unless disabled.
+- Push is enabled by default (`push.mode = "auto"`) unless disabled in
+  `~/.delight/config.toml` or with `--push=off`.
 
 ### 5. Device registration
 
@@ -134,23 +135,17 @@ read-only to `/data/apns.p8` inside the gorush container).
 
 ## CLI Controls
 
-The CLI encrypted push knobs are environment-driven:
+The CLI encrypted push knobs live in `~/.delight/config.toml`:
 
-- `DELIGHT_PUSH_MODE=auto|on|off` (default: `auto`)
-- `DELIGHT_PUSH_EVENTS=turn-complete,attention` (default: both enabled)
-- `DELIGHT_PUSH_COOLDOWN_SEC=<seconds>` (default: `60`)
-
-Examples:
-
-```bash
-# Explicitly enable only turn-complete notifications.
-export DELIGHT_PUSH_MODE=on
-export DELIGHT_PUSH_EVENTS=turn-complete
-export DELIGHT_PUSH_COOLDOWN_SEC=30
-
-# Run a session.
-./cli/delight run --server-url=https://your.server
+```toml
+[push]
+mode = "on"
+events = ["turn-complete"]
+cooldown_sec = 30
 ```
+
+Use `--push`, `--push-events`, and `--push-cooldown-sec` for one-off CLI
+overrides.
 
 ## Verify End-to-End Delivery
 

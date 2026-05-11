@@ -59,8 +59,8 @@ extra_args = ["-c", "experimental=true"]
 server_url = "http://localhost:3005"
 ```
 
-Precedence is built-in defaults, TOML config, environment variables, then CLI
-flags. Raw backend flags can also be passed after `--`:
+Precedence is built-in defaults, TOML config, then CLI flags. Raw backend flags
+can also be passed after `--`:
 
 ```bash
 ./delight codex run --profile local -- -c experimental=true

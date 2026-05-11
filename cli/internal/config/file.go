@@ -56,9 +56,7 @@ type pushFileConfig struct {
 type pushoverFileConfig struct {
 	Mode        *string  `toml:"mode"`
 	Token       *string  `toml:"token"`
-	TokenEnv    *string  `toml:"token_env"`
 	UserKey     *string  `toml:"user_key"`
-	UserKeyEnv  *string  `toml:"user_key_env"`
 	Events      []string `toml:"events"`
 	CooldownSec *int     `toml:"cooldown_sec"`
 	Priority    *int     `toml:"priority"`
@@ -180,12 +178,6 @@ func applyPushoverFileConfig(cfg *Config, pushover *pushoverFileConfig) {
 	applyString(pushover.Mode, &cfg.PushoverMode)
 	applyString(pushover.Token, &cfg.PushoverToken)
 	applyString(pushover.UserKey, &cfg.PushoverUserKey)
-	if pushover.TokenEnv != nil {
-		cfg.PushoverToken = os.Getenv(strings.TrimSpace(*pushover.TokenEnv))
-	}
-	if pushover.UserKeyEnv != nil {
-		cfg.PushoverUserKey = os.Getenv(strings.TrimSpace(*pushover.UserKeyEnv))
-	}
 	if pushover.Priority != nil {
 		cfg.PushoverPriority = *pushover.Priority
 	}
