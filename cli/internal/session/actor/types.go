@@ -6,6 +6,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/actor"
 	"github.com/bhandras/delight/cli/internal/agentengine"
 	"github.com/bhandras/delight/cli/pkg/types"
+	"github.com/bhandras/delight/shared/wire"
 )
 
 // NOTE: This package intentionally starts as a type-only skeleton.
@@ -338,6 +339,27 @@ type cmdGetAgentEngineSettings struct {
 // isSessionCommand marks cmdGetAgentEngineSettings as a session command.
 func (cmdGetAgentEngineSettings) isSessionCommand() {}
 
+// ThreadGoalResult is returned by runtime-backed thread goal commands.
+type ThreadGoalResult struct {
+	// Goal is the current goal, if one exists.
+	Goal *wire.ThreadGoal
+	// Cleared indicates whether a clear command removed a goal.
+	Cleared bool
+	// Err is non-nil when the command failed.
+	Err error
+}
+
+// cmdThreadGoal requests a Codex thread-goal operation from the runtime.
+type cmdThreadGoal struct {
+	actor.InputBase
+	Action    wire.ThreadGoalAction
+	Objective string
+	Reply     chan ThreadGoalResult
+}
+
+// isSessionCommand marks cmdThreadGoal as a session command.
+func (cmdThreadGoal) isSessionCommand() {}
+
 // Events emitted by the runtime back into the reducer.
 
 type evRunnerReady struct {
@@ -616,6 +638,18 @@ type effQueryAgentEngineSettings struct {
 
 // isSessionEffect marks effQueryAgentEngineSettings as a session effect.
 func (effQueryAgentEngineSettings) isSessionEffect() {}
+
+// effThreadGoal requests a runtime-backed Codex thread goal operation.
+type effThreadGoal struct {
+	actor.EffectBase
+	Gen       int64
+	Action    wire.ThreadGoalAction
+	Objective string
+	Reply     chan ThreadGoalResult
+}
+
+// isSessionEffect marks effThreadGoal as a session effect.
+func (effThreadGoal) isSessionEffect() {}
 
 type effStopRemoteRunner struct {
 	actor.EffectBase

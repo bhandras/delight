@@ -47,6 +47,7 @@ func TestSessionInputMarkers(t *testing.T) {
 	(cmdSetControlledByUser{}).isSessionCommand()
 	(cmdSetAgentConfig{}).isSessionCommand()
 	(cmdGetAgentEngineSettings{}).isSessionCommand()
+	(cmdThreadGoal{}).isSessionCommand()
 
 	// Sanity: ensure event/command types still implement the actor framework
 	// input interface.

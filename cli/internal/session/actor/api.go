@@ -2,6 +2,7 @@ package actor
 
 import (
 	framework "github.com/bhandras/delight/cli/internal/actor"
+	"github.com/bhandras/delight/shared/wire"
 )
 
 // SwitchMode returns a command input that requests switching the session to the
@@ -151,4 +152,9 @@ func SetAgentConfig(model string, permissionMode string, reasoningEffort string,
 // for its supported settings and current configuration (best-effort).
 func GetAgentEngineSettings(reply chan AgentEngineSettingsSnapshot) framework.Input {
 	return cmdGetAgentEngineSettings{Reply: reply}
+}
+
+// ThreadGoal returns a command input that performs a Codex thread-goal operation.
+func ThreadGoal(action wire.ThreadGoalAction, objective string, reply chan ThreadGoalResult) framework.Input {
+	return cmdThreadGoal{Action: action, Objective: objective, Reply: reply}
 }

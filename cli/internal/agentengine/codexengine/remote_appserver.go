@@ -358,6 +358,10 @@ func (e *Engine) handleAppServerNotification(method string, params json.RawMessa
 		e.handleAgentMessageDelta(params)
 	case appserver.NotifyError:
 		e.handleTurnError(params)
+	case appserver.NotifyThreadGoalUpdated:
+		e.handleThreadGoalUpdated(params)
+	case appserver.NotifyThreadGoalCleared:
+		e.handleThreadGoalCleared(params)
 	default:
 		if debug {
 			logger.Debugf("codex: app-server ignored notification %s", method)

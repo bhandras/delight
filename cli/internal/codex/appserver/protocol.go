@@ -22,6 +22,12 @@ const (
 	MethodTurnStart = "turn/start"
 	// MethodTurnInterrupt cancels an in-flight turn.
 	MethodTurnInterrupt = "turn/interrupt"
+	// MethodThreadGoalSet creates or updates the persisted goal for a thread.
+	MethodThreadGoalSet = "thread/goal/set"
+	// MethodThreadGoalGet fetches the persisted goal for a thread.
+	MethodThreadGoalGet = "thread/goal/get"
+	// MethodThreadGoalClear removes the persisted goal for a thread.
+	MethodThreadGoalClear = "thread/goal/clear"
 )
 
 const (
@@ -39,6 +45,10 @@ const (
 	NotifyItemAgentMessageDelta = "item/agentMessage/delta"
 	// NotifyError is emitted when the server hits an error mid-turn.
 	NotifyError = "error"
+	// NotifyThreadGoalUpdated is emitted when a thread goal changes.
+	NotifyThreadGoalUpdated = "thread/goal/updated"
+	// NotifyThreadGoalCleared is emitted when a thread goal is removed.
+	NotifyThreadGoalCleared = "thread/goal/cleared"
 )
 
 const (

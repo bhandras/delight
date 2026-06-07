@@ -64,6 +64,34 @@ func (m *Manager) registerRPCHandlers() {
 		return json.Marshal(wire.SuccessResponse{Success: true})
 	})
 
+	// Goal handler - manage Codex thread goals from mobile slash commands.
+	m.rpcManager.RegisterHandler(prefix+"goal", func(params json.RawMessage) (json.RawMessage, error) {
+		wire.DumpToTestdata("rpc_session_goal", params)
+		var req wire.ThreadGoalRequest
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, err
+		}
+
+		if m.GetMode() != ModeRemote {
+			return json.Marshal(wire.ThreadGoalResponse{Success: false, Error: "cannot manage goal: not in remote mode"})
+		}
+		if m.sessionActor != nil && m.sessionActor.State().AgentState.ControlledByUser {
+			return json.Marshal(wire.ThreadGoalResponse{Success: false, Error: "cannot manage goal: session not phone-controlled"})
+		}
+
+		result := m.RunThreadGoalCommand(req.Action, req.Objective)
+		if result.Err != nil {
+			return json.Marshal(wire.ThreadGoalResponse{Success: false, Error: result.Err.Error()})
+		}
+		resp := wire.ThreadGoalResponse{
+			Success: true,
+			Goal:    result.Goal,
+			Cleared: result.Cleared,
+			Message: threadGoalResponseMessage(req.Action, result.Goal, result.Cleared),
+		}
+		return json.Marshal(resp)
+	})
+
 	// Agent-config handler - update model/effort/permission mode (remote-only).
 	m.rpcManager.RegisterHandler(prefix+"agent-config", func(params json.RawMessage) (json.RawMessage, error) {
 		wire.DumpToTestdata("rpc_session_agent_config", params)
@@ -208,4 +236,48 @@ func (m *Manager) registerRPCHandlers() {
 			return json.Marshal(resp)
 		}
 	})
+}
+
+// threadGoalResponseMessage builds a compact user-visible goal command summary.
+func threadGoalResponseMessage(action wire.ThreadGoalAction, goal *wire.ThreadGoal, cleared bool) string {
+	switch action {
+	case wire.ThreadGoalActionClear:
+		if cleared {
+			return "Goal cleared"
+		}
+		return "No goal to clear"
+	case wire.ThreadGoalActionGet:
+		if goal == nil {
+			return "No active goal"
+		}
+		return fmt.Sprintf("Goal %s: %s", threadGoalStatusLabel(goal.Status), strings.TrimSpace(goal.Objective))
+	case wire.ThreadGoalActionSet:
+		if goal == nil {
+			return "Goal set"
+		}
+		return fmt.Sprintf("Goal %s: %s", threadGoalStatusLabel(goal.Status), strings.TrimSpace(goal.Objective))
+	case wire.ThreadGoalActionPause, wire.ThreadGoalActionResume:
+		if goal == nil {
+			return "No active goal"
+		}
+		return fmt.Sprintf("Goal %s", threadGoalStatusLabel(goal.Status))
+	default:
+		return "Goal updated"
+	}
+}
+
+// threadGoalStatusLabel returns a compact label for a Codex thread-goal status.
+func threadGoalStatusLabel(status wire.ThreadGoalStatus) string {
+	switch status {
+	case wire.ThreadGoalStatusActive:
+		return "active"
+	case wire.ThreadGoalStatusPaused:
+		return "paused"
+	case wire.ThreadGoalStatusBudgetLimited:
+		return "limited by budget"
+	case wire.ThreadGoalStatusComplete:
+		return "complete"
+	default:
+		return strings.TrimSpace(string(status))
+	}
 }

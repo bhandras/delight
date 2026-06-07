@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	sessionactor "github.com/bhandras/delight/cli/internal/session/actor"
+	"github.com/bhandras/delight/shared/wire"
 )
 
 // GetMode returns the current session control mode derived from the SessionActor state.
@@ -110,5 +111,25 @@ func (m *Manager) AbortRemote() error {
 		return fmt.Errorf("session closed")
 	case err := <-reply:
 		return err
+	}
+}
+
+// RunThreadGoalCommand runs a Codex thread-goal command in remote mode.
+func (m *Manager) RunThreadGoalCommand(action wire.ThreadGoalAction, objective string) sessionactor.ThreadGoalResult {
+	if m.agent != "codex" {
+		return sessionactor.ThreadGoalResult{Err: fmt.Errorf("goals are only supported for codex sessions")}
+	}
+	if m.sessionActor == nil {
+		return sessionactor.ThreadGoalResult{Err: fmt.Errorf("session actor not initialized")}
+	}
+	reply := make(chan sessionactor.ThreadGoalResult, 1)
+	if !m.sessionActor.Enqueue(sessionactor.ThreadGoal(action, objective, reply)) {
+		return sessionactor.ThreadGoalResult{Err: fmt.Errorf("failed to schedule goal command")}
+	}
+	select {
+	case <-m.stopCh:
+		return sessionactor.ThreadGoalResult{Err: fmt.Errorf("session closed")}
+	case result := <-reply:
+		return result
 	}
 }

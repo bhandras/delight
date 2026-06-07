@@ -30,6 +30,35 @@ private struct AgentCapabilitiesParams: Encodable {
     let model: String?
 }
 
+/// GoalCommandParams is the payload sent to `sessionID:goal` RPC calls.
+private struct GoalCommandParams: Encodable {
+    let action: String
+    let objective: String?
+}
+
+/// GoalCommandRPCResponse is the best-effort response schema for goal RPC calls.
+private struct GoalCommandRPCResponse: Decodable {
+    struct Goal: Decodable {
+        let threadId: String?
+        let objective: String?
+        let status: String?
+        let tokenBudget: Int64?
+        let tokensUsed: Int64?
+        let timeUsedSeconds: Int64?
+    }
+
+    struct Result: Decodable {
+        let success: Bool?
+        let goal: Goal?
+        let cleared: Bool?
+        let message: String?
+        let error: String?
+    }
+
+    let result: Result?
+    let error: String?
+}
+
 /// AgentConfigRPCResponse is the best-effort response schema for agent-config RPC calls.
 private struct AgentConfigRPCResponse: Decodable {
     struct Result: Decodable {
@@ -2383,6 +2412,210 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         return raw
     }
 
+    /// GoalSlashCommand is a parsed `/goal` composer command.
+    private struct GoalSlashCommand {
+        let action: String
+        let objective: String?
+    }
+
+    /// parseGoalSlashCommand returns a goal command when the composer starts
+    /// with `/goal`.
+    private func parseGoalSlashCommand(_ text: String) -> GoalSlashCommand? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed == "/goal" || trimmed.hasPrefix("/goal ") else {
+            return nil
+        }
+        let rest = String(trimmed.dropFirst("/goal".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        if rest.isEmpty {
+            return GoalSlashCommand(action: "get", objective: nil)
+        }
+
+        switch rest.lowercased() {
+        case "pause":
+            return GoalSlashCommand(action: "pause", objective: nil)
+        case "resume":
+            return GoalSlashCommand(action: "resume", objective: nil)
+        case "clear":
+            return GoalSlashCommand(action: "clear", objective: nil)
+        default:
+            if rest.lowercased().hasPrefix("edit ") {
+                let edited = String(rest.dropFirst("edit ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                return GoalSlashCommand(action: "set", objective: edited)
+            }
+            return GoalSlashCommand(action: "set", objective: rest)
+        }
+    }
+
+    /// appendLocalTranscriptEvent appends a non-persisted event row to the
+    /// transcript for immediate command feedback.
+    private func appendLocalTranscriptEvent(_ markdown: String) {
+        let text = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let item = MessageItem(
+            id: "local-event-\(UUID().uuidString)",
+            seq: nil,
+            localID: nil,
+            uuid: nil,
+            role: .event,
+            blocks: splitMarkdownBlocks(text),
+            createdAt: Int64(Date().timeIntervalSince1970 * 1000)
+        )
+        DispatchQueue.main.async {
+            self.messages.append(item)
+            self.scrollRequest = ScrollRequest(target: .bottom)
+        }
+    }
+
+    /// goalCommandMarkdown builds the transcript feedback text for a goal RPC.
+    private func goalCommandMarkdown(action: String, response: GoalCommandRPCResponse.Result) -> String {
+        if let message = response.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+            if action == "get", let goal = response.goal {
+                return goalSummaryMarkdown(goal: goal)
+            }
+            return message
+        }
+        if let goal = response.goal {
+            return goalSummaryMarkdown(goal: goal)
+        }
+        if action == "clear" {
+            return response.cleared == true ? "Goal cleared" : "No goal to clear"
+        }
+        return "No active goal"
+    }
+
+    /// goalSummaryMarkdown renders Codex goal metadata for the mobile transcript.
+    private func goalSummaryMarkdown(goal: GoalCommandRPCResponse.Goal) -> String {
+        var lines = ["Goal"]
+        if let status = goal.status?.trimmingCharacters(in: .whitespacesAndNewlines), !status.isEmpty {
+            lines.append("Status: \(goalStatusLabel(status))")
+        }
+        if let objective = goal.objective?.trimmingCharacters(in: .whitespacesAndNewlines), !objective.isEmpty {
+            lines.append("Objective: \(objective)")
+        }
+        if let seconds = goal.timeUsedSeconds {
+            lines.append("Time used: \(formatGoalElapsedSeconds(seconds))")
+        }
+        if let tokens = goal.tokensUsed {
+            lines.append("Tokens used: \(formatGoalTokens(tokens))")
+        }
+        if let budget = goal.tokenBudget {
+            lines.append("Token budget: \(formatGoalTokens(budget))")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// goalStatusLabel maps app-server goal status values to readable labels.
+    private func goalStatusLabel(_ status: String) -> String {
+        switch status {
+        case "active":
+            return "active"
+        case "paused":
+            return "paused"
+        case "budgetLimited":
+            return "limited by budget"
+        case "complete":
+            return "complete"
+        default:
+            return status
+        }
+    }
+
+    /// formatGoalElapsedSeconds formats goal time like Codex's compact display.
+    private func formatGoalElapsedSeconds(_ seconds: Int64) -> String {
+        let value = max(seconds, 0)
+        let minute: Int64 = 60
+        let hour: Int64 = 60 * minute
+        let day: Int64 = 24 * hour
+        if value < minute {
+            return "\(value)s"
+        }
+        if value < hour {
+            return "\(value / minute)m"
+        }
+        if value < day {
+            let hours = value / hour
+            let minutes = (value % hour) / minute
+            return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
+        }
+        let days = value / day
+        let hours = (value % day) / hour
+        let minutes = (value % hour) / minute
+        return "\(days)d \(hours)h \(minutes)m"
+    }
+
+    /// formatGoalTokens formats token counts compactly.
+    private func formatGoalTokens(_ tokens: Int64) -> String {
+        let absolute = abs(tokens)
+        if absolute >= 1_000_000 {
+            return "\(tokens / 1_000_000)M"
+        }
+        if absolute >= 1_000 {
+            return "\(tokens / 1_000)K"
+        }
+        return "\(tokens)"
+    }
+
+    /// goalFailureMessage normalizes goal RPC failures to actionable text.
+    private func goalFailureMessage(from error: Error) -> String {
+        let raw = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.isEmpty {
+            return "Goal command failed"
+        }
+        let lower = raw.lowercased()
+        if lower.contains("rpc method not available")
+            || lower.contains("unknown method")
+            || lower.contains("method not found")
+            || lower.contains("handler")
+        {
+            return "Terminal CLI missing /goal support. Rebuild and restart delight."
+        }
+        return raw
+    }
+
+    /// runGoalSlashCommand sends a parsed `/goal` command through the session RPC.
+    private func runGoalSlashCommand(_ command: GoalSlashCommand, originalText: String, sessionID activeSessionID: String) {
+        if command.action == "set" && (command.objective?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+            appendLocalTranscriptEvent("Goal objective must not be empty.")
+            return
+        }
+
+        recordPromptHistory(originalText, sessionID: activeSessionID)
+        messageText = ""
+        appendLocalTranscriptEvent(originalText)
+
+        sdkCallAsync {
+            do {
+                let paramsJSON = try JSONCoding.encode(
+                    GoalCommandParams(action: command.action, objective: command.objective)
+                )
+                let responseBuf = try self.sdkCallSync {
+                    try self.client.callRPCBuffer(activeSessionID + ":goal", paramsJSON: paramsJSON)
+                }
+                let responseJSON = self.stringFromBuffer(responseBuf) ?? ""
+                guard let decoded = try? JSONCoding.decode(GoalCommandRPCResponse.self, from: responseJSON) else {
+                    self.appendLocalTranscriptEvent("Goal command failed: unable to decode response")
+                    return
+                }
+
+                let errorMessage = decoded.error ?? decoded.result?.error
+                if let errorMessage, !errorMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.appendLocalTranscriptEvent("Goal command failed: \(errorMessage)")
+                    return
+                }
+                guard let result = decoded.result, result.success == true else {
+                    self.appendLocalTranscriptEvent("Goal command failed")
+                    return
+                }
+
+                let markdown = self.goalCommandMarkdown(action: command.action, response: result)
+                self.appendLocalTranscriptEvent(markdown)
+                self.fetchLatestMessages(reset: false)
+            } catch {
+                self.appendLocalTranscriptEvent("Goal command failed: \(self.goalFailureMessage(from: error))")
+            }
+        }
+    }
+
     func sendMessage() {
         guard !sessionID.isEmpty else {
             log("Session ID required")
@@ -2395,6 +2628,10 @@ final class HarnessViewModel: NSObject, ObservableObject, SdkListenerProtocol {
         }
         let trimmedMessage = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         let sessionAttachments = composerAttachments.filter { $0.sessionID == activeSessionID }
+        if let goalCommand = parseGoalSlashCommand(trimmedMessage), sessionAttachments.isEmpty {
+            runGoalSlashCommand(goalCommand, originalText: trimmedMessage, sessionID: activeSessionID)
+            return
+        }
         let readyAttachments = sessionAttachments.filter {
             $0.state == .ready && (($0.remotePath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) == false)
         }

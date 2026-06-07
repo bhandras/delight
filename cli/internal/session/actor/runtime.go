@@ -198,6 +198,8 @@ func (r *Runtime) HandleEffects(ctx context.Context, effects []framework.Effect,
 			r.applyEngineConfig(ctx, e)
 		case effQueryAgentEngineSettings:
 			r.queryAgentEngineSettings(ctx, e, emit)
+		case effThreadGoal:
+			r.runThreadGoal(ctx, e)
 		case effPersistLocalSessionInfo:
 			r.persistLocalSessionInfo(ctx, e, emit)
 		case effStartDesktopTakebackWatcher:

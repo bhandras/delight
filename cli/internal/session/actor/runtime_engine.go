@@ -15,6 +15,7 @@ import (
 	"github.com/bhandras/delight/cli/internal/agentengine/fakeengine"
 	"github.com/bhandras/delight/cli/internal/termutil"
 	"github.com/bhandras/delight/shared/logger"
+	"github.com/bhandras/delight/shared/wire"
 )
 
 const (
@@ -526,5 +527,61 @@ func (r *Runtime) queryAgentEngineSettings(ctx context.Context, eff effQueryAgen
 	select {
 	case eff.Reply <- snapshot:
 	default:
+	}
+}
+
+// runThreadGoal performs a runtime-backed Codex thread-goal operation.
+func (r *Runtime) runThreadGoal(ctx context.Context, eff effThreadGoal) {
+	if eff.Reply == nil {
+		return
+	}
+
+	r.mu.Lock()
+	engine := r.engine
+	gen := r.engineRemoteGen
+	active := r.engineRemoteActive
+	r.mu.Unlock()
+
+	result := ThreadGoalResult{}
+	defer func() {
+		select {
+		case eff.Reply <- result:
+		default:
+		}
+	}()
+
+	if engine == nil || !active {
+		result.Err = fmt.Errorf("codex remote thread is not active")
+		return
+	}
+	if gen != 0 && eff.Gen != 0 && eff.Gen != gen {
+		result.Err = fmt.Errorf("stale remote thread")
+		return
+	}
+
+	controller, ok := engine.(agentengine.ThreadGoalController)
+	if !ok {
+		result.Err = fmt.Errorf("thread goals are not supported for this agent")
+		return
+	}
+
+	switch eff.Action {
+	case wire.ThreadGoalActionGet:
+		result.Goal, result.Err = controller.GetThreadGoal(ctx)
+	case wire.ThreadGoalActionSet:
+		objective := strings.TrimSpace(eff.Objective)
+		if objective == "" {
+			result.Err = fmt.Errorf("goal objective must not be empty")
+			return
+		}
+		result.Goal, result.Err = controller.SetThreadGoal(ctx, objective, wire.ThreadGoalStatusActive)
+	case wire.ThreadGoalActionPause:
+		result.Goal, result.Err = controller.SetThreadGoal(ctx, "", wire.ThreadGoalStatusPaused)
+	case wire.ThreadGoalActionResume:
+		result.Goal, result.Err = controller.SetThreadGoal(ctx, "", wire.ThreadGoalStatusActive)
+	case wire.ThreadGoalActionClear:
+		result.Cleared, result.Err = controller.ClearThreadGoal(ctx)
+	default:
+		result.Err = fmt.Errorf("unknown goal action: %s", eff.Action)
 	}
 }

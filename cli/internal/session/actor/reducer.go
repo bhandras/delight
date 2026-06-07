@@ -52,6 +52,8 @@ func Reduce(state State, input actor.Input) (State, []actor.Effect) {
 		return reduceSetAgentConfig(state, in)
 	case cmdGetAgentEngineSettings:
 		return reduceGetAgentEngineSettings(state, in)
+	case cmdThreadGoal:
+		return reduceThreadGoal(state, in)
 	case cmdShutdown:
 		return reduceShutdown(state, in)
 
@@ -477,6 +479,30 @@ func reduceGetAgentEngineSettings(state State, cmd cmdGetAgentEngineSettings) (S
 			Gen:       state.RunnerGen,
 			AgentType: agentengine.AgentType(state.AgentState.AgentType),
 			Desired:   currentAgentConfig(state),
+			Reply:     cmd.Reply,
+		},
+	}
+}
+
+// reduceThreadGoal schedules a runtime-backed thread goal operation.
+func reduceThreadGoal(state State, cmd cmdThreadGoal) (State, []actor.Effect) {
+	if cmd.Reply == nil {
+		return state, nil
+	}
+	if state.Mode != ModeRemote || state.AgentState.ControlledByUser || state.FSM != StateRemoteRunning {
+		return state, []actor.Effect{
+			effThreadGoal{
+				Gen:    state.RunnerGen,
+				Action: cmd.Action,
+				Reply:  cmd.Reply,
+			},
+		}
+	}
+	return state, []actor.Effect{
+		effThreadGoal{
+			Gen:       state.RunnerGen,
+			Action:    cmd.Action,
+			Objective: cmd.Objective,
 			Reply:     cmd.Reply,
 		},
 	}

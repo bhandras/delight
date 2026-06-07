@@ -290,6 +290,7 @@ func TestSessionEffect_InterfaceCoverage(t *testing.T) {
 		effStopRemoteRunner{},
 		effApplyEngineConfig{},
 		effQueryAgentEngineSettings{},
+		effThreadGoal{},
 		effRemoteSend{},
 		effRemoteAbort{},
 		effLocalSendLine{},

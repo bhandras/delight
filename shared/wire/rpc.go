@@ -149,6 +149,78 @@ type AgentCapabilitiesResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
+// ThreadGoalStatus identifies the lifecycle state of a Codex thread goal.
+type ThreadGoalStatus string
+
+const (
+	// ThreadGoalStatusActive means Codex should continue working toward the goal.
+	ThreadGoalStatusActive ThreadGoalStatus = "active"
+	// ThreadGoalStatusPaused means goal continuation is paused by the user.
+	ThreadGoalStatusPaused ThreadGoalStatus = "paused"
+	// ThreadGoalStatusBudgetLimited means the goal stopped because its budget was reached.
+	ThreadGoalStatusBudgetLimited ThreadGoalStatus = "budgetLimited"
+	// ThreadGoalStatusComplete means Codex marked the goal achieved.
+	ThreadGoalStatusComplete ThreadGoalStatus = "complete"
+)
+
+// ThreadGoalAction identifies a mobile goal command.
+type ThreadGoalAction string
+
+const (
+	// ThreadGoalActionGet fetches the current goal without changing it.
+	ThreadGoalActionGet ThreadGoalAction = "get"
+	// ThreadGoalActionSet sets or edits the current goal objective.
+	ThreadGoalActionSet ThreadGoalAction = "set"
+	// ThreadGoalActionPause pauses an active goal.
+	ThreadGoalActionPause ThreadGoalAction = "pause"
+	// ThreadGoalActionResume resumes a paused or stopped goal.
+	ThreadGoalActionResume ThreadGoalAction = "resume"
+	// ThreadGoalActionClear removes the current goal.
+	ThreadGoalActionClear ThreadGoalAction = "clear"
+)
+
+// ThreadGoal describes Codex's persisted goal metadata for a thread.
+type ThreadGoal struct {
+	// ThreadID is the Codex app-server thread id.
+	ThreadID string `json:"threadId"`
+	// Objective is the user-visible goal text.
+	Objective string `json:"objective"`
+	// Status is the goal lifecycle state.
+	Status ThreadGoalStatus `json:"status"`
+	// TokenBudget is the optional maximum token budget for the goal.
+	TokenBudget *int64 `json:"tokenBudget,omitempty"`
+	// TokensUsed is the number of tokens accounted to the goal so far.
+	TokensUsed int64 `json:"tokensUsed"`
+	// TimeUsedSeconds is wall-clock time accounted to the goal so far.
+	TimeUsedSeconds int64 `json:"timeUsedSeconds"`
+	// CreatedAt is the upstream Unix timestamp when the goal was created.
+	CreatedAt int64 `json:"createdAt"`
+	// UpdatedAt is the upstream Unix timestamp when the goal was last changed.
+	UpdatedAt int64 `json:"updatedAt"`
+}
+
+// ThreadGoalRequest requests a goal operation for a session's Codex thread.
+type ThreadGoalRequest struct {
+	// Action identifies which goal operation to run.
+	Action ThreadGoalAction `json:"action"`
+	// Objective is required for the set action.
+	Objective string `json:"objective,omitempty"`
+}
+
+// ThreadGoalResponse reports the result of a goal operation.
+type ThreadGoalResponse struct {
+	// Success indicates whether the operation succeeded.
+	Success bool `json:"success"`
+	// Goal is the current goal after get/set/pause/resume, if one exists.
+	Goal *ThreadGoal `json:"goal,omitempty"`
+	// Cleared indicates whether clear removed an existing goal.
+	Cleared bool `json:"cleared,omitempty"`
+	// Message is a short user-visible summary.
+	Message string `json:"message,omitempty"`
+	// Error contains an error message when Success is false.
+	Error string `json:"error,omitempty"`
+}
+
 // Terminal-scoped RPC payloads (server -> terminal).
 
 // SpawnSessionRequest requests starting a new CLI session for a directory.

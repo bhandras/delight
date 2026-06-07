@@ -3,6 +3,8 @@ package agentengine
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/bhandras/delight/shared/wire"
 )
 
 // AgentType identifies which upstream agent implementation should be started.
@@ -107,6 +109,17 @@ type PermissionDecision struct {
 // phone and wait for a decision without embedding any UI logic.
 type PermissionRequester interface {
 	AwaitPermission(ctx context.Context, requestID string, toolName string, input json.RawMessage, nowMs int64) (PermissionDecision, error)
+}
+
+// ThreadGoalController is implemented by engines that can manage persisted
+// long-running goals for their active remote thread.
+type ThreadGoalController interface {
+	// GetThreadGoal returns the current persisted goal, if any.
+	GetThreadGoal(ctx context.Context) (*wire.ThreadGoal, error)
+	// SetThreadGoal creates or updates the active goal.
+	SetThreadGoal(ctx context.Context, objective string, status wire.ThreadGoalStatus) (*wire.ThreadGoal, error)
+	// ClearThreadGoal removes the active goal and reports whether one existed.
+	ClearThreadGoal(ctx context.Context) (bool, error)
 }
 
 // Event is a marker interface for engine-emitted events.
